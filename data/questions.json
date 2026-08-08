@@ -155,7 +155,7 @@
     "id": "q22",
     "type": "normal",
     "question": "نجم المعجزات ؟",
-    "answers": ["اوميني"],
+    "answers": ["اوميني","دايكي"],
     "points": 1
   },
   {
@@ -267,7 +267,7 @@
     "id": "q38",
     "type": "normal",
     "question": "البطل رقم واحد ؟",
-    "answers": ["اول مايت"],
+    "answers": ["اول مايت", "توشينوري","اينجي","ايندفار"],
     "points": 1
   },
   {
@@ -419,7 +419,7 @@
     "id": "q57",
     "type": "normal",
     "question": "اقوى رجل بالعالم ؟",
-    "answers": ["ادوارد نيوغيت", "ادوارد", "نيوغيت"],
+    "answers": ["ادوارد نيوغيت", "ادوارد", "نيوقيت"],
     "points": 1
   },
   {
@@ -511,7 +511,7 @@
     "required": 3,
     "points": 1,
     "answers": [
-      ["كينغ", "كينق"],
+      ["كينق"],
       ["كوين"],
       ["جاك"]
     ]
@@ -816,7 +816,7 @@
     "id": "q109",
     "type": "normal",
     "question": "الشيطان الابيض ؟",
-    "answers": ["جينتوكي", "غينتوكي"],
+    "answers": ["جينتوكي"],
     "points": 1
   },
   {
@@ -844,18 +844,22 @@
     "answers": ["ايلين"],
     "points": 1
   },
-   {
+  {
     "id": "q113",
     "type": "normal",
     "question": "طاقم القش؟",
-    "answers": ["مونكي دي لوفي", "لوفي", "monkey d luffy"],
+    "answers": ["لوفي"],
     "points": 1
   },
   {
     "id": "q114",
-    "type": "normal",
+    "type": "count",
     "question": "سفينة لوفي؟",
-    "answers": ["ساني قو", "ساني غو", "ساني جو"],
+    "required": 2,
+    "answers": [
+      ["ساني"],
+      ["قو"]
+    ],
     "points": 1
   },
   {
@@ -866,7 +870,7 @@
     "points": 1,
     "answers": [
       ["ايزن"],
-      ["جين", "قين", "غين"],
+      ["جين"],
       ["توسين"]
     ]
   },
@@ -877,25 +881,1808 @@
     "answers": ["انما", "اينما"],
     "points": 1
   },
-    {
+  {
     "id": "q117",
-    "type": "normal",
+    "type": "count",
     "question": "سفينة شانكس؟",
-    "answers": ["ريد فورس"],
+    "required": 2,
+    "answers": [
+      ["ريد"],
+      ["فورس"]
+    ],
     "points": 1
   },
-    {
+  {
     "id": "q118",
-    "type": "normal",
+    "type": "count",
     "question": "سفينة باغي؟",
-    "answers": ["بيج توب", "بيغ توب", "بيق توب"],
+    "required": 2,
+    "answers": [
+      ["بيج"],
+      ["توب"]
+    ],
     "points": 1
   },
-    {
+  {
     "id": "q119",
     "type": "normal",
     "question": "سيف شانكس؟",
-    "answers": ["جريفين", "غريفين", "قريفين"],
+    "answers": ["جريفين"],
     "points": 1
+  },
+  {
+    "id": "q120",
+    "type": "normal",
+    "question": "حبيبه غاجيل ؟",
+    "answers": ["ليفي"],
+    "points": 1
+  },
+  {
+    "id": "q121",
+    "type": "normal",
+    "question": "حارس يونا ؟",
+    "answers": ["هاك"],
+    "points": 1
+  },
+  {
+    "id": "q122",
+    "type": "normal",
+    "question": "قائد فيلق الاستطلاع ؟",
+    "answers": ["ايروين"],
+    "points": 1
+  },
+  {
+    "id": "q123",
+    "type": "normal",
+    "question": "اخت ميراجين ؟",
+    "answers": ["ليسانا"],
+    "points": 1
+  },
+  {
+    "id": "q124",
+    "type": "count",
+    "question": "كهنة اينيل ؟",
+    "required": 4,
+    "points": 1,
+    "answers": [
+      ["شورا"],
+      ["جيداتسو"],
+      ["ساتوري"],
+      ["اوم"]
+    ]
+  },
+  {
+    "id": "q125",
+    "type": "normal",
+    "question": "وعاء كوراما ؟",
+    "answers": ["ناروتو"],
+    "points": 1
+  },
+  {
+    "id": "q126",
+    "type": "normal",
+    "question": "حبيبه اوبيتو ؟",
+    "answers": ["رين"],
+    "points": 1
+  },
+  {
+    "id": "q127",
+    "type": "count",
+    "question": "فاكهة اوكيجي ؟",
+    "required": 2,
+    "answers": [
+      ["هي"],
+      ["هي"]
+    ],
+    "points": 1
+  },
+  {
+    "id": "q128",
+    "type": "count",
+    "question": "اكاينو كامل ؟",
+    "required": 2,
+    "answers": [
+      ["اكاينو"],
+      ["ساكازوكي"]
+    ],
+    "points": 1
+  },
+  {
+    "id": "q129",
+    "type": "normal",
+    "question": "اكسيد غاجيل ؟",
+    "answers": ["ليلي"],
+    "points": 1
+  },
+  {
+    "id": "q130",
+    "type": "normal",
+    "question": "ابن يوساكو ؟",
+    "answers": ["شينتشي"],
+    "points": 1
+  },
+  {
+    "id": "q131",
+    "type": "normal",
+    "question": "زوجة يوساكو ؟",
+    "answers": ["يوكيكو"],
+    "points": 1
+  },
+  {
+    "id": "q132",
+    "type": "normal",
+    "question": "زوج يور ؟",
+    "answers": ["لويد"],
+    "points": 1
+  },
+  {
+    "id": "q133",
+    "type": "count",
+    "question": "اطفال متجر كيسكي ؟",
+    "required": 2,
+    "points": 1,
+    "answers": [
+      ["اورورو"],
+      ["جينتا"]
+    ]
+  },
+  {
+    "id": "q134",
+    "type": "normal",
+    "question": "طائر تشين ؟",
+    "answers": ["اوكي"],
+    "points": 1
+  },
+  {
+    "id": "q135",
+    "type": "count",
+    "question": "ايكي كامل ؟",
+    "required": 2,
+    "answers": [
+      ["ايكي"],
+      ["كوروجاني"]
+    ],
+    "points": 1
+  },
+  {
+    "id": "q136",
+    "type": "normal",
+    "question": "القلب الحديدي ؟",
+    "answers": ["تيبي"],
+    "points": 1
+  },
+  {
+    "id": "q137",
+    "type": "normal",
+    "question": "عمدة كوكوياشي ؟",
+    "answers": ["جين"],
+    "points": 1
+  },
+  {
+    "id": "q138",
+    "type": "count",
+    "question": "ابناء كاتيل ؟",
+    "required": 2,
+    "points": 1,
+    "answers": [
+      ["ثورغيل"],
+      ["اولمار"]
+    ]
+  },
+  {
+    "id": "q139",
+    "type": "normal",
+    "question": "الكيميائي القرمزي ؟",
+    "answers": ["كيمبلي"],
+    "points": 1
+  },
+  {
+    "id": "q140",
+    "type": "normal",
+    "question": "كم قلب يمتلك كاكوزو ؟",
+    "answers": ["5"],
+    "points": 1
+  },
+  {
+    "id": "q141",
+    "type": "normal",
+    "question": "حفيدة فوجاكو ؟",
+    "answers": ["سارادا"],
+    "points": 1
+  },
+  {
+    "id": "q142",
+    "type": "normal",
+    "question": "الملك الاحمر ؟",
+    "answers": ["ميكوتو"],
+    "points": 1
+  },
+  {
+    "id": "q143",
+    "type": "normal",
+    "question": "نائب كيد ؟",
+    "answers": ["كيلر"],
+    "points": 1
+  },
+  {
+    "id": "q144",
+    "type": "normal",
+    "question": "اخت كيني ؟",
+    "answers": ["كوشيل"],
+    "points": 1
+  },
+  {
+    "id": "q145",
+    "type": "normal",
+    "question": "ابنة اسونا الرقمية ؟",
+    "answers": ["يوي"],
+    "points": 1
+  },
+  {
+    "id": "q146",
+    "type": "normal",
+    "question": "طفيلي ايزومي ؟",
+    "answers": ["ميغي"],
+    "points": 1
+  },
+  {
+    "id": "q147",
+    "type": "normal",
+    "question": "ثعبان اوروتشيمارو ؟",
+    "answers": ["ماندا"],
+    "points": 1
+  },
+  {
+    "id": "q148",
+    "type": "normal",
+    "question": "والدة شوتو ؟",
+    "answers": ["ري"],
+    "points": 1
+  },
+  {
+    "id": "q149",
+    "type": "count",
+    "question": "اخوة هاشيراما ؟",
+    "required": 3,
+    "points": 1,
+    "answers": [
+      ["كاواراما"],
+      ["ايتاما"],
+      ["توبيراما"]
+    ]
+  },
+  {
+    "id": "q150",
+    "type": "normal",
+    "question": "والد مادارا ؟",
+    "answers": ["تاجيما"],
+    "points": 1
+  },
+  {
+    "id": "q151",
+    "type": "normal",
+    "question": "مؤسسة فيري تيل ؟",
+    "answers": ["مايفيس"],
+    "points": 1
+  },
+  {
+    "id": "q152",
+    "type": "normal",
+    "question": "تو هاند ؟",
+    "answers": ["ريفي"],
+    "points": 1
+  },
+  {
+    "id": "q153",
+    "type": "normal",
+    "question": "قاتل مادارا ؟",
+    "answers": ["زيتسو"],
+    "points": 1
+  },
+  {
+    "id": "q154",
+    "type": "normal",
+    "question": "حبيبة غاتس ؟",
+    "answers": ["كاسكا"],
+    "points": 1
+  },
+  {
+    "id": "q155",
+    "type": "normal",
+    "question": "السلايم ؟",
+    "answers": ["ريمورو"],
+    "points": 1
+  },
+  {
+    "id": "q156",
+    "type": "normal",
+    "question": "مرافق كنوت المتوفي ؟",
+    "answers": ["راغنر"],
+    "points": 1
+  },
+  {
+    "id": "q157",
+    "type": "normal",
+    "question": "والدة ثورفين ؟",
+    "answers": ["هيلغا"],
+    "points": 1
+  },
+  {
+    "id": "q158",
+    "type": "count",
+    "question": "اكسيد ويندي ؟",
+    "required": 1,
+    "answers": [
+      ["تشارلي"],
+      ["شارلو"]
+    ],
+    "points": 1
+  },
+  {
+    "id": "q159",
+    "type": "count",
+    "question": "غورين كامل ؟",
+    "required": 2,
+    "answers": [
+      ["غورين"],
+      ["ايتشينوسي"]
+    ],
+    "points": 1
+  },
+  {
+    "id": "q160",
+    "type": "normal",
+    "question": "حبيبة ايرين ؟",
+    "answers": ["ميكاسا"],
+    "points": 1
+  },
+  {
+    "id": "q161",
+    "type": "count",
+    "question": "اخر ميزوناشي رينا ؟",
+    "required": 1,
+    "points": 1,
+    "answers": [
+      ["هوندو"],
+      ["ايسكي"]
+    ]
+  },
+  {
+    "id": "q162",
+    "type": "normal",
+    "question": "جاسوس الشرطه السرية لدى المنظمة ؟",
+    "answers": ["بوربون"],
+    "points": 1
+  },
+  {
+    "id": "q163",
+    "type": "normal",
+    "question": "قائد قراصنه سبيد ؟",
+    "answers": ["ايس"],
+    "points": 1
+  },
+  {
+    "id": "q164",
+    "type": "normal",
+    "question": "الميزوكاغي الرابع ؟",
+    "answers": ["ياغورا"],
+    "points": 1
+  },
+  {
+    "id": "q165",
+    "type": "normal",
+    "question": "رئيس جمعيه الصيادين ؟",
+    "answers": ["تشيدل"],
+    "points": 1
+  },
+  {
+    "id": "q166",
+    "type": "normal",
+    "question": "بروفيسور اوهارا ؟",
+    "answers": ["كلوفر"],
+    "points": 1
+  },
+  {
+    "id": "q167",
+    "type": "normal",
+    "question": "التفاحه الفاسده ؟",
+    "answers": ["فيرموث","بيلموت","بلموت"],
+    "points": 1
+  },
+  {
+    "id": "q168",
+    "type": "count",
+    "question": "ابناء ميري ؟",
+    "required": 3,
+    "points": 1,
+    "answers": [
+      ["شويتشي","اكاي"],
+      ["ماسومي","سيرا"],
+      ["شوكيتشي","هانيدا"]
+    ]
+  },
+  {
+    "id": "q169",
+    "type": "normal",
+    "question": "حاكم دمار الكون الثاني عشر ؟",
+    "answers": ["جين"],
+    "points": 1
+  },
+  {
+    "id": "q170",
+    "type": "normal",
+    "question": "بانكاي اونوهانا ؟",
+    "answers": ["مينازوكي"],
+    "points": 1
+  },
+  {
+    "id": "q171",
+    "type": "normal",
+    "question": "والد ادوارد الريك ؟",
+    "answers": ["هوينهايم"],
+    "points": 1
+  },
+  {
+    "id": "q172",
+    "type": "normal",
+    "question": "وصية التقوى ؟",
+    "answers": ["زيلدريس"],
+    "points": 1
+  },
+  {
+    "id": "q173",
+    "type": "normal",
+    "question": "والد روديوس ؟",
+    "answers": ["باول"],
+    "points": 1
+  },
+  {
+    "id": "q174",
+    "type": "normal",
+    "question": "زوجة هوينهايم ؟",
+    "answers": ["تريشا"],
+    "points": 1
+  },
+  {
+    "id": "q175",
+    "type": "normal",
+    "question": "نين ليوريو ؟",
+    "answers": ["البعث"],
+    "points": 1
+  },
+  {
+    "id": "q176",
+    "type": "normal",
+    "question": "قاتل كايتو ؟",
+    "answers": ["بيتو"],
+    "points": 1
+  },
+  {
+    "id": "q177",
+    "type": "normal",
+    "question": "والد شويتشي ؟",
+    "answers": ["تسوتومو"],
+    "points": 1
+  },
+  {
+    "id": "q178",
+    "type": "normal",
+    "question": "لقب تسويو اسوي ؟",
+    "answers": ["فروبي"],
+    "points": 1
+  },
+  {
+    "id": "q179",
+    "type": "count",
+    "question": "ايدا كامل ؟",
+    "required": 2,
+    "answers": [
+      ["ايدا"],
+      ["تينيا"]
+    ],
+    "points": 1
+  },
+  {
+    "id": "q180",
+    "type": "normal",
+    "question": "حبيبة سوزاكو ؟",
+    "answers": ["يوفيميا"],
+    "points": 1
+  },
+  {
+    "id": "q181",
+    "type": "normal",
+    "question": "والد روشينانتي ؟",
+    "answers": ["هومينغ"],
+    "points": 1
+  },
+  {
+    "id": "q182",
+    "type": "normal",
+    "question": "صاحب تقنية الورق في العناكب ؟",
+    "answers": ["كالوتو"],
+    "points": 1
+  },
+  {
+    "id": "q183",
+    "type": "normal",
+    "question": "امرأة ووريك ؟",
+    "answers": ["اليكس"],
+    "points": 1
+  },
+  {
+    "id": "q184",
+    "type": "normal",
+    "question": "اخ شينرا ؟",
+    "answers": ["شو"],
+    "points": 1
+  },
+  {
+    "id": "q185",
+    "type": "count",
+    "question": "شينمون كامل ؟",
+    "required": 2,
+    "answers": [
+      ["بينيمارو"],
+      ["شينمون"]
+    ],
+    "points": 1
+  },
+  {
+    "id": "q186",
+    "type": "normal",
+    "question": "هاكي التنبؤ في سكايبيا ؟",
+    "answers": ["مانترا"],
+    "points": 1
+  },
+  {
+    "id": "q187",
+    "type": "normal",
+    "question": "ابنة كالجارا ؟",
+    "answers": ["موس"],
+    "points": 1
+  },
+  {
+    "id": "q188",
+    "type": "normal",
+    "question": "ابنة ثورز ؟",
+    "answers": ["يلفا"],
+    "points": 1
+  },
+  {
+    "id": "q189",
+    "type": "normal",
+    "question": "كاتب بارون الليل ؟",
+    "answers": ["يوساكو"],
+    "points": 1
+  },
+  {
+    "id": "q190",
+    "type": "normal",
+    "question": "ملكة اليوجين؟",
+    "answers": ["اوتوهيمي"],
+    "points": 1
+  },
+  {
+    "id": "q191",
+    "type": "normal",
+    "question": "اخت لايت ؟",
+    "answers": ["سايو"],
+    "points": 1
+  },
+  {
+    "id": "q192",
+    "type": "normal",
+    "question": "مساعد ال ؟",
+    "answers": ["واتاري"],
+    "points": 1
+  },
+  {
+    "id": "q193",
+    "type": "normal",
+    "question": "سيف كوينا ؟",
+    "answers": ["وادو ايتشيمونجي"],
+    "points": 1
+  },
+  {
+    "id": "q194",
+    "type": "normal",
+    "question": "اخو سويغيتسو ؟",
+    "answers": ["مانجيتسو"],
+    "points": 1
+  },
+  {
+    "id": "q195",
+    "type": "normal",
+    "question": "مدينة اختبار الصيادين ؟",
+    "answers": ["زابان"],
+    "points": 1
+  },
+  {
+    "id": "q196",
+    "type": "count",
+    "question": "عمالقة الامبل داون ؟",
+    "required": 2,
+    "points": 1,
+    "answers": [
+      ["اويمو"],
+      ["كاشي"]
+    ]
+  },
+  {
+    "id": "q197",
+    "type": "normal",
+    "question": "امير القراصنه ؟",
+    "answers": ["كافينديش"],
+    "points": 1
+  },
+  {
+    "id": "q198",
+    "type": "count",
+    "question": "زوجات غريشا ؟",
+    "required": 2,
+    "points": 1,
+    "answers": [
+      ["داينا"],
+      ["كارلا"]
+    ]
+  },
+  {
+    "id": "q199",
+    "type": "count",
+    "question": "كوني كامل ؟",
+    "required": 2,
+    "answers": [
+      ["كوني"],
+      ["سبرينغر"]
+    ],
+    "points": 1
+  },
+  {
+    "id": "q200",
+    "type": "normal",
+    "question": "المتحري النائم ؟",
+    "answers": ["موري", "كوغورو"],
+    "points": 1
+  },
+  {
+    "id": "q201",
+    "type": "normal",
+    "question": "كيرا الثاني ؟",
+    "answers": ["ميسا"],
+    "points": 1
+  },
+  {
+    "id": "q202",
+    "type": "normal",
+    "question": "بطل وزن الريشة ؟",
+    "answers": ["ريكاردو", "مارتينيز"],
+    "points": 1
+  },
+  {
+    "id": "q203",
+    "type": "normal",
+    "question": "ملك الملعب ؟",
+    "answers": ["كاغياما", "توبيو"],
+    "points": 1
+  },
+  {
+    "id": "q204",
+    "type": "normal",
+    "question": "العملاق الصغير ؟",
+    "answers": ["هيناتا", "شويو"],
+    "points": 1
+  },
+  {
+    "id": "q205",
+    "type": "normal",
+    "question": "قناص اللوق تاون؟",
+    "answers": ["دادي"],
+    "points": 1
+  },
+  {
+    "id": "q206",
+    "type": "normal",
+    "question": "الملك الفضي ؟",
+    "answers": ["ويسمان"],
+    "points": 1
+  },
+  {
+    "id": "q207",
+    "type": "count",
+    "question": "تحالف الدي ؟",
+    "required": 2,
+    "points": 1,
+    "answers": [
+      ["لاو"],
+      ["لوفي"]
+    ]
+  },
+  {
+    "id": "q208",
+    "type": "normal",
+    "question": "كابتن يوستاس ؟",
+    "answers": ["كيد"],
+    "points": 1
+  },
+  {
+    "id": "q209",
+    "type": "normal",
+    "question": "قاتل اونوهانا ؟",
+    "answers": ["زاراكي"],
+    "points": 1
+  },
+  {
+    "id": "q210",
+    "type": "normal",
+    "question": "كلب الفورجر ؟",
+    "answers": ["بوند"],
+    "points": 1
+  },
+  {
+    "id": "q211",
+    "type": "normal",
+    "question": "عين الصقر ؟",
+    "answers": ["ميهوك"],
+    "points": 1
+  },
+  {
+    "id": "q212",
+    "type": "normal",
+    "question": "طائر لوتشي ؟",
+    "answers": ["هاتوري"],
+    "points": 1
+  },
+  {
+    "id": "q213",
+    "type": "normal",
+    "question": "والدة اكاي ؟",
+    "answers": ["ميري"],
+    "points": 1
+  },
+  {
+    "id": "q214",
+    "type": "normal",
+    "question": "نائب ادوارد ؟",
+    "answers": ["ماركو"],
+    "points": 1
+  },
+  {
+    "id": "q215",
+    "type": "count",
+    "question": "تلاميذ توم ؟",
+    "required": 2,
+    "points": 1,
+    "answers": [
+      ["فرانكي"],
+      ["ايسبرغ"]
+    ]
+  },
+  {
+    "id": "q216",
+    "type": "normal",
+    "question": "ابن ماكاروف ؟",
+    "answers": ["ايفان"],
+    "points": 1
+  },
+  {
+    "id": "q217",
+    "type": "normal",
+    "question": "مرافق فانيتاس ؟",
+    "answers": ["نوي"],
+    "points": 1
+  },
+  {
+    "id": "q218",
+    "type": "normal",
+    "question": "قبضة الحب ؟",
+    "answers": ["غارب"],
+    "points": 1
+  },
+  {
+    "id": "q219",
+    "type": "count",
+    "question": "الفريق السابع جيل ميناتو ؟",
+    "required": 3,
+    "points": 1,
+    "answers": [
+      ["رين"],
+      ["كاكاشي"],
+      ["اوبيتو", "توبي"]
+    ]
+  },
+  {
+    "id": "q220",
+    "type": "normal",
+    "question": "هاشيرا الصوت ؟",
+    "answers": ["اوزوي", "تينغن","تنغن"],
+    "points": 1
+  },
+  {
+    "id": "q221",
+    "type": "normal",
+    "question": "ابنة شانكس ؟",
+    "answers": ["اوتا"],
+    "points": 1
+  },
+  {
+    "id": "q222",
+    "type": "count",
+    "question": "اويكاوا كامل ؟",
+    "required": 2,
+    "points": 1,
+    "answers": [
+      ["اويكاوا"],
+      ["تورو"]
+    ]
+  },
+  {
+    "id": "q223",
+    "type": "count",
+    "question": "هيسوكا كامل ؟",
+    "required": 2,
+    "points": 1,
+    "answers": [
+      ["هيسوكا"],
+      ["مورو"]
+    ]
+  },
+  {
+    "id": "q224",
+    "type": "count",
+    "question": "قاطع السفن ؟",
+    "required": 2,
+    "answers": [
+      ["تي"],
+      ["بون"]
+    ],
+    "points": 1
+  },
+  {
+    "id": "q225",
+    "type": "normal",
+    "question": "وعاء سوكونا ؟",
+    "answers": ["يوجي"],
+    "points": 1
+  },
+  {
+    "id": "q226",
+    "type": "count",
+    "question": "فاكهة دوفلامينجو ؟",
+    "required": 3,
+    "points": 1,
+    "answers": [
+      ["ايتو"],
+      ["ايتو"],
+      ["نومي"]
+    ]
+  },
+  {
+    "id": "q227",
+    "type": "count",
+    "question": "اصدقاء ايتشيغو من عالم البشر ؟",
+    "required": 3,
+    "points": 1,
+    "answers": [
+      ["يوريو"],
+      ["اينوي"],
+      ["شادو"]
+    ]
+  },
+  {
+    "id": "q228",
+    "type": "count",
+    "question": "العقار الذي قلص كونان ؟",
+    "required": 2,
+    "answers": [
+      ["الابوتوكسين"],
+      ["4869"]
+    ],
+    "points": 1
+  },
+  {
+    "id": "q229",
+    "type": "count",
+    "question": "اخ ميزوناشي رينا (كير) ؟",
+    "required": 1,
+    "points": 1,
+    "answers": [
+      ["هوندو"],
+      ["ايسكي"]
+    ]
+  },
+  {
+    "id": "q230",
+    "type": "normal",
+    "question": "ابن توجي ؟",
+    "answers": ["ميغومي"],
+    "points": 1
+  },
+  {
+    "id": "q231",
+    "type": "count",
+    "question": "بانكاي توشيرو ؟",
+    "required": 2,
+    "answers": [
+      ["دايغورين"],
+      ["هيورينيمارو","هيورينمارو"]
+    ],
+    "points": 1
+  },
+  {
+    "id": "q232",
+    "type": "count",
+    "question": "ثلاثة من الفرقة الحادية عشر ؟",
+    "required": 3,
+    "points": 1,
+    "answers": [
+      ["ايكاكو"],
+      ["ياتشيرو"],
+      ["زاراكي"]
+    ]
+  },
+  {
+    "id": "q233",
+    "type": "count",
+    "question": "الاسلحة الثلاثة الاسطورية ؟",
+    "required": 3,
+    "points": 1,
+    "answers": [
+      ["بوسايدون"],
+      ["اورانوس"],
+      ["بلوتون"]
+    ]
+  },
+  {
+    "id": "q234",
+    "type": "count",
+    "question": "اطلاق نويترا ؟",
+    "required": 2,
+    "points": 1,
+    "answers": [
+      ["سانتا"],
+      ["تيريزا"]
+    ]
+  },
+  {
+    "id": "q235",
+    "type": "normal",
+    "question": "قاطع الرؤوس ؟",
+    "answers": ["كانكي"],
+    "points": 1
+  },
+  {
+    "id": "q236",
+    "type": "normal",
+    "question": "كلب ماكيما ؟",
+    "answers": ["دينجي"],
+    "points": 1
+  },
+  {
+    "id": "q237",
+    "type": "normal",
+    "question": "اخ شينرا ؟",
+    "answers": ["شو"],
+    "points": 1
+  },
+  {
+    "id": "q238",
+    "type": "count",
+    "question": "شينمون كامل ؟",
+    "required": 2,
+    "points": 1,
+    "answers": [
+      ["بينيمارو"],
+      ["شينمون"]
+    ]
+  },
+  {
+    "id": "q239",
+    "type": "normal",
+    "question": "الغول ذو الرقعة الواحدة ؟",
+    "answers": ["كانيكي", "كين"],
+    "points": 1
+  },
+  {
+    "id": "q240",
+    "type": "normal",
+    "question": "السياف الاسود ؟",
+    "answers": ["غاتس"],
+    "points": 1
+  },
+  {
+    "id": "q241",
+    "type": "normal",
+    "question": "سيف روجر ؟",
+    "answers": ["ايس"],
+    "points": 1
+  },
+  {
+    "id": "q242",
+    "type": "normal",
+    "question": "سيف ميهوك ؟",
+    "answers": ["يورو"],
+    "points": 1
+  },
+  {
+    "id": "q243",
+    "type": "normal",
+    "question": "سيف ريوما ؟",
+    "answers": ["شوزوي", "شوسوي"],
+    "points": 1
+  },
+  {
+    "id": "q244",
+    "type": "normal",
+    "question": "ملك الكوينشي ؟",
+    "answers": ["يوهاباخ", "يوها باخ"],
+    "points": 1
+  },
+  {
+    "id": "q245",
+    "type": "normal",
+    "question": "حبيبة اوكي ؟",
+    "answers": ["كيو"],
+    "points": 1
+  },
+  {
+    "id": "q246",
+    "type": "normal",
+    "question": "اقوى مخلوق ؟",
+    "answers": ["كايدو"],
+    "points": 1
+  },
+  {
+    "id": "q247",
+    "type": "normal",
+    "question": "رامي الثلاثيات ؟",
+    "answers": ["ميدوريما", "شينتارو"],
+    "points": 1
+  },
+  {
+    "id": "q248",
+    "type": "normal",
+    "question": "لون عين الكوروتا ؟",
+    "answers": ["قرمزي"],
+    "points": 1
+  },
+  {
+    "id": "q249",
+    "type": "normal",
+    "question": "ابنة كايدو ؟",
+    "answers": ["ياماتو"],
+    "points": 1
+  },
+  {
+    "id": "q250",
+    "type": "normal",
+    "question": "والد لوفي ؟",
+    "answers": ["دراغون"],
+    "points": 1
+  },
+  {
+    "id": "q251",
+    "type": "normal",
+    "question": "رمح اللحية ؟",
+    "answers": ["موراكوموغيري"],
+    "points": 1
+  },
+  {
+    "id": "q252",
+    "type": "normal",
+    "question": "كيميائي الشعلة ؟",
+    "answers": ["روي"],
+    "points": 1
+  },
+  {
+    "id": "q253",
+    "type": "normal",
+    "question": "تنين ناتسو ؟",
+    "answers": ["اغنيل"],
+    "points": 1
+  },
+  {
+    "id": "q254",
+    "type": "normal",
+    "question": "لعنة يوتا ؟",
+    "answers": ["ريكا"],
+    "points": 1
+  },
+  {
+    "id": "q255",
+    "type": "normal",
+    "question": "تلميذ غاي ؟",
+    "answers": ["لي"],
+    "points": 1
+  },
+  {
+    "id": "q256",
+    "type": "normal",
+    "question": "قائد الاسبادا ؟",
+    "answers": ["ايزن"],
+    "points": 1
+  },
+  {
+    "id": "q257",
+    "type": "normal",
+    "question": "قائد الفايزارد ؟",
+    "answers": ["شينجي"],
+    "points": 1
+  },
+  {
+    "id": "q258",
+    "type": "normal",
+    "question": "نائب كيسكي ؟",
+    "answers": ["هيوري"],
+    "points": 1
+  },
+  {
+    "id": "q259",
+    "type": "normal",
+    "question": "نائب شينجي ؟",
+    "answers": ["ايزن"],
+    "points": 1
+  },
+  {
+    "id": "q260",
+    "type": "normal",
+    "question": "نائب ياماموتو ؟",
+    "answers": ["ساساكيبي"],
+    "points": 1
+  },
+  {
+    "id": "q261",
+    "type": "normal",
+    "question": "نائب بياكويا ؟",
+    "answers": ["رينجي"],
+    "points": 1
+  },
+  {
+    "id": "q262",
+    "type": "normal",
+    "question": "ام كيلوا ؟",
+    "answers": ["كيكيو"],
+    "points": 1
+  },
+  {
+    "id": "q263",
+    "type": "count",
+    "question": "ناغاتو كامل ؟",
+    "required": 2,
+    "points": 1,
+    "answers": [
+      ["ناغاتو"],
+      ["اوزوماكي", "يوزوماكي"]
+    ]
+  },
+  {
+    "id": "q264",
+    "type": "normal",
+    "question": "عين الاوتشيها ؟",
+    "answers": ["شارينغان"],
+    "points": 1
+  },
+  {
+    "id": "q265",
+    "type": "normal",
+    "question": "عين الهيوغا ؟",
+    "answers": ["بياكوغان"],
+    "points": 1
+  },
+  {
+    "id": "q266",
+    "type": "normal",
+    "question": "اخ بي ؟",
+    "answers": ["اي"],
+    "points": 1
+  },
+  {
+    "id": "q267",
+    "type": "normal",
+    "question": "معد بلو لوك ؟",
+    "answers": ["ايغو"],
+    "points": 1
+  },
+  {
+    "id": "q268",
+    "type": "normal",
+    "question": "اخت ريم ؟",
+    "answers": ["رام"],
+    "points": 1
+  },
+  {
+    "id": "q269",
+    "type": "count",
+    "question": "ران كامل ؟",
+    "required": 2,
+    "points": 1,
+    "answers": [
+      ["ران"],
+      ["موري"]
+    ]
+  },
+  {
+    "id": "q270",
+    "type": "normal",
+    "question": "تنين غاجيل ؟",
+    "answers": ["ميتاليكانا"],
+    "points": 1
+  },
+  {
+    "id": "q271",
+    "type": "count",
+    "question": "تلاميذ ميناتو ؟",
+    "required": 3,
+    "points": 1,
+    "answers": [
+      ["رين"],
+      ["كاكاشي"],
+      ["اوبيتو", "توبي"]
+    ]
+  },
+  {
+    "id": "q272",
+    "type": "normal",
+    "question": "اسم ايندفار ؟",
+    "answers": ["اينجي"],
+    "points": 1
+  },
+  {
+    "id": "q273",
+    "type": "normal",
+    "question": "نصف غول ؟",
+    "answers": ["كانيكي", "كين"],
+    "points": 1
+  },
+  {
+    "id": "q274",
+    "type": "normal",
+    "question": "عديم السحر ؟",
+    "answers": ["استا"],
+    "points": 1
+  },
+  {
+    "id": "q275",
+    "type": "normal",
+    "question": "مؤسس الاكاتسكي ؟",
+    "answers": ["ياهيكو"],
+    "points": 1
+  },
+  {
+    "id": "q276",
+    "type": "normal",
+    "question": "الهوكاجي الخامس ؟",
+    "answers": ["تسونادي"],
+    "points": 1
+  },
+  {
+    "id": "q277",
+    "type": "normal",
+    "question": "الهوكاجي السادس ؟",
+    "answers": ["كاكاشي"],
+    "points": 1
+  },
+  {
+    "id": "q278",
+    "type": "normal",
+    "question": "معلم زوشي ؟",
+    "answers": ["وينغ"],
+    "points": 1
+  },
+  {
+    "id": "q279",
+    "type": "normal",
+    "question": "تلميذ وينغ ؟",
+    "answers": ["زوشي"],
+    "points": 1
+  },
+  {
+    "id": "q280",
+    "type": "count",
+    "question": "تلاميذ وينغ ؟",
+    "required": 3,
+    "points": 1,
+    "answers": [
+      ["غون"],
+      ["كيلوا"],
+      ["زوشي"]
+    ]
+  },
+  {
+    "id": "q281",
+    "type": "normal",
+    "question": "قاتل اوفوجين ؟",
+    "answers": ["كورابيكا"],
+    "points": 1
+  },
+  {
+    "id": "q282",
+    "type": "normal",
+    "question": "عين اكاشي ؟",
+    "answers": ["امبيرور", "امبراطور"],
+    "points": 1
+  },
+  {
+    "id": "q283",
+    "type": "normal",
+    "question": "اميرة الاباستا ؟",
+    "answers": ["فيفي"],
+    "points": 1
+  },
+  {
+    "id": "q284",
+    "type": "normal",
+    "question": "تنين ويندي ؟",
+    "answers": ["غرانديني"],
+    "points": 1
+  },
+  {
+    "id": "q285",
+    "type": "normal",
+    "question": "شينيغامي لايت ؟",
+    "answers": ["ريوك"],
+    "points": 1
+  },
+  {
+    "id": "q286",
+    "type": "count",
+    "question": "لوسي كامل ؟",
+    "required": 2,
+    "points": 1,
+    "answers": [
+      ["لوسي"],
+      ["هارتيفيليا"]
+    ]
+  },
+  {
+    "id": "q287",
+    "type": "normal",
+    "question": "والدة ايرزا ؟",
+    "answers": ["ايرين"],
+    "points": 1
+  },
+  {
+    "id": "q288",
+    "type": "normal",
+    "question": "محقق الشمال ؟",
+    "answers": ["هاكوبا"],
+    "points": 1
+  },
+  {
+    "id": "q289",
+    "type": "normal",
+    "question": "ليبرو كاراسو ؟",
+    "answers": ["يو"],
+    "points": 1
+  },
+  {
+    "id": "q290",
+    "type": "count",
+    "question": "اسم فرانكي ؟",
+    "required": 2,
+    "answers": [
+      ["كاتي"],
+      ["فلام"]
+    ],
+    "points": 1
+  },
+  {
+    "id": "q291",
+    "type": "normal",
+    "question": "مرافق اوروتشيمارو ؟",
+    "answers": ["كابوتو"],
+    "points": 1
+  },
+  {
+    "id": "q292",
+    "type": "count",
+    "question": "سيف زابوزا ؟",
+    "required": 2,
+    "points": 1,
+    "answers": [
+      ["كوبيكيري"],
+      ["بوشو"]
+    ]
+  },
+  {
+    "id": "q293",
+    "type": "normal",
+    "question": "معذب العناكب ؟",
+    "answers": ["فيتان"],
+    "points": 1
+  },
+  {
+    "id": "q294",
+    "type": "normal",
+    "question": "حصان كافينديش ؟",
+    "answers": ["فارول"],
+    "points": 1
+  },
+  {
+    "id": "q295",
+    "type": "count",
+    "question": "حارس جزيرة السماء ؟",
+    "required": 2,
+    "points": 1,
+    "answers": [
+      ["جان"],
+      ["فول"]
+    ]
+  },
+  {
+    "id": "q296",
+    "type": "normal",
+    "question": "قاتل تنين البرق ؟",
+    "answers": ["لاكسس", "لاكسوس"],
+    "points": 1
+  },
+  {
+    "id": "q297",
+    "type": "normal",
+    "question": "قاتل تنين السماء ؟",
+    "answers": ["ويندي"],
+    "points": 1
+  },
+  {
+    "id": "q298",
+    "type": "normal",
+    "question": "قاتل تنين الحديد ؟",
+    "answers": ["غاجيل"],
+    "points": 1
+  },
+  {
+    "id": "q299",
+    "type": "normal",
+    "question": "قاتل تنين النار ؟",
+    "answers": ["ناتسو"],
+    "points": 1
+  },
+  {
+    "id": "q300",
+    "type": "normal",
+    "question": "قاتل تنين السم ؟",
+    "answers": ["كوبرا"],
+    "points": 1
+  },
+  {
+    "id": "q301",
+    "type": "normal",
+    "question": "اكسيد روغ ؟",
+    "answers": ["فروش"],
+    "points": 1
+  },
+  {
+    "id": "q302",
+    "type": "normal",
+    "question": "شيطان استا ؟",
+    "answers": ["ليبي"],
+    "points": 1
+  },
+  {
+    "id": "q303",
+    "type": "normal",
+    "question": "محقق الشرق ؟",
+    "answers": ["شينتشي"],
+    "points": 1
+  },
+  {
+    "id": "q304",
+    "type": "normal",
+    "question": "ملك دريسروزا ؟",
+    "answers": ["ريكو"],
+    "points": 1
+  },
+  {
+    "id": "q305",
+    "type": "normal",
+    "question": "ملك الجحيم ؟",
+    "answers": ["زورو"],
+    "points": 1
+  },
+  {
+    "id": "q306",
+    "type": "normal",
+    "question": "قناص طاقم القش ؟",
+    "answers": ["اوسوب"],
+    "points": 1
+  },
+  {
+    "id": "q307",
+    "type": "normal",
+    "question": "قناص طاقم شانكس ؟",
+    "answers": ["ياسوب"],
+    "points": 1
+  },
+  {
+    "id": "q308",
+    "type": "normal",
+    "question": "اسم بيغ مام ؟",
+    "answers": ["لينلين"],
+    "points": 1
+  },
+  {
+    "id": "q309",
+    "type": "normal",
+    "question": "معلم سانجي ؟",
+    "answers": ["زيف"],
+    "points": 1
+  },
+  {
+    "id": "q310",
+    "type": "normal",
+    "question": "ملك الارواح ؟",
+    "answers": ["الريو"],
+    "points": 1
+  },
+  {
+    "id": "q311",
+    "type": "count",
+    "question": "قائد مجلس الغوتي ؟",
+    "required": 1,
+    "points": 1,
+    "answers": [
+      ["كيوراك", "كيوراكو"],
+      ["ياماموتو"]
+    ]
+  },
+  {
+    "id": "q312",
+    "type": "count",
+    "question": "ايزن كامل ؟",
+    "required": 2,
+    "points": 1,
+    "answers": [
+      ["ايزن"],
+      ["سوسكي"]
+    ]
+  },
+  {
+    "id": "q313",
+    "type": "normal",
+    "question": "ام ايتشيغو ؟",
+    "answers": ["ماساكي"],
+    "points": 1
+  },
+  {
+    "id": "q314",
+    "type": "count",
+    "question": "اطلاق ستارك ؟",
+    "required": 2,
+    "points": 1,
+    "answers": [
+      ["لوس"],
+      ["لوبوس"]
+    ]
+  },
+  {
+    "id": "q315",
+    "type": "normal",
+    "question": "الاسبادا 3 ؟",
+    "answers": ["نيل", "تيا"],
+    "points": 1
+  },
+  {
+    "id": "q316",
+    "type": "normal",
+    "question": "الاسبادا 4 ؟",
+    "answers": ["الكيورا"],
+    "points": 1
+  },
+  {
+    "id": "q317",
+    "type": "normal",
+    "question": "الاسبادا 2 ؟",
+    "answers": ["باراغان"],
+    "points": 1
+  },
+  {
+    "id": "q318",
+    "type": "normal",
+    "question": "الاسبادا 1 ؟",
+    "answers": ["ستارك"],
+    "points": 1
+  },
+  {
+    "id": "q319",
+    "type": "normal",
+    "question": "اقوى مستخدم نين ؟",
+    "answers": ["نيترو", "نيتيرو"],
+    "points": 1
+  },
+  {
+    "id": "q320",
+    "type": "normal",
+    "question": "قدرة كرولو ؟",
+    "answers": ["سرقه", "زرف"],
+    "points": 1
+  },
+  {
+    "id": "q321",
+    "type": "count",
+    "question": "علكة هيسوكا ؟",
+    "required": 2,
+    "answers": [
+      ["بانجي"],
+      ["جام"]
+    ],
+    "points": 1
+  },
+  {
+    "id": "q322",
+    "type": "normal",
+    "question": "قدرة غون ؟",
+    "answers": ["جاجانكين"],
+    "points": 1
+  },
+  {
+    "id": "q323",
+    "type": "normal",
+    "question": "رقم كيلوا بالاختبار ؟",
+    "answers": ["99"],
+    "points": 1
+  },
+  {
+    "id": "q324",
+    "type": "normal",
+    "question": "ابن ثورز ؟",
+    "answers": ["ثورفين"],
+    "points": 1
+  },
+  {
+    "id": "q325",
+    "type": "normal",
+    "question": "شيكاي كيسكي ؟",
+    "answers": ["بينيهيمي"],
+    "points": 1
+  },
+  {
+    "id": "q326",
+    "type": "count",
+    "question": "شيكاي ياماموتو ؟",
+    "required": 2,
+    "answers": [
+      ["ريوجين"],
+      ["جاكا"]
+    ],
+    "points": 1
+  },
+  {
+    "id": "q327",
+    "type": "normal",
+    "question": "شيكاي زاراكي ؟",
+    "answers": ["نوزاراشي"],
+    "points": 1
+  },
+  {
+    "id": "q328",
+    "type": "normal",
+    "question": "البطل رقم اثنين ؟",
+    "answers": ["هوكس"],
+    "points": 1
+  },
+  {
+    "id": "q329",
+    "type": "normal",
+    "question": "قاتل اسوما ؟",
+    "answers": ["هيدان"],
+    "points": 1
+  },
+  {
+    "id": "q330",
+    "type": "normal",
+    "question": "قاتل هيدان ؟",
+    "answers": ["شيكامارو"],
+    "points": 1
+  },
+  {
+    "id": "q331",
+    "type": "normal",
+    "question": "وعاء ايشيكي ؟",
+    "answers": ["جيغن"],
+    "points": 1
+  },
+  {
+    "id": "q332",
+    "type": "normal",
+    "question": "اخ مي مي ؟",
+    "answers": ["وي وي"],
+    "points": 1
+  },
+  {
+    "id": "q333",
+    "type": "normal",
+    "question": "نائب اوكي ؟",
+    "answers": ["تو"],
+    "points": 1
+  },
+  {
+    "id": "q334",
+    "type": "normal",
+    "question": "حبيبة شينتشي ؟",
+    "answers": ["ران"],
+    "points": 1
+  },
+  {
+    "id": "q335",
+    "type": "normal",
+    "question": "والد ساسكي ؟",
+    "answers": ["فوجاكو"],
+    "points": 1
+  },
+  {
+    "id": "q336",
+    "type": "normal",
+    "question": "اخت اكاي ؟",
+    "answers": ["سيرا"],
+    "points": 1
+  },
+  {
+    "id": "q337",
+    "type": "normal",
+    "question": "لقب اكاي بالمنظمة ؟",
+    "answers": ["ري", "راي"],
+    "points": 1
+  },
+  {
+    "id": "q338",
+    "type": "normal",
+    "question": "لقب هيبارا بالمنظمة ؟",
+    "answers": ["شيري"],
+    "points": 1
+  },
+  {
+    "id": "q339",
+    "type": "normal",
+    "question": "خال ليفاي ؟",
+    "answers": ["كيني"],
+    "points": 1
+  },
+  {
+    "id": "q340",
+    "type": "normal",
+    "question": "معد كاراسو ؟",
+    "answers": ["توبيو"],
+    "points": 1
+  },
+  {
+    "id": "q341",
+    "type": "normal",
+    "question": "جبل الزولديك ؟",
+    "answers": ["كوكورو"],
+    "points": 1
+  },
+  {
+    "id": "q342",
+    "type": "normal",
+    "question": "سفينة اللحية البيضاء ؟",
+    "answers": ["موبي ديك"],
+    "points": 1
+  },
+  {
+    "id": "q343",
+    "type": "normal",
+    "question": "الاسبادا 0 ؟",
+    "answers": ["يامي"],
+    "points": 1
+  },
+  {
+    "id": "q344",
+    "type": "normal",
+    "question": "اطلاق تيا ؟",
+    "answers": ["تيبورون"],
+    "points": 1
+  },
+  {
+    "id": "q345",
+    "type": "count",
+    "question": "كتاب زيريف ؟",
+    "required": 3,
+    "points": 1,
+    "answers": [
+      ["اي"],
+      ["ان"],
+      ["دي"]
+    ]
   }
 ]
+
