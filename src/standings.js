@@ -8,7 +8,7 @@ const totals = new Map(); // userId -> { displayName, points, wins }
 
 // شرط: لازم 3 مشاركين على الأقل بالمسابقة عشان تُحتسب بالسجل — عشان ما
 // حد يلعب لحاله ويكدس نقاط بدون منافسة حقيقية
-const MIN_PLAYERS = 3;
+const MIN_PLAYERS = 2;
 
 async function persistOne(userId) {
   const db = getDb();
