@@ -1,0 +1,710 @@
+const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require("@whiskeysockets/baileys");
+const { Boom } = require("@hapi/boom");
+const P = require("pino");
+const fs = require("fs");
+const qrcode = require("qrcode-terminal");
+const store = require("./dataStore");
+const { Contest } = require("./game");
+const leaderboard = require("./leaderboard");
+const standings = require("./standings");
+const registration = require("./registration");
+const moderation = require("./moderation");
+const templates = require("./templates");
+const db = require("./db");
+const { useMongoAuthState } = require("./mongoAuthState");
+const { startHealthServer } = require("./healthServer");
+
+// كل محادثة (قروب أو خاص) عندها مسابقة مستقلة
+const activeContests = new Map(); // chatId -> Contest
+
+function isChatAllowed(chatId) {
+  const cfg = store.getConfig();
+  if (!cfg.allowedChats || cfg.allowedChats.length === 0) return true;
+  return cfg.allowedChats.includes(chatId);
+}
+
+// يتحقق إن الشخص هو صاحب البوت (المحدد بـ ownerId بملف config.json)
+// لو ownerId فاضي (ما تحدد بعد)، نرفض الأمر بدل ما نسمح لأي أحد افتراضياً
+function isOwner(senderId) {
+  const cfg = store.getConfig();
+  return !!cfg.ownerId && senderId === cfg.ownerId;
+}
+
+// عدد الكلمات الافتراضي لأمر ".كت" التقديمي (لكل محادثة)
+const practiceWordCount = new Map(); // chatId -> عدد (1-5)
+const wordCountLabels = { كلمة: 1, كلمتين: 2, "ثلاث كلمات": 3, "اربع كلمات": 4, "خمس كلمات": 5 };
+
+// يبدأ جولة تقديم بسيطة (معاينة/تجربة، بدون تسجيل بـ.توب أو .سجل)
+async function startPractice(chatId, sock, msg, poolType, extraOpts = {}) {
+  if (activeContests.has(chatId) && activeContests.get(chatId).active) {
+    await sock.sendMessage(chatId, { text: "⚠️ فيه مسابقة شغالة حالياً، خلها تخلص أول." }, { quoted: msg });
+    return;
+  }
+  const contest = new Contest(chatId, sock, poolType, 1, { practiceMode: true, ...extraOpts });
+  activeContests.set(chatId, contest);
+  await contest.nextRound();
+}
+
+const endlessTypeLabels = { images: "صور", writing: "كتابة", counts: "تعداد", questions: "أسئلة" };
+
+// يبدأ مسابقة مستمرة (ما تتوقف تلقائياً، بس بأمر إيقاف مخصص)
+async function startEndless(chatId, sock, msg, poolType, extraOpts = {}) {
+  if (activeContests.has(chatId) && activeContests.get(chatId).active) {
+    await sock.sendMessage(chatId, { text: "⚠️ فيه مسابقة شغالة بالفعل بهذي المحادثة." }, { quoted: msg });
+    return;
+  }
+  const contest = new Contest(chatId, sock, poolType, Infinity, { endless: true, ...extraOpts });
+  activeContests.set(chatId, contest);
+  await sock.sendMessage(chatId, {
+    text: `🎬 بدأت مسابقة *${endlessTypeLabels[poolType]}* مستمرة! ما تتوقف إلا بأمر الإيقاف المخصص لها.`,
+  });
+  await contest.nextRound();
+}
+
+// يوقف مسابقة مستمرة ويعرض النتيجة النهائية
+async function stopEndless(chatId, sock, msg, poolType) {
+  const contest = activeContests.get(chatId);
+  if (!contest || !contest.active || !contest.endless) {
+    await sock.sendMessage(chatId, { text: "ما فيه مسابقة مستمرة شغالة حالياً." }, { quoted: msg });
+    return;
+  }
+  if (contest.contestType !== poolType) {
+    await sock.sendMessage(
+      chatId,
+      { text: `المسابقة الشغالة حالياً مو من نوع ${endlessTypeLabels[poolType]}.` },
+      { quoted: msg }
+    );
+    return;
+  }
+  await contest.endContest();
+}
+
+// يحلل أوامر بدء المسابقة من نص الرسالة
+// أمثلة: ".فنش 50" | ".فص 15" | ".فتع 20" | ".فسس 10" | ".فكت 15"
+// أو نسخة الجوالات بس: ".فنش ج 50" | ".فص ج 15" ...
+function parseStartCommand(text) {
+  const t = text.trim().replace(/\s+/g, " ");
+  const typeMap = {
+    فنش: "general",
+    فص: "images",
+    فكت: "writing",
+    فتع: "counts",
+    فسس: "questions",
+  };
+
+  const match = t.match(/^\.(فنش|فص|فكت|فتع|فسس)(?:\s+(ج))?\s*(\d+)$/);
+  if (!match) return null;
+
+  const cmdWord = match[1];
+  const mobileOnly = match[2] === "ج";
+  const target = parseInt(match[3], 10);
+  const contestType = typeMap[cmdWord];
+
+  return { contestType, target, mobileOnly };
+}
+
+// يستخرج النص من رسالة Baileys بمختلف أنواعها (نص عادي، رد، كابشن صورة...)
+function extractText(msg) {
+  const m = msg.message;
+  if (!m) return "";
+  return (
+    m.conversation ||
+    m.extendedTextMessage?.text ||
+    m.imageMessage?.caption ||
+    m.videoMessage?.caption ||
+    ""
+  ).trim();
+}
+
+// يستخرج آيدي أول شخص تم عمل منشن له برسالة (يستخدمها .ايقاف/.حظر وأشباهها)
+function getMentionedJid(msg) {
+  return msg.message?.extendedTextMessage?.contextInfo?.mentionedJid?.[0] || null;
+}
+
+// مؤهل لقوائم الجوالات: مسجل كجوال وغير موقوف من صاحب البوت
+function isMobileEligible(userId) {
+  return registration.isMobile(userId) && !moderation.isSuspended(userId);
+}
+
+// أسماء عرض الفقرات + اختصاراتها (نفس اختصارات أوامر البدء بدون نقطة/ف)
+const poolLabels = { writing: "كتابة", images: "صور", questions: "أسئلة", counts: "تعداد" };
+const topTypeMap = { ص: "images", كت: "writing", تع: "counts", سس: "questions" };
+
+// يرسل قائمة سجل تراكمي مزخرفة (يستخدمها .سجل و.سجل جوالات)
+async function sendStandingsList(sock, chatId, msg, list, subtitle) {
+  if (list.length === 0) {
+    await sock.sendMessage(
+      chatId,
+      { text: `ما فيه سجل بعد (لازم مسابقة كاملة بـ ${standings.MIN_PLAYERS} مشاركين فأكثر عشان تُحتسب).` },
+      { quoted: msg }
+    );
+    return;
+  }
+  const out = templates.formatStandingsList(list, subtitle);
+  const mentions = list.slice(0, 6).map((e) => e.userId);
+  await sock.sendMessage(chatId, { text: out, mentions }, { quoted: msg });
+}
+
+// يمسح جلسة واتساب المخزنة (سواء بقاعدة البيانات أو ملف محلي) — يُستخدم
+// لما تصير الجلسة غير صالحة (تسجيل خروج) عشان نطلب QR جديد بدل ما نعلق
+async function clearAuthSession() {
+  if (db.getDb()) {
+    try {
+      await db.getDb().collection("baileys_auth").deleteMany({});
+      console.log("🗑️ مسحنا جلسة واتساب القديمة من قاعدة البيانات.");
+    } catch (e) {
+      console.error("خطأ مسح الجلسة من قاعدة البيانات:", e.message);
+    }
+  } else {
+    try {
+      fs.rmSync("auth_info_baileys", { recursive: true, force: true });
+      console.log("🗑️ مسحنا مجلد جلسة واتساب المحلي.");
+    } catch (e) {
+      console.error("خطأ مسح مجلد الجلسة:", e.message);
+    }
+  }
+}
+
+async function connectSocket() {
+  // لو متصلين بقاعدة بيانات، نحفظ جلسة واتساب فيها (تفضل موجودة حتى لو
+  // السيرفر أعاد التشغيل أو تغيّر). لو ما فيه اتصال، نستخدم ملفات محلية
+  // كخطة احتياطية (يشتغل تمام للتشغيل من جهازك مباشرة)
+  let authState;
+  if (db.getDb()) {
+    console.log("💾 جلسة واتساب: MongoDB");
+    authState = await useMongoAuthState();
+  } else {
+    console.log("💾 جلسة واتساب: ملفات محلية (auth_info_baileys)");
+    authState = await useMultiFileAuthState("auth_info_baileys");
+  }
+  const { state, saveCreds } = authState;
+
+  const sock = makeWASocket({
+    auth: state,
+    logger: P({ level: "silent" }),
+  });
+
+  sock.ev.on("creds.update", saveCreds);
+
+  sock.ev.on("connection.update", async (update) => {
+    const { connection, lastDisconnect, qr } = update;
+
+    if (qr) {
+      console.log("امسح كود QR هذا من واتساب > الأجهزة المرتبطة:");
+      qrcode.generate(qr, { small: true });
+    }
+
+    if (connection === "close") {
+      const statusCode = new Boom(lastDisconnect?.error)?.output?.statusCode;
+      const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
+      if (shouldReconnect) {
+        console.log("⚠️ انقطع الاتصال. إعادة محاولة...");
+        connectSocket();
+      } else {
+        console.log("⚠️ تم تسجيل الخروج من واتساب. نمسح الجلسة القديمة ونطلب QR جديد...");
+        await clearAuthSession();
+        connectSocket();
+      }
+    } else if (connection === "open") {
+      console.log("✅ البوت جاهز ومتصل بواتساب!");
+    }
+  });
+
+  sock.ev.on("messages.upsert", async ({ messages, type }) => {
+    if (type !== "notify") return;
+    for (const msg of messages) {
+      try {
+        await handleIncoming(sock, msg);
+      } catch (err) {
+        console.error("خطأ بمعالجة الرسالة:", err);
+      }
+    }
+  });
+
+  return sock;
+}
+
+async function handleIncoming(sock, msg) {
+  if (!msg.message) return; // رسائل بدون محتوى (حذف، إلخ)
+  if (msg.key.fromMe) return; // نتجاهل رسائل البوت نفسه
+
+  const chatId = msg.key.remoteJid;
+  if (!chatId || chatId === "status@broadcast") return;
+  if (!isChatAllowed(chatId)) return;
+
+  const text = extractText(msg);
+  // بالقروبات: participant هو آيدي الشخص الفعلي. بالخاص: remoteJid هو نفسه
+  const senderId = msg.key.participant || msg.key.remoteJid;
+
+  // أمر مساعدة: يعطيك آيدي المحادثة عشان تحطه بـ config.json لو تبي تحصر البوت بقروب معين
+  if (text === "شات الايدي" || text === "chat id") {
+    await sock.sendMessage(chatId, { text: `آيدي هذي المحادثة:\n${chatId}` }, { quoted: msg });
+    return;
+  }
+
+  // أمر .ريم اوامر: قائمة كل الأوامر مصنفة
+  if (text === ".ريم اوامر") {
+    const helpText = `📋 *كل أوامر البوت*
+
+🎮 *المسابقات*
+.فنش <رقم> — مسابقة عامة (كل الفقرات)
+.فص <رقم> — مسابقة صور
+.فكت <رقم> — مسابقة كتابة
+.فتع <رقم> — مسابقة تعداد
+.فسس <رقم> — مسابقة أسئلة
+.انهاء — إيقاف المسابقة الحالية
+النقاط — النقاط الحالية أثناء مسابقة شغالة
+
+📲 *مسابقات جوالات بس (خارجي ما يشارك)*
+.فنش ج <رقم> / .فص ج / .فكت ج / .فتع ج / .فسس ج
+
+♾️ *مسابقات مستمرة (توقف يدوي بس)*
+.مسص — صور مستمرة (إيقاف: .سص)
+.مسس — أسئلة مستمرة (إيقاف: .سس)
+.متع — تعداد مستمر (إيقاف: .ستع)
+.مسكت <1-50> — كتابة مستمرة بعدد كلمات ثابت (إيقاف: .سكت)
+
+🖼️ *تقديم بسيط (معاينة/تجربة، ما تُحسب بـ.توب/.سجل)*
+.ص — يرسل صورة
+.س — يرسل سؤال
+.تع — يرسل تعداد
+.كت — يرسل كتابة (بعدد الكلمات المضبوط، افتراضي كلمة وحدة)
+.كت كلمة / كلمتين / ثلاث كلمات / اربع كلمات / خمس كلمات — يضبط عدد كلمات .كت
+
+🏆 *الترتيب والصدارة*
+.توب — أفضل 3 أوقات لكل فقرة
+.توب ص / كت / تع / سس — أفضل 5 أوقات لفقرة محددة
+.سجل — السجل التراكمي (كل المسابقات، 3 مشاركين فأكثر)
+
+📱 *خاص بالجوالات*
+.تسجيل جوال — سجل نفسك كلاعب جوال
+.تسجيل خارجي — سجل نفسك كلاعب كيبورد/لابتوب
+.الغاء تسجيل — يمسح تسجيلك وكل سجلاتك
+.توب جوالات — أفضل 3 أوقات لكل فقرة (جوالات بس)
+.توب ص/كت/تع/سس جوال — أفضل 5 أوقات لفقرة محددة (جوالات بس)
+.سجل جوالات — السجل التراكمي (جوالات بس)
+.قائمة — كل الأعضاء المسجلين (خارجي/جوال) مع منشنهم
+
+🔧 *عامة*
+شات الايدي — آيدي المحادثة الحالية
+ايديي — آيديك الشخصي
+
+👑 *أوامر صاحب البوت*
+.ريسيت توب / .ريسيت توب ص/كت/تع/سس
+.ريسيت سجل
+.ايقاف @شخص — يستبعده من قوائم الجوالات بس (يلعب عادي)
+.الغاء ايقاف @شخص
+.حظر @شخص — يمنعه كلياً من اللعب والنقاط
+.الغاء حظر @شخص
+.ازالة @شخص — يمسح تسجيله بدون تصفير سجلاته
+.ازالة تصفير @شخص — يمسح تسجيله ويصفّر سجلاته بالكامل`;
+    await sock.sendMessage(chatId, { text: helpText }, { quoted: msg });
+    return;
+  }
+
+  // أمر تشخيصي: يعطيك آيديك الشخصي عشان نتأكد المنشن يشتغل صح
+  // (لو واتساب يستخدم نظام الخصوصية الجديد LID بهذا القروب، الآيدي بيكون
+  // شكله @lid بدل رقم جوالك، وهذا سبب معروف لمشاكل المنشن مو خطأ بالبوت)
+  if (text === "ايديي" || text === "my id") {
+    await sock.sendMessage(chatId, { text: `آيديك بهذي المحادثة:\n${senderId}`, mentions: [senderId] }, { quoted: msg });
+    return;
+  }
+
+  // أمر .تسجيل جوال / .تسجيل خارجي: يحدد نوع جهاز الشخص (بالثقة، بدون تحقق تقني)
+  if (text === ".تسجيل جوال" || text === ".تسجيل خارجي") {
+    const type = text === ".تسجيل جوال" ? "mobile" : "external";
+    registration.register(senderId, type, msg.pushName);
+    const label = type === "mobile" ? "جوال 📱" : "خارجي (كيبورد/لابتوب) 💻";
+    await sock.sendMessage(chatId, { text: `✅ تم تسجيلك كـ: ${label}` }, { quoted: msg });
+    return;
+  }
+
+  // أمر .الغاء تسجيل (أو إلغاء): يمسح تسجيلك وكل سجلاتك (توب وسجل) بالكامل
+  if (text === ".الغاء تسجيل" || text === ".إلغاء تسجيل") {
+    registration.unregister(senderId);
+    leaderboard.removeUser(senderId);
+    standings.removeUser(senderId);
+    await sock.sendMessage(chatId, { text: "🗑️ تم إلغاء تسجيلك، وحذف كل سجلاتك من .توب و.سجل." }, { quoted: msg });
+    return;
+  }
+
+  // أوامر إشراف (.ايقاف / .الغاء ايقاف / .حظر / .الغاء حظر) — لصاحب البوت بس
+  if (/^\.الغاء ايقاف(\s|$)/.test(text) || /^\.إلغاء إيقاف(\s|$)/.test(text)) {
+    if (!isOwner(senderId)) {
+      await sock.sendMessage(chatId, { text: "⛔ هذا الأمر مخصص لصاحب البوت بس." }, { quoted: msg });
+      return;
+    }
+    const target = getMentionedJid(msg);
+    if (!target) {
+      await sock.sendMessage(chatId, { text: "استخدم الأمر مع منشن للشخص: .الغاء ايقاف @الشخص" }, { quoted: msg });
+      return;
+    }
+    moderation.unsuspend(target);
+    await sock.sendMessage(chatId, { text: "✅ تم رفع الإيقاف عنه، رجع مؤهل لقوائم الجوالات.", mentions: [target] }, { quoted: msg });
+    return;
+  }
+
+  if (/^\.ايقاف(\s|$)/.test(text)) {
+    if (!isOwner(senderId)) {
+      await sock.sendMessage(chatId, { text: "⛔ هذا الأمر مخصص لصاحب البوت بس." }, { quoted: msg });
+      return;
+    }
+    const target = getMentionedJid(msg);
+    if (!target) {
+      await sock.sendMessage(chatId, { text: "استخدم الأمر مع منشن للشخص: .ايقاف @الشخص" }, { quoted: msg });
+      return;
+    }
+    moderation.suspend(target);
+    await sock.sendMessage(
+      chatId,
+      { text: "⏸️ تم إيقافه من قوائم الجوالات (يلعب عادي، نقاطه العامة تُحسب، بس مستبعد من .توب/.سجل جوالات).", mentions: [target] },
+      { quoted: msg }
+    );
+    return;
+  }
+
+  if (/^\.الغاء حظر(\s|$)/.test(text) || /^\.إلغاء حظر(\s|$)/.test(text)) {
+    if (!isOwner(senderId)) {
+      await sock.sendMessage(chatId, { text: "⛔ هذا الأمر مخصص لصاحب البوت بس." }, { quoted: msg });
+      return;
+    }
+    const target = getMentionedJid(msg);
+    if (!target) {
+      await sock.sendMessage(chatId, { text: "استخدم الأمر مع منشن للشخص: .الغاء حظر @الشخص" }, { quoted: msg });
+      return;
+    }
+    moderation.unban(target);
+    await sock.sendMessage(chatId, { text: "✅ تم فك الحظر عنه، يقدر يلعب من جديد.", mentions: [target] }, { quoted: msg });
+    return;
+  }
+
+  if (/^\.حظر(\s|$)/.test(text)) {
+    if (!isOwner(senderId)) {
+      await sock.sendMessage(chatId, { text: "⛔ هذا الأمر مخصص لصاحب البوت بس." }, { quoted: msg });
+      return;
+    }
+    const target = getMentionedJid(msg);
+    if (!target) {
+      await sock.sendMessage(chatId, { text: "استخدم الأمر مع منشن للشخص: .حظر @الشخص" }, { quoted: msg });
+      return;
+    }
+    moderation.ban(target);
+    await sock.sendMessage(
+      chatId,
+      { text: "🚫 تم حظره، رسائله بالمسابقات تُتجاهل تماماً (ما يحصل نقاط ولا يفوز بأي جولة).", mentions: [target] },
+      { quoted: msg }
+    );
+    return;
+  }
+
+  // أمر .توب أو .توب <نوع>: يعرض أفضل الأوقات (3 لكل الفقرات، أو 5 لفقرة محددة)
+  const topMatch = text.match(/^\.توب(?:\s+(ص|كت|تع|سس))?$/);
+  if (topMatch) {
+    const shortType = topMatch[1];
+    let out, mentions;
+
+    if (shortType) {
+      const poolType = topTypeMap[shortType];
+      const entries = leaderboard.getTop(poolType, 5);
+      out = templates.formatTopSection(poolType, entries);
+      mentions = entries.map((e) => e.userId);
+    } else {
+      const entriesByType = {};
+      mentions = [];
+      for (const poolType of templates.TOP_ORDER) {
+        const entries = leaderboard.getTop(poolType, 3);
+        entriesByType[poolType] = entries;
+        entries.forEach((e) => mentions.push(e.userId));
+      }
+      out = templates.formatCombinedTop(entriesByType);
+    }
+
+    await sock.sendMessage(chatId, { text: out, mentions }, { quoted: msg });
+    return;
+  }
+
+  // أمر .توب جوالات: زي .توب بس بس الأشخاص المسجلين كجوال
+  if (text === ".توب جوالات") {
+    const entriesByType = {};
+    const mentions = [];
+    for (const poolType of templates.TOP_ORDER) {
+      const entries = leaderboard.getTopFiltered(poolType, 3, (e) => isMobileEligible(e.userId));
+      entriesByType[poolType] = entries;
+      entries.forEach((e) => mentions.push(e.userId));
+    }
+    const out = templates.formatCombinedTop(entriesByType, templates.TOP_SUBTITLE_MOBILE);
+    await sock.sendMessage(chatId, { text: out, mentions }, { quoted: msg });
+    return;
+  }
+
+  // أمر .توب <نوع> جوال: زي .توب <نوع> بس بس الأشخاص المسجلين كجوال
+  const topMobileMatch = text.match(/^\.توب (ص|كت|تع|سس) جوال$/);
+  if (topMobileMatch) {
+    const poolType = topTypeMap[topMobileMatch[1]];
+    const entries = leaderboard.getTopFiltered(poolType, 5, (e) => isMobileEligible(e.userId));
+    const out = templates.formatTopSection(poolType, entries, templates.TOP_SUBTITLE_MOBILE);
+    const mentions = entries.map((e) => e.userId);
+    await sock.sendMessage(chatId, { text: out, mentions }, { quoted: msg });
+    return;
+  }
+
+  // أمر .ريسيت توب أو .ريسيت توب <نوع>: يصفّر لوحة الصدارة (كلها أو فقرة وحدة)
+  // — مخصص لصاحب البوت بس
+  const resetTopMatch = text.match(/^\.ريسيت توب(?:\s+(ص|كت|تع|سس))?$/);
+  if (resetTopMatch) {
+    if (!isOwner(senderId)) {
+      await sock.sendMessage(chatId, { text: "⛔ هذا الأمر مخصص لصاحب البوت بس." }, { quoted: msg });
+      return;
+    }
+    const shortType = resetTopMatch[1];
+    if (shortType) {
+      leaderboard.reset(topTypeMap[shortType]);
+      await sock.sendMessage(
+        chatId,
+        { text: `🗑️ تم تصفير لوحة صدارة فقرة ${poolLabels[topTypeMap[shortType]]}.` },
+        { quoted: msg }
+      );
+    } else {
+      leaderboard.reset();
+      await sock.sendMessage(chatId, { text: "🗑️ تم تصفير لوحة الصدارة بالكامل." }, { quoted: msg });
+    }
+    return;
+  }
+
+  // أمر .سجل: يعرض السجل التراكمي (مجموع نقاط كل شخص عبر كل المسابقات
+  // اللي شارك فيها 3 أشخاص فأكثر)
+  if (text === ".سجل") {
+    const list = standings.getStandings();
+    await sendStandingsList(sock, chatId, msg, list, templates.TOP_SUBTITLE_ALL);
+    return;
+  }
+
+  // أمر .سجل جوالات: زي .سجل بس بس الأشخاص المسجلين كجوال
+  if (text === ".سجل جوالات") {
+    const list = standings.getStandingsFiltered((userId) => isMobileEligible(userId));
+    await sendStandingsList(sock, chatId, msg, list, templates.TOP_SUBTITLE_MOBILE);
+    return;
+  }
+
+  // أمر .قائمة: يعرض كل الأعضاء المسجلين (خارجي وجوال) مع منشنهم
+  if (text === ".قائمة") {
+    const externals = registration.getAllByType("external");
+    const mobiles = registration.getAllByType("mobile");
+    const out = templates.formatMemberList(externals, mobiles);
+    const mentions = [...externals.slice(0, 6), ...mobiles.slice(0, 6)].map((e) => e.userId);
+    await sock.sendMessage(chatId, { text: out, mentions }, { quoted: msg });
+    return;
+  }
+
+  // أمر .ريسيت سجل: يصفّر السجل التراكمي — مخصص لصاحب البوت بس
+  if (text === ".ريسيت سجل") {
+    if (!isOwner(senderId)) {
+      await sock.sendMessage(chatId, { text: "⛔ هذا الأمر مخصص لصاحب البوت بس." }, { quoted: msg });
+      return;
+    }
+    standings.reset();
+    await sock.sendMessage(chatId, { text: "🗑️ تم تصفير السجل العام بالكامل." }, { quoted: msg });
+    return;
+  }
+
+  // أمر بدء مسابقة
+  const startCmd = parseStartCommand(text);
+  if (startCmd) {
+    if (activeContests.has(chatId) && activeContests.get(chatId).active) {
+      await sock.sendMessage(
+        chatId,
+        { text: "⚠️ فيه مسابقة شغالة بالفعل بهذي المحادثة. اكتب: .انهاء عشان تنهيها." },
+        { quoted: msg }
+      );
+      return;
+    }
+    const contest = new Contest(chatId, sock, startCmd.contestType, startCmd.target, {
+      mobileOnly: startCmd.mobileOnly,
+    });
+    activeContests.set(chatId, contest);
+
+    const typeLabels = {
+      general: "عامة (كل الفقرات)",
+      images: "صور",
+      counts: "تعداد",
+      writing: "كتابة",
+      questions: "أسئلة",
+    };
+    const mobileNote = startCmd.mobileOnly ? " 📱 (جوالات بس)" : "";
+    await sock.sendMessage(chatId, {
+      text: `🎬 بدأت مسابقة *${typeLabels[startCmd.contestType]}*${mobileNote}!\nالنقاط المطلوبة للفوز: ${startCmd.target}\nبالتوفيق للجميع 🍀`,
+    });
+    await contest.nextRound();
+    return;
+  }
+
+  // ═══ أوامر التقديم البسيطة (معاينة/تجربة، بدون تسجيل بـ.توب/.سجل) ═══
+
+  if (text === ".ص") {
+    await startPractice(chatId, sock, msg, "images");
+    return;
+  }
+  if (text === ".تع") {
+    await startPractice(chatId, sock, msg, "counts");
+    return;
+  }
+  if (text === ".س") {
+    await startPractice(chatId, sock, msg, "questions");
+    return;
+  }
+
+  // ".كت كلمة" / "كلمتين" / ... تغيّر عدد الكلمات الافتراضي لأمر ".كت"
+  const wordSetMatch = text.match(/^\.كت (كلمة|كلمتين|ثلاث كلمات|اربع كلمات|خمس كلمات)$/);
+  if (wordSetMatch) {
+    const count = wordCountLabels[wordSetMatch[1]];
+    practiceWordCount.set(chatId, count);
+    await sock.sendMessage(chatId, { text: `✅ صار أمر .كت يرسل ${wordSetMatch[1]}.` }, { quoted: msg });
+    return;
+  }
+  if (text === ".كت") {
+    const count = practiceWordCount.get(chatId) || 1;
+    await startPractice(chatId, sock, msg, "writing", { fixedWordCount: count });
+    return;
+  }
+
+  // ═══ مسابقات مستمرة (تفتح بأمر، تتوقف بأمر مخصص لها) ═══
+
+  if (text === ".مسص") {
+    await startEndless(chatId, sock, msg, "images");
+    return;
+  }
+  if (text === ".مسس") {
+    await startEndless(chatId, sock, msg, "questions");
+    return;
+  }
+  if (text === ".متع") {
+    await startEndless(chatId, sock, msg, "counts");
+    return;
+  }
+  const msKtMatch = text.match(/^\.مسكت\s+(\d+)$/);
+  if (msKtMatch) {
+    const n = parseInt(msKtMatch[1], 10);
+    if (n < 1) {
+      await sock.sendMessage(chatId, { text: "لازم رقم 1 أو أكثر." }, { quoted: msg });
+      return;
+    }
+    if (n > 50) {
+      await sock.sendMessage(chatId, { text: "🚫 وصلت للحد الأقصى (50 كلمة بالرسالة الوحدة)." }, { quoted: msg });
+      return;
+    }
+    await startEndless(chatId, sock, msg, "writing", { fixedWordCount: n });
+    return;
+  }
+
+  if (text === ".سص") {
+    await stopEndless(chatId, sock, msg, "images");
+    return;
+  }
+  if (text === ".سس") {
+    await stopEndless(chatId, sock, msg, "questions");
+    return;
+  }
+  if (text === ".ستع") {
+    await stopEndless(chatId, sock, msg, "counts");
+    return;
+  }
+  if (text === ".سكت") {
+    await stopEndless(chatId, sock, msg, "writing");
+    return;
+  }
+
+  // ═══ أوامر إدارة التسجيل من المالك ═══
+
+  if (/^\.ازالة تصفير(\s|$)/.test(text)) {
+    if (!isOwner(senderId)) {
+      await sock.sendMessage(chatId, { text: "⛔ هذا الأمر مخصص لصاحب البوت بس." }, { quoted: msg });
+      return;
+    }
+    const target = getMentionedJid(msg);
+    if (!target) {
+      await sock.sendMessage(chatId, { text: "استخدم الأمر مع منشن للشخص: .ازالة تصفير @الشخص" }, { quoted: msg });
+      return;
+    }
+    registration.unregister(target);
+    leaderboard.removeUser(target);
+    standings.removeUser(target);
+    await sock.sendMessage(
+      chatId,
+      { text: "🗑️ تم إزالة تسجيله وتصفير كل سجلاته من .توب و.سجل.", mentions: [target] },
+      { quoted: msg }
+    );
+    return;
+  }
+
+  if (/^\.ازالة(\s|$)/.test(text)) {
+    if (!isOwner(senderId)) {
+      await sock.sendMessage(chatId, { text: "⛔ هذا الأمر مخصص لصاحب البوت بس." }, { quoted: msg });
+      return;
+    }
+    const target = getMentionedJid(msg);
+    if (!target) {
+      await sock.sendMessage(chatId, { text: "استخدم الأمر مع منشن للشخص: .ازالة @الشخص" }, { quoted: msg });
+      return;
+    }
+    registration.unregister(target);
+    await sock.sendMessage(
+      chatId,
+      { text: "✅ تم إزالة تسجيله (بدون تصفير سجلاته من .توب/.سجل).", mentions: [target] },
+      { quoted: msg }
+    );
+    return;
+  }
+
+  // أمر وقف المسابقة (بس للفنشات العادية اللي لها هدف — مو المستمرة)
+  if (text === ".انهاء") {
+    const contest = activeContests.get(chatId);
+    if (!contest || !contest.active) {
+      await sock.sendMessage(chatId, { text: "ما فيه مسابقة شغالة حالياً." }, { quoted: msg });
+      return;
+    }
+    if (contest.endless) {
+      const stopCmdFor = { writing: ".سكت", images: ".سص", questions: ".سس", counts: ".ستع" };
+      await sock.sendMessage(
+        chatId,
+        { text: `⚠️ هذي مسابقة مستمرة، ما توقف بـ .انهاء. استخدم: ${stopCmdFor[contest.contestType]}` },
+        { quoted: msg }
+      );
+      return;
+    }
+    await contest.endContest(); // يوقف ويعرض النتائج مباشرة
+    return;
+  }
+
+  // أمر عرض النقاط الحالية أثناء المسابقة
+  if (text === "النقاط") {
+    const contest = activeContests.get(chatId);
+    if (!contest || !contest.active) {
+      await sock.sendMessage(chatId, { text: "ما فيه مسابقة شغالة حالياً." }, { quoted: msg });
+      return;
+    }
+    await contest.sendScoreboard();
+    return;
+  }
+
+  // تمرير الرسالة لمحرك المسابقة النشطة (لفحص الإجابات)
+  const contest = activeContests.get(chatId);
+  if (contest && contest.active) {
+    await contest.handleMessage(msg, text, senderId);
+  }
+}
+
+// نقطة البداية: نتصل بقاعدة البيانات ونسحب كل البيانات المحفوظة (مرة
+// وحدة بس، مو عند كل إعادة اتصال بواتساب)، وبعدها نشغّل اتصال واتساب
+async function main() {
+  startHealthServer(); // يفتح منفذ HTTP بسيط (يحتاجه Render وأشباهه)
+  await db.connect(store.getConfig().mongoUri);
+  await Promise.all([
+    leaderboard.loadFromDb(),
+    standings.loadFromDb(),
+    registration.loadFromDb(),
+    moderation.loadFromDb(),
+  ]);
+  await connectSocket();
+}
+
+main();

@@ -1,0 +1,372 @@
+const fs = require("fs");
+const Jimp = require("jimp");
+const { pickRandom, shuffle, formatSeconds, findAllMatches } = require("./utils");
+const store = require("./dataStore");
+const leaderboard = require("./leaderboard");
+const standings = require("./standings");
+const moderation = require("./moderation");
+const registration = require("./registration");
+const templates = require("./templates");
+
+// يسوي معاينة مصغّرة (blur preview) للصورة يدوياً بمكتبة جافاسكربت خالصة
+// (بدون ملفات ثنائية خاصة بنظام التشغيل)، عشان تشتغل بثبات على أي جهاز
+// (جوال/Termux، لابتوب، أو أي سيرفر مستقبلاً) بدون ما تعتمد على مكتبات
+// تركيب أصلية ممكن تفشل بصمت على بعض الأجهزة
+async function generateThumbnail(imagePath) {
+  try {
+    const img = await Jimp.read(imagePath);
+    img.resize(60, Jimp.AUTO);
+    return await img.quality(50).getBufferAsync(Jimp.MIME_JPEG);
+  } catch (e) {
+    console.error("خطأ توليد معاينة الصورة:", e.message);
+    return null;
+  }
+}
+
+// أنواع الفقرات المدعومة
+const POOL_TYPES = ["writing", "images", "questions", "counts"];
+
+class Contest {
+  constructor(chatId, sock, contestType, target, options = {}) {
+    this.chatId = chatId;
+    this.client = sock; // Baileys socket
+    this.contestType = contestType; // 'general' | 'writing' | 'images' | 'questions' | 'counts'
+    this.target = target; // النقاط المطلوبة للفوز (Infinity للمسابقات المستمرة)
+    this.scores = new Map(); // userId -> points
+    this.usedIds = { writing: new Set(), images: new Set(), questions: new Set(), counts: new Set() };
+    this.active = true;
+    this.currentRound = null;
+    this.nameCache = new Map(); // userId -> اسم للعرض (pushName)
+    this.remindedUsers = new Set(); // شخوص ذكّرناهم بالتسجيل (مرة وحدة بس)
+    // خيارات خاصة:
+    this.practiceMode = !!options.practiceMode; // تقديم بسيط، جولة وحدة، بدون تسجيل بـ.توب/.سجل
+    this.endless = !!options.endless; // مسابقة مستمرة، ما تتوقف تلقائياً عند الهدف
+    this.mobileOnly = !!options.mobileOnly; // بس المسجلين كجوال يقدرون يشاركون
+    this.fixedWordCount = options.fixedWordCount || null; // عدد كلمات ثابت لفقرة الكتابة
+    // آخر زمن إرسال مقيس لرسالة نصية بس (مو صور)، نستخدمه كتقدير لزمن
+    // الشبكة حتى بفقرة الصور، عشان رفع الصورة البطيء ما يشوه التقدير
+    this.lastTextLatency = 300; // قيمة افتراضية أولية بالملي ثانية
+  }
+
+  pickPoolType() {
+    if (this.contestType === "general") {
+      return pickRandom(POOL_TYPES);
+    }
+    return this.contestType;
+  }
+
+  // يجيب عنصر عشوائي غير مستخدم من مجموعة بيانات (صور/أسئلة/تعداد)
+  pickItem(poolType) {
+    let pool;
+    if (poolType === "images") pool = store.getImages();
+    else if (poolType === "questions") pool = store.getQuestions();
+    else if (poolType === "counts") pool = store.getCounts();
+
+    if (!pool || pool.length === 0) return null;
+
+    const used = this.usedIds[poolType];
+    let available = pool.filter((it) => !used.has(it.id));
+    if (available.length === 0) {
+      used.clear();
+      available = pool;
+    }
+    const item = pickRandom(available);
+    used.add(item.id);
+    return item;
+  }
+
+  // فقرة الكتابة: يسحب عشوائياً 1-3 كلمات من بنك كلمات واحد (بدون تكرار
+  // بنفس الجولة/الجلسة)، كل كلمة لها صيغ مقبولة (aliases)، ولازم كلها تنكتب
+  // (بأي رسالة، بأي ترتيب، حتى لو وسط كلام زيادة) عشان تفوز بالجولة
+  pickWritingRound(forcedCount) {
+    const pool = store.getWords(); // array of { word: ["لوفي","luffy", ...] }
+    if (!pool || pool.length === 0) return null;
+
+    const used = this.usedIds.writing; // Set من فهارس الكلمات المستخدمة
+    let availableIdx = pool.map((_, i) => i).filter((i) => !used.has(i));
+    if (availableIdx.length === 0) {
+      used.clear();
+      availableIdx = pool.map((_, i) => i);
+    }
+
+    const desired = forcedCount || Math.floor(Math.random() * 3) + 1;
+    const count = Math.min(desired, availableIdx.length);
+    const selected = shuffle(availableIdx).slice(0, count);
+    selected.forEach((i) => used.add(i));
+
+    return selected.map((i) => pool[i].word); // مصفوفة مصفوفات (slots)
+  }
+
+  // يرسل نص عادي، ويرجع كائن الرسالة المُرسلة (نحتاج توقيتها لحساب الوقت بدقة)
+  async sendChat(text) {
+    return this.client.sendMessage(this.chatId, { text });
+  }
+
+  // يرد كـ Reply/Quote فعلي على رسالة معينة (عشان نعرف مع مين، حتى لو فيه
+  // أكثر من شخص يجاوب بنفس الوقت)
+  async replyTo(msg, text) {
+    return this.client.sendMessage(this.chatId, { text }, { quoted: msg });
+  }
+
+  // تفاعل ✅ على رسالة معينة (لتأكيد فوري بدون تزحيم الشات)
+  async reactCheck(msg) {
+    try {
+      await this.client.sendMessage(this.chatId, { react: { text: "✅", key: msg.key } });
+    } catch (e) {
+      /* تجاهل لو فشل التفاعل */
+    }
+  }
+
+  // يبدأ جولة جديدة
+  async nextRound() {
+    if (!this.active) return;
+
+    const poolType = this.pickPoolType();
+    let slots, required, points, questionText, label;
+
+    if (poolType === "writing") {
+      slots = this.pickWritingRound(this.fixedWordCount);
+      if (!slots) {
+        await this.sendChat(`⚠️ ما فيه كلمات بملف data/words.json. أضف كلمات أول.`);
+        return;
+      }
+      required = slots.length;
+      points = 1;
+      label = slots.map((s) => s[0]).join("، ");
+    } else {
+      const item = this.pickItem(poolType);
+      if (!item) {
+        await this.sendChat(`⚠️ ما فيه أسئلة متوفرة لفقرة "${poolType}". أضف بيانات بملف data/${poolType}.json`);
+        return;
+      }
+      points = item.points || 1;
+      questionText = item.question;
+
+      if (poolType === "questions" && item.type === "count") {
+        slots = item.answers;
+        required = item.required;
+        label = item.answers.map((a) => a[0]).join("، ");
+      } else if (poolType === "counts") {
+        slots = item.answers;
+        required = item.required;
+        questionText = item.topic;
+        label = item.topic;
+      } else {
+        // صور أو سؤال عادي: إجابة وحدة، لكن نقبلها بأي مكان بالرسالة
+        slots = [item.answers];
+        required = 1;
+        label = item.answers[0];
+      }
+
+      this._lastItem = item; // نحتاجه لإرسال الصورة
+    }
+
+    // نجهز الجولة بدون startTime لحد ما يتأكد إرسال السؤال فعلياً
+    const round = {
+      poolType,
+      slots,
+      required,
+      points,
+      label, // "الإجابة" اللي تُعرض بلوحة الصدارة
+      startTime: Date.now(), // قيمة مؤقتة، تنستبدل تحت بتوقيت واتساب الفعلي
+      finished: false,
+      perUser: new Map(), // userId -> Set(فهارس) — مسار كل شخص مستقل تماماً
+    };
+
+    let sentMsg = null;
+    const sendStartedAt = Date.now();
+
+    // إرسال السؤال بحسب نوع الفقرة
+    if (poolType === "writing") {
+      const preview = slots.map((s) => `*${s[0]}*`).join(" - ");
+      sentMsg = await this.sendChat(`✍️ اكتب التالي:\n\n${preview}`);
+    } else if (poolType === "images") {
+      try {
+        const imagePath = store.getImagePath(this._lastItem.file);
+        const imageBuffer = fs.readFileSync(imagePath);
+        const jpegThumbnail = await generateThumbnail(imagePath);
+        sentMsg = await this.client.sendMessage(this.chatId, {
+          image: imageBuffer,
+          caption: `🖼️ ${questionText || "من هذه الشخصية؟"}`,
+          jpegThumbnail: jpegThumbnail || undefined,
+        });
+      } catch (e) {
+        await this.sendChat(`⚠️ ما قدرت أفتح الصورة: ${this._lastItem.file}. تأكد إنها موجودة بمجلد data/images`);
+        return;
+      }
+    } else if (poolType === "questions") {
+      if (required > 1) {
+        sentMsg = await this.sendChat(`❓ سؤال جديد\n\n${questionText}\n(المطلوب ${required} إجابات)`);
+      } else {
+        sentMsg = await this.sendChat(`❓ سؤال جديد\n\n${questionText}`);
+      }
+    } else if (poolType === "counts") {
+      sentMsg = await this.sendChat(`🔢 فقرة التعداد\n\n${questionText}`);
+    }
+
+    const sendFinishedAt = Date.now();
+
+    // نحدّث تقدير زمن الشبكة بس من الرسائل النصية (مو الصور، لأن رفع
+    // الصورة أبطأ بكثير ومايعكس زمن الشبكة الحقيقي لرسالة نصية عادية)
+    if (poolType !== "images") {
+      const measured = Math.max(0, sendFinishedAt - sendStartedAt);
+      // تنعيم بسيط (متوسط مع القياس السابق) عشان ما يتقلب بشكل مفاجئ
+      this.lastTextLatency = Math.round((this.lastTextLatency + measured) / 2);
+    }
+
+    // نفترض إن رجوع الإجابة ياخذ زمن مشابه تقريباً، فننزل ضعف آخر تقدير
+    // نصي معروف من الوقت المعروض، مع حد أقصى عشان ما يصير مبالغ فيه
+    round.networkOverhead = Math.min(this.lastTextLatency * 2, 5000);
+
+    round.startTime = sendFinishedAt;
+    this.currentRound = round;
+  }
+
+  // يعالج رسالة واردة أثناء وجود جولة نشطة
+  // msg: كائن رسالة Baileys الأصلي (نحتاجه للرد/الـ react)
+  // text: النص المستخرج من الرسالة
+  // senderId: آيدي الشخص المرسل (jid)
+  async handleMessage(msg, text, senderId) {
+    if (!this.active || !this.currentRound || this.currentRound.finished) return;
+    if (!text) return;
+    if (moderation.isBanned(senderId)) return; // محظور: نتجاهله كأنه مو موجود
+
+    // تذكير تسجيل النوع (مرة وحدة بس لكل شخص خلال هذي المسابقة)
+    if (!registration.getType(senderId) && !this.remindedUsers.has(senderId)) {
+      this.remindedUsers.add(senderId);
+      await this.replyTo(
+        msg,
+        "💡 ما سجلت نوع جهازك بعد. اكتب .تسجيل جوال أو .تسجيل خارجي عشان تنحسب بقوائم الجوالات لو حبيت."
+      );
+    }
+
+    // مسابقة مخصصة للجوالات: نتجاهل كلياً أي شخص مو مسجل كجوال
+    if (this.mobileOnly && !registration.isMobile(senderId)) {
+      return;
+    }
+
+    // نخزن اسم العرض أول ما توصلنا رسالة منه (يفيدنا بالنتيجة النهائية)
+    if (msg.pushName) this.nameCache.set(senderId, msg.pushName);
+
+    const round = this.currentRound;
+
+    // كل شخص عنده مساره الخاص المستقل تماماً — إجابات شخص ثاني ما تأثر
+    // على فرص هذا الشخص، وما تحجز عناصر تمنعه من إكمالها لحاله
+    if (!round.perUser.has(senderId)) round.perUser.set(senderId, new Set());
+    const userSet = round.perUser.get(senderId);
+
+    // يدور داخل الرسالة عن أي عناصر صحيحة (من مساره الشخصي) لسا ما جابها،
+    // حتى لو وسط كلام زيادة أو حروف ملتصقة أو أكثر من عنصر بنفس الرسالة
+    const newlyClaimed = findAllMatches(text, round.slots, userSet);
+    if (newlyClaimed.length === 0) return;
+
+    for (const idx of newlyClaimed) userSet.add(idx);
+
+    if (userSet.size >= round.required) {
+      await this.completeRound(msg, senderId);
+    }
+  }
+
+  addPoints(userId, points) {
+    const current = this.scores.get(userId) || 0;
+    this.scores.set(userId, current + points);
+    return this.scores.get(userId);
+  }
+
+  async completeRound(msg, senderId) {
+    const round = this.currentRound;
+    round.finished = true;
+    const rawElapsed = Math.max(0, Date.now() - round.startTime);
+    // ننزل تقدير زمن الشبكة (تقريبي) عشان الرقم المعروض يقرب أكثر من
+    // الوقت الفعلي اللي أخذه المتسابق للتفكير والكتابة
+    const elapsed = Math.max(0, rawElapsed - (round.networkOverhead || 0));
+    const total = this.addPoints(senderId, round.points);
+
+    // نسجل هذي النتيجة بلوحة الصدارة (أفضل الأوقات) — إلا لو تقديم بسيط
+    // (تجربة/معاينة)، ما نحسبها بالمنافسة الرسمية
+    if (!this.practiceMode) {
+      leaderboard.record(round.poolType, {
+        userId: senderId,
+        displayName: this.displayNameFor(senderId),
+        elapsed,
+        answer: round.label,
+        ts: Date.now(),
+      });
+    }
+
+    const resultLabel = round.required > 1 ? `جمعت ${round.required} إجابات` : "إجابة صحيحة";
+    await this.replyTo(
+      msg,
+      `🎉 ${resultLabel}!\n\n⏱️ الوقت: ${formatSeconds(elapsed)} ثانية\n\n⭐ +${round.points} نقطة\n(المجموع: ${total})`
+    );
+
+    await this.afterRoundWin(senderId, total);
+  }
+
+  async afterRoundWin(senderId, total) {
+    // تقديم بسيط: جولة وحدة بس، تنتهي بهدوء بدون رسالة "انتهت المسابقة"
+    if (this.practiceMode) {
+      this.active = false;
+      return;
+    }
+    // مسابقة مستمرة: ما تتوقف تلقائياً عند أي هدف، تستمر لحد أمر الإيقاف اليدوي
+    if (!this.endless && total >= this.target) {
+      await this.endContest();
+      return;
+    }
+    const cfg = store.getConfig();
+    setTimeout(() => {
+      this.nextRound().catch((e) => console.error("خطأ بالجولة القادمة:", e));
+    }, cfg.nextQuestionDelayMs || 1000);
+  }
+
+  // يعرض اسم العرض المخزن (لو موجود) وإلا رقم الشخص فقط
+  displayNameFor(userId) {
+    return this.nameCache.get(userId) || userId.split("@")[0];
+  }
+
+  async sendScoreboard() {
+    const ranking = [...this.scores.entries()].sort((a, b) => b[1] - a[1]);
+    if (ranking.length === 0) {
+      await this.sendChat("ما فيه نقاط لأحد لحد الآن.");
+      return;
+    }
+    let text = "📊 النقاط الحالية:\n\n";
+    const mentions = [];
+    for (const [userId, points] of ranking) {
+      text += `${this.displayNameFor(userId)} (@${userId.split("@")[0]}) — ${points}\n`;
+      mentions.push(userId);
+    }
+    await this.client.sendMessage(this.chatId, { text, mentions });
+  }
+
+  async endContest() {
+    this.active = false;
+    const ranking = [...this.scores.entries()].sort((a, b) => b[1] - a[1]);
+
+    // نضيف نتيجة هذي المسابقة للسجل التراكمي (بس لو فيه 3 مشاركين فأكثر)
+    standings.addContestResult(this.scores, this.nameCache);
+
+    if (ranking.length === 0) {
+      await this.sendChat("انتهت المسابقة بدون فائزين 😅");
+      return;
+    }
+
+    const rankingObjs = ranking.map(([userId, points]) => ({
+      userId,
+      displayName: this.displayNameFor(userId),
+      points,
+    }));
+    const text = templates.formatContestEnd(rankingObjs);
+    const mentions = rankingObjs.map((e) => e.userId);
+
+    await this.client.sendMessage(this.chatId, { text, mentions });
+  }
+
+  stop() {
+    this.active = false;
+    this.currentRound = null;
+  }
+}
+
+module.exports = { Contest };

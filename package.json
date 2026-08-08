@@ -1,0 +1,21 @@
+{
+  "name": "anime-quiz-bot",
+  "version": "2.0.0",
+  "description": "بوت واتساب لمسابقات الأنمي (Baileys)",
+  "main": "src/index.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node src/index.js"
+  },
+  "dependencies": {
+    "@whiskeysockets/baileys": "^6.7.9",
+    "@hapi/boom": "^10.0.1",
+    "pino": "^9.4.0",
+    "qrcode-terminal": "^0.12.0",
+    "mongodb": "^6.9.0",
+    "jimp": "^1.6.0"
+  },
+  "overrides": {
+    "jimp": "^0.22.12"
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "allowedChats": [],
+  "nextQuestionDelayMs": 1000,
+  "ownerId": "",
+  "mongoUri": ""
+}
