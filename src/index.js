@@ -212,10 +212,18 @@ async function connectSocket() {
     }
   });
 
-  sock.ev.on("messages.upsert", async ({ messages, type }) => {
-    if (type !== "notify") return;
+  sock.ev.on("messages.upsert", async ({ messages }) => {
+    // ملاحظة مهمة: ما نرفض حسب "نوع الدفعة" (type !== "notify") — واتساب
+    // أحياناً يرسل أول رسالة حقيقية بعد أي انقطاع بسيط بالاتصال (شي وارد
+    // بسيرفر سحابي) كجزء من دفعة "مزامنة" (type غير notify)، فلو رفضنا
+    // الدفعة كاملة تنضاع أول رسالة حقيقية وتحتاج ترسل مرتين. بدل كذا،
+    // نفحص عمر كل رسالة لحالها ونتجاهل بس اللي قديمة فعلاً (مزامنة تاريخ
+    // حقيقية بعد أول اتصال، مو رسالة حالية توصل بلحظة إعادة اتصال)
+    const now = Date.now();
     for (const msg of messages) {
       try {
+        const tsMs = Number(msg.messageTimestamp || 0) * 1000;
+        if (tsMs && now - tsMs > 60000) continue; // أقدم من دقيقة: تجاهلها
         await handleIncoming(sock, msg);
       } catch (err) {
         console.error("خطأ بمعالجة الرسالة:", err);
