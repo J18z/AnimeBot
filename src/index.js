@@ -12,7 +12,7 @@ const moderation = require("./moderation");
 const templates = require("./templates");
 const db = require("./db");
 const { useMongoAuthState } = require("./mongoAuthState");
-const { startHealthServer } = require("./healthServer");
+const { startHealthServer, setQr, clearQr } = require("./healthServer");
 
 // كل محادثة (قروب أو خاص) عندها مسابقة مستقلة
 const activeContests = new Map(); // chatId -> Contest
@@ -192,6 +192,7 @@ async function connectSocket() {
     if (qr) {
       console.log("امسح كود QR هذا من واتساب > الأجهزة المرتبطة:");
       qrcode.generate(qr, { small: true });
+      setQr(qr); // نحدّث صفحة /qr كمان بآخر كود
     }
 
     if (connection === "close") {
@@ -207,6 +208,7 @@ async function connectSocket() {
       }
     } else if (connection === "open") {
       console.log("✅ البوت جاهز ومتصل بواتساب!");
+      clearQr();
     }
   });
 
