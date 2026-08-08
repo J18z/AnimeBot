@@ -39,6 +39,19 @@ function matchesAnswer(input, acceptedAnswers) {
   return acceptedAnswers.some((ans) => normalizeText(ans) === normInput);
 }
 
+/**
+ * تطبيع "مرن" إضافي: يوحّد الأحرف المتشابهة نطقاً (غ/ق/ج) لحرف واحد
+ * (مثلاً "ناجي" و"ناقي" و"ناغي" تُحسب نفس الشي). يُستخدم بكل الفقرات
+ * عدا الكتابة، اللي لازم فيها تطابق حرفي كامل بدون أي تساهل.
+ */
+function relaxLetters(text) {
+  return text.replace(/[غقج]/g, "ق");
+}
+
+function normalizeRelaxed(text) {
+  return relaxLetters(normalizeText(text));
+}
+
 function pickRandom(arr) {
   return arr[Math.floor(Math.random() * arr.length)];
 }
@@ -63,9 +76,12 @@ function formatSeconds(ms) {
  *
  * slots: مصفوفة مصفوفات (كل عنصر = الصيغ المقبولة لعنصر/كلمة وحدة)
  * claimedSet: Set فيها فهارس العناصر المستخدمة مسبقاً (ما نعيد مطابقتها)
+ * relaxed: لو true، يستخدم التطبيع المرن (غ/ق/ج كحرف واحد) — لكل الفقرات
+ * عدا الكتابة، اللي لازم فيها تطابق حرفي كامل
  */
-function findAllMatches(message, slots, claimedSet) {
-  let text = " " + normalizeText(message) + " ";
+function findAllMatches(message, slots, claimedSet, relaxed = false) {
+  const normalize = relaxed ? normalizeRelaxed : normalizeText;
+  let text = " " + normalize(message) + " ";
 
   // نجمع كل الاحتمالات (فهرس + صيغة) ونرتبها بحيث الصيغ الأطول (بعدد كلمات
   // أكثر) تتفحص أول، عشان "مونكي دي لوفي" ما تتأكل بمطابقة جزئية أقصر
@@ -73,7 +89,7 @@ function findAllMatches(message, slots, claimedSet) {
   slots.forEach((aliases, idx) => {
     if (claimedSet.has(idx)) return;
     aliases.forEach((alias) => {
-      const norm = normalizeText(alias);
+      const norm = normalize(alias);
       if (norm) candidates.push({ idx, norm, wordCount: norm.split(" ").length });
     });
   });
@@ -97,4 +113,12 @@ function findAllMatches(message, slots, claimedSet) {
   return claimedNow;
 }
 
-module.exports = { normalizeText, matchesAnswer, pickRandom, shuffle, formatSeconds, findAllMatches };
+module.exports = {
+  normalizeText,
+  normalizeRelaxed,
+  matchesAnswer,
+  pickRandom,
+  shuffle,
+  formatSeconds,
+  findAllMatches,
+};

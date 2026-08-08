@@ -7,6 +7,13 @@ const moderation = require("./moderation");
 const registration = require("./registration");
 const templates = require("./templates");
 
+// هامش زمني ثابت وصغير (مو متغيّر أو متوقّع) نطرحه من وقت أي إجابة، تعويض
+// تقريبي بسيط لزمن وصول رسالة السؤال قبل ما يبدأ المتسابق يقرأها. متعمد
+// إنه رقم ثابت صغير (مو تخمين ديناميكي) عشان يبقى الوقت المعروض ثابت
+// ويعتمد على، بدل ما يتقلب حسب سرعة السيرفر اللحظية (خصوصاً بسيرفرات
+// مجانية زي Render ممكن تتأخر لحظياً وتشوّه أي تخمين ديناميكي)
+const NETWORK_OVERHEAD_MS = 300;
+
 // أنواع الفقرات المدعومة
 const POOL_TYPES = ["writing", "images", "questions", "counts"];
 
@@ -22,14 +29,12 @@ class Contest {
     this.currentRound = null;
     this.nameCache = new Map(); // userId -> اسم للعرض (pushName)
     this.remindedUsers = new Set(); // شخوص ذكّرناهم بالتسجيل (مرة وحدة بس)
+    this.remindedMobileOnly = new Set(); // شخوص حذّرناهم إنها مسابقة جوالات بس (مرة وحدة بس)
     // خيارات خاصة:
     this.practiceMode = !!options.practiceMode; // تقديم بسيط، جولة وحدة، بدون تسجيل بـ.توب/.سجل
     this.endless = !!options.endless; // مسابقة مستمرة، ما تتوقف تلقائياً عند الهدف
     this.mobileOnly = !!options.mobileOnly; // بس المسجلين كجوال يقدرون يشاركون
     this.fixedWordCount = options.fixedWordCount || null; // عدد كلمات ثابت لفقرة الكتابة
-    // آخر زمن إرسال مقيس لرسالة نصية بس (مو صور)، نستخدمه كتقدير لزمن
-    // الشبكة حتى بفقرة الصور، عشان رفع الصورة البطيء ما يشوه التقدير
-    this.lastTextLatency = 300; // قيمة افتراضية أولية بالملي ثانية
   }
 
   pickPoolType() {
@@ -158,7 +163,6 @@ class Contest {
     };
 
     let sentMsg = null;
-    const sendStartedAt = Date.now();
 
     // إرسال السؤال بحسب نوع الفقرة
     if (poolType === "writing") {
@@ -188,21 +192,10 @@ class Contest {
       sentMsg = await this.sendChat(`🔢 فقرة التعداد\n\n${questionText}`);
     }
 
-    const sendFinishedAt = Date.now();
-
-    // نحدّث تقدير زمن الشبكة بس من الرسائل النصية (مو الصور، لأن رفع
-    // الصورة أبطأ بكثير ومايعكس زمن الشبكة الحقيقي لرسالة نصية عادية)
-    if (poolType !== "images") {
-      const measured = Math.max(0, sendFinishedAt - sendStartedAt);
-      // تنعيم بسيط (متوسط مع القياس السابق) عشان ما يتقلب بشكل مفاجئ
-      this.lastTextLatency = Math.round((this.lastTextLatency + measured) / 2);
-    }
-
-    // نفترض إن رجوع الإجابة ياخذ زمن مشابه تقريباً، فننزل ضعف آخر تقدير
-    // نصي معروف من الوقت المعروض، مع حد أقصى عشان ما يصير مبالغ فيه
-    round.networkOverhead = Math.min(this.lastTextLatency * 2, 5000);
-
-    round.startTime = sendFinishedAt;
+    // وقت البداية = لحظة تأكد إرسال السؤال فعلياً (بعد ما ينتهي الـ await)،
+    // مباشرة وبدون أي تخمين أو تعديل إضافي — أثبت وأدق من محاولة توقع
+    // "زمن شبكة" متغيّر
+    round.startTime = Date.now();
     this.currentRound = round;
   }
 
@@ -215,18 +208,37 @@ class Contest {
     if (!text) return;
     if (moderation.isBanned(senderId)) return; // محظور: نتجاهله كأنه مو موجود
 
-    // تذكير تسجيل النوع (مرة وحدة بس لكل شخص خلال هذي المسابقة)
-    if (!registration.getType(senderId) && !this.remindedUsers.has(senderId)) {
-      this.remindedUsers.add(senderId);
-      await this.replyTo(
-        msg,
-        "💡 ما سجلت نوع جهازك بعد. اكتب .تسجيل جوال أو .تسجيل خارجي عشان تنحسب بقوائم الجوالات لو حبيت."
-      );
-    }
+    // أي رسالة شكلها أمر (تبدأ بنقطة) نتجاهلها كلياً هنا — حتى لو أمر
+    // مو معروف/غلط إملائي، ما نعتبرها محاولة إجابة، ولا نطلق تذكير التسجيل
+    // بسببها (الأوامر المعروفة أصلاً يتوقف عندها index.js قبل ما توصل هنا)
+    if (text.startsWith(".")) return;
 
-    // مسابقة مخصصة للجوالات: نتجاهل كلياً أي شخص مو مسجل كجوال
-    if (this.mobileOnly && !registration.isMobile(senderId)) {
-      return;
+    // أي مشارك مو مسجل (لا جوال ولا خارجي) ما تُحسب له نقاط بأي مسابقة —
+    // نحذّره مرة وحدة بس خلال هذي المسابقة، وبعدها نتجاهل رسائله بصمت
+    if (this.mobileOnly) {
+      // مسابقة مخصصة للجوالات: لازم يكون مسجل كـ"جوال" بالتحديد
+      if (!registration.isMobile(senderId)) {
+        if (!this.remindedMobileOnly.has(senderId)) {
+          this.remindedMobileOnly.add(senderId);
+          await this.replyTo(
+            msg,
+            "🚫 هذي مسابقة *جوالات بس*، ما تُحسب لك مشاركتك. اكتب .تسجيل جوال عشان تقدر تشارك وتنحسب لك النقاط."
+          );
+        }
+        return;
+      }
+    } else {
+      // مسابقة عادية: يكفي يكون مسجل (جوال أو خارجي)، وإلا ما تُحسب له النقاط
+      if (!registration.getType(senderId)) {
+        if (!this.remindedUsers.has(senderId)) {
+          this.remindedUsers.add(senderId);
+          await this.replyTo(
+            msg,
+            "💡 لازم تسجل نوع جهازك أول عشان تُحسب لك النقاط. اكتب .تسجيل جوال أو .تسجيل خارجي."
+          );
+        }
+        return;
+      }
     }
 
     // نخزن اسم العرض أول ما توصلنا رسالة منه (يفيدنا بالنتيجة النهائية)
@@ -240,8 +252,11 @@ class Contest {
     const userSet = round.perUser.get(senderId);
 
     // يدور داخل الرسالة عن أي عناصر صحيحة (من مساره الشخصي) لسا ما جابها،
-    // حتى لو وسط كلام زيادة أو حروف ملتصقة أو أكثر من عنصر بنفس الرسالة
-    const newlyClaimed = findAllMatches(text, round.slots, userSet);
+    // حتى لو وسط كلام زيادة أو حروف ملتصقة أو أكثر من عنصر بنفس الرسالة.
+    // كل الفقرات تستخدم تطبيع مرن (غ/ق/ج كحرف واحد) عدا الكتابة، اللي
+    // لازم فيها تطابق حرفي كامل بدون تساهل
+    const relaxed = round.poolType !== "writing";
+    const newlyClaimed = findAllMatches(text, round.slots, userSet, relaxed);
     if (newlyClaimed.length === 0) return;
 
     for (const idx of newlyClaimed) userSet.add(idx);
@@ -261,9 +276,9 @@ class Contest {
     const round = this.currentRound;
     round.finished = true;
     const rawElapsed = Math.max(0, Date.now() - round.startTime);
-    // ننزل تقدير زمن الشبكة (تقريبي) عشان الرقم المعروض يقرب أكثر من
-    // الوقت الفعلي اللي أخذه المتسابق للتفكير والكتابة
-    const elapsed = Math.max(0, rawElapsed - (round.networkOverhead || 0));
+    // ننزل هامش ثابت وصغير بس (300 ملي ثانية) — تعويض بسيط لزمن وصول
+    // رسالة السؤال، بدون أي تخمين متغيّر يقدر يشوّه الرقم
+    const elapsed = Math.max(0, rawElapsed - NETWORK_OVERHEAD_MS);
     const total = this.addPoints(senderId, round.points);
 
     // نسجل هذي النتيجة بلوحة الصدارة (أفضل الأوقات) — إلا لو تقديم بسيط
