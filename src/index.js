@@ -14,8 +14,25 @@ const db = require("./db");
 const { useMongoAuthState } = require("./mongoAuthState");
 const { startHealthServer, setQr, clearQr } = require("./healthServer");
 
+// حماية كاملة من انهيار البرنامج: Baileys أحياناً يرمي أخطاء غير متوقعة
+// من داخل عمليات خلفية (مثلاً محاولة إعادة إرسال رسالة بعد ما ينقطع
+// الاتصال فجأة) — بدون هذا المعالج، أي خطأ غير مُمسوك يقفل Node.js
+// بالكامل ويوقف البوت كلياً، ويحتاج Restart يدوي كل مرة. الحين بدل ما
+// يطيح البرنامج، نسجل الخطأ بس ونكمل شغل عادي (الاتصال يتعافى من نفسه
+// عن طريق منطق إعادة المحاولة الموجود أصلاً بـconnection.update)
+process.on("uncaughtException", (err) => {
+  console.error("⚠️ خطأ غير متوقع (تم تجاهله عشان البوت يفضل شغال):", err);
+});
+process.on("unhandledRejection", (err) => {
+  console.error("⚠️ خطأ Promise غير معالج (تم تجاهله عشان البوت يفضل شغال):", err);
+});
+
 // كل محادثة (قروب أو خاص) عندها مسابقة مستقلة
 const activeContests = new Map(); // chatId -> Contest
+
+// طلبات تغيير نوع التسجيل المعلّقة، بانتظار موافقة صاحب البوت
+// userId -> "mobile" | "external"
+const pendingChangeRequests = new Map();
 
 function isChatAllowed(chatId) {
   const cfg = store.getConfig();
@@ -293,7 +310,8 @@ async function handleIncoming(sock, msg) {
 > *✠ الـتـسـجـيـل • 📍◜*
 
 ◞◈ .تسجيل جوال •— لاعب جوال◜
-◞◈ .تسجيل خارجي •— لاعب كيبورد/لاب/بي سي◜ 
+◞◈ .تسجيل خارجي •— لاعب كيبورد/لاب/بي سي◜
+◞◈ .تغيير تسجيل جوال/خارجي •— طلب تغيير نوعك (يحتاج موافقة المالك)◜ 
 ◞◈ .الغاء التسجيل •— يمسح تسجيلك مع سجلاتك◜ 
 ◞◈ .قائمة •— يعرض المسجلين جوال/خارجي◜
 *˼‏مهم جدا: سجل بأمانة او يتم حظرك⋄◟*
@@ -314,14 +332,14 @@ async function handleIncoming(sock, msg) {
 ❊ ┉ ٠ ┈─ • ⊰ 倖 ⊱ • ─┈ ٠ ┉ ❊
 > *✠ اوامـر الـ Owner • 👑◜*
 
-◞◈ .ريسيت توب •— تصفير التوب◜
-◞◈ .ريسيت توب نوع الفقرة •— تصفير فقرة معينة◜ 
-◞◈ .ريسيت سجل •— مسح السجل◜
 ◞◈ .ايقاف @ •— استبعاد من قوائم الجوالات◜ 
 ◞◈ .حظر @ •— حظر من اللعب◜
 ◞◈ .الغاء ايقاف/حظر @ •— الغاء الامرين◜ 
 ◞◈ .ازالة @ •— تزيل اللاعب من التسجيلات◜ 
 ◞◈ .ازالة تصفير @ •— ازالة اللاعب مع حذف السجلات◜
+◞◈ .قبول تغيير @ / .رفض تغيير @ •— الرد على طلب تغيير تسجيل◜
+◞◈ .ريسيت توب [نوع] [@شخص] •— تصفير التوب (كامل/فقرة/شخص معين)◜
+◞◈ .ريسيت سجل [@شخص] •— تصفير السجل التراكمي (كامل أو شخص معين)◜
 ❆ ⋅ ┈── ─━ •⊰✣⊱ • ━─ ──┈ ⋅ ❆`;
     await sock.sendMessage(chatId, { text: helpText }, { quoted: msg });
     return;
@@ -335,14 +353,135 @@ async function handleIncoming(sock, msg) {
     return;
   }
 
-  // أمر .تسجيل جوال / .تسجيل خارجي: يحدد نوع جهاز الشخص (بالثقة، بدون تحقق تقني)
-  if (text === ".تسجيل جوال" || text === ".تسجيل خارجي") {
-    const type = text === ".تسجيل جوال" ? "mobile" : "external";
-    registration.register(senderId, type, msg.pushName);
-    const label = type === "mobile" ? "جوال 📱" : "خارجي (كيبورد/لابتوب) 💻";
-    await sock.sendMessage(chatId, { text: `✅ تم تسجيلك كـ: ${label}` }, { quoted: msg });
+// طلبات تغيير نوع التسجيل المعلّقة، بانتظار موافقة صاحب البوت
+// userId -> "mobile" | "external"
+
+// أمر .تسجيل جوال / .تسجيل خارجي: يحدد نوع جهاز الشخص (بالثقة، بدون تحقق تقني)
+// — مقفول بمجرد ما يسجل الشخص أول مرة، ما يقدر يغيّر نوعه مباشرة بعدها
+// (حتى لو ألغى تسجيله)، لازم يمر بأمر .تغيير تسجيل (يحتاج موافقة المالك)
+if (text === ".تسجيل جوال" || text === ".تسجيل خارجي") {
+  const type = text === ".تسجيل جوال" ? "mobile" : "external";
+  const typeLabel = type === "mobile" ? "جوال 📱" : "خارجي (كيبورد/لابتوب) 💻";
+  const currentType = registration.getType(senderId);
+  const lastType = registration.getLastType(senderId);
+
+  if (currentType) {
+    if (currentType === type) {
+      await sock.sendMessage(chatId, { text: `أنت مسجل بالفعل كـ${typeLabel}.` }, { quoted: msg });
+    } else {
+      const otherLabel = type === "mobile" ? "جوال" : "خارجي";
+      await sock.sendMessage(
+        chatId,
+        {
+          text: `🚫 ما تقدر تغيّر نوع تسجيلك مباشرة. استخدم: .تغيير تسجيل ${otherLabel} (يحتاج موافقة صاحب البوت).`,
+        },
+        { quoted: msg }
+      );
+    }
     return;
   }
+
+  if (lastType && lastType !== type) {
+    const lastLabel = lastType === "mobile" ? "جوال" : "خارجي";
+    const otherLabel = type === "mobile" ? "جوال" : "خارجي";
+    await sock.sendMessage(
+      chatId,
+      {
+        text: `🚫 كنت مسجل سابقاً كـ${lastLabel}. ما تقدر تسجل بنوع مختلف مباشرة. استخدم: .تغيير تسجيل ${otherLabel} (يحتاج موافقة صاحب البوت)، أو سجّل بنفس نوعك القديم (${lastLabel}).`,
+      },
+      { quoted: msg }
+    );
+    return;
+  }
+
+  registration.register(senderId, type, msg.pushName);
+  await sock.sendMessage(chatId, { text: `✅ تم تسجيلك كـ: ${typeLabel}` }, { quoted: msg });
+  return;
+}
+
+// أمر .تغيير تسجيل جوال/خارجي: يرسل طلب تغيير لصاحب البوت (يحتاج موافقته)
+const changeMatch = text.match(/^\.تغيير تسجيل (جوال|خارجي)$/);
+if (changeMatch) {
+  const requestedType = changeMatch[1] === "جوال" ? "mobile" : "external";
+  const requestedLabel = requestedType === "mobile" ? "جوال 📱" : "خارجي 💻";
+  const currentType = registration.getLastType(senderId);
+
+  if (currentType === requestedType) {
+    await sock.sendMessage(chatId, { text: `أنت مسجل بالفعل كـ${requestedLabel}.` }, { quoted: msg });
+    return;
+  }
+
+  const cfg = store.getConfig();
+  if (!cfg.ownerId) {
+    await sock.sendMessage(
+      chatId,
+      { text: "⚠️ ما فيه صاحب بوت محدد حالياً بالإعدادات، تواصل مع المسؤول يدوياً." },
+      { quoted: msg }
+    );
+    return;
+  }
+
+  pendingChangeRequests.set(senderId, requestedType);
+  await sock.sendMessage(
+    chatId,
+    {
+      text: `📋 طلب تغيير تسجيل\n@${senderId.split("@")[0]} يبي يغيّر تسجيله إلى: ${requestedLabel}\n\n@${cfg.ownerId.split("@")[0]} وافق بـ:\n.قبول تغيير @${senderId.split("@")[0]}\nأو ارفض بـ:\n.رفض تغيير @${senderId.split("@")[0]}`,
+      mentions: [senderId, cfg.ownerId],
+    },
+    { quoted: msg }
+  );
+  return;
+}
+
+// أوامر .قبول تغيير @شخص / .رفض تغيير @شخص — لصاحب البوت بس
+if (/^\.قبول تغيير(\s|$)/.test(text)) {
+  if (!isOwner(senderId)) {
+    await sock.sendMessage(chatId, { text: "⛔ هذا الأمر مخصص لصاحب البوت بس." }, { quoted: msg });
+    return;
+  }
+  const target = getMentionedJid(msg);
+  if (!target) {
+    await sock.sendMessage(chatId, { text: "استخدم الأمر مع منشن للشخص: .قبول تغيير @الشخص" }, { quoted: msg });
+    return;
+  }
+  const requestedType = pendingChangeRequests.get(target);
+  if (!requestedType) {
+    await sock.sendMessage(chatId, { text: "ما فيه طلب تغيير معلّق لهذا الشخص." }, { quoted: msg });
+    return;
+  }
+  registration.register(target, requestedType);
+  pendingChangeRequests.delete(target);
+  const label = requestedType === "mobile" ? "جوال 📱" : "خارجي 💻";
+  await sock.sendMessage(
+    chatId,
+    { text: `✅ تم قبول الطلب، تسجيل @${target.split("@")[0]} صار: ${label}`, mentions: [target] },
+    { quoted: msg }
+  );
+  return;
+}
+
+if (/^\.رفض تغيير(\s|$)/.test(text)) {
+  if (!isOwner(senderId)) {
+    await sock.sendMessage(chatId, { text: "⛔ هذا الأمر مخصص لصاحب البوت بس." }, { quoted: msg });
+    return;
+  }
+  const target = getMentionedJid(msg);
+  if (!target) {
+    await sock.sendMessage(chatId, { text: "استخدم الأمر مع منشن للشخص: .رفض تغيير @الشخص" }, { quoted: msg });
+    return;
+  }
+  if (!pendingChangeRequests.has(target)) {
+    await sock.sendMessage(chatId, { text: "ما فيه طلب تغيير معلّق لهذا الشخص." }, { quoted: msg });
+    return;
+  }
+  pendingChangeRequests.delete(target);
+  await sock.sendMessage(
+    chatId,
+    { text: `🚫 تم رفض طلب تغيير تسجيل @${target.split("@")[0]}.`, mentions: [target] },
+    { quoted: msg }
+  );
+  return;
+}
 
   // أمر .الغاء تسجيل (أو إلغاء): يمسح تسجيلك وكل سجلاتك (توب وسجل) بالكامل
   if (text === ".الغاء تسجيل" || text === ".إلغاء تسجيل") {
@@ -473,20 +612,42 @@ async function handleIncoming(sock, msg) {
     return;
   }
 
-  // أمر .ريسيت توب أو .ريسيت توب <نوع>: يصفّر لوحة الصدارة (كلها أو فقرة وحدة)
-  // — مخصص لصاحب البوت بس
-  const resetTopMatch = text.match(/^\.ريسيت توب(?:\s+(ص|كت|تع|سس))?$/);
+  // أمر .ريسيت توب أو .ريسيت توب <نوع> [@شخص]: يصفّر لوحة الصدارة (كلها،
+  // أو فقرة وحدة، أو سجل شخص معين بس لو فيه منشن) — مخصص لصاحب البوت بس
+  const resetTopMatch = text.match(/^\.ريسيت توب(?:\s+(ص|كت|تع|سس))?(?:\s|$)/);
   if (resetTopMatch) {
     if (!isOwner(senderId)) {
       await sock.sendMessage(chatId, { text: "⛔ هذا الأمر مخصص لصاحب البوت بس." }, { quoted: msg });
       return;
     }
     const shortType = resetTopMatch[1];
-    if (shortType) {
-      leaderboard.reset(topTypeMap[shortType]);
+    const poolType = shortType ? topTypeMap[shortType] : null;
+    const target = getMentionedJid(msg);
+
+    if (target) {
+      if (poolType) {
+        leaderboard.removeUserFromPool(poolType, target);
+        await sock.sendMessage(
+          chatId,
+          { text: `🗑️ تم حذف سجل @${target.split("@")[0]} من توب فقرة ${poolLabels[poolType]}.`, mentions: [target] },
+          { quoted: msg }
+        );
+      } else {
+        leaderboard.removeUser(target);
+        await sock.sendMessage(
+          chatId,
+          { text: `🗑️ تم حذف كل سجلات @${target.split("@")[0]} من التوب (كل الفقرات).`, mentions: [target] },
+          { quoted: msg }
+        );
+      }
+      return;
+    }
+
+    if (poolType) {
+      leaderboard.reset(poolType);
       await sock.sendMessage(
         chatId,
-        { text: `🗑️ تم تصفير لوحة صدارة فقرة ${poolLabels[topTypeMap[shortType]]}.` },
+        { text: `🗑️ تم تصفير لوحة صدارة فقرة ${poolLabels[poolType]}.` },
         { quoted: msg }
       );
     } else {
@@ -521,10 +682,21 @@ async function handleIncoming(sock, msg) {
     return;
   }
 
-  // أمر .ريسيت سجل: يصفّر السجل التراكمي — مخصص لصاحب البوت بس
-  if (text === ".ريسيت سجل") {
+  // أمر .ريسيت سجل [@شخص]: يصفّر السجل التراكمي كامل، أو سجل شخص معين بس
+  // لو فيه منشن — مخصص لصاحب البوت بس
+  if (/^\.ريسيت سجل(\s|$)/.test(text)) {
     if (!isOwner(senderId)) {
       await sock.sendMessage(chatId, { text: "⛔ هذا الأمر مخصص لصاحب البوت بس." }, { quoted: msg });
+      return;
+    }
+    const target = getMentionedJid(msg);
+    if (target) {
+      standings.removeUser(target);
+      await sock.sendMessage(
+        chatId,
+        { text: `🗑️ تم حذف سجل @${target.split("@")[0]} من السجل التراكمي.`, mentions: [target] },
+        { quoted: msg }
+      );
       return;
     }
     standings.reset();
@@ -650,7 +822,7 @@ async function handleIncoming(sock, msg) {
       await sock.sendMessage(chatId, { text: "استخدم الأمر مع منشن للشخص: .ازالة تصفير @الشخص" }, { quoted: msg });
       return;
     }
-    registration.unregister(target);
+    registration.hardDelete(target);
     leaderboard.removeUser(target);
     standings.removeUser(target);
     await sock.sendMessage(
@@ -671,7 +843,7 @@ async function handleIncoming(sock, msg) {
       await sock.sendMessage(chatId, { text: "استخدم الأمر مع منشن للشخص: .ازالة @الشخص" }, { quoted: msg });
       return;
     }
-    registration.unregister(target);
+    registration.hardDelete(target);
     await sock.sendMessage(
       chatId,
       { text: "✅ تم إزالة تسجيله (بدون تصفير سجلاته من .توب/.سجل).", mentions: [target] },

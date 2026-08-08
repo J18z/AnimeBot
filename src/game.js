@@ -176,12 +176,27 @@ class Contest {
       try {
         const imagePath = store.getImagePath(this._lastItem.file);
         const imageBuffer = fs.readFileSync(imagePath);
-        // ما نتدخل بتوليد المعاينة يدوياً — نخلي Baileys تسويها بنفسها
-        // (تعتمد على jimp v1 كـ peer dependency، ومضمونة توافقها معها)
-        sentMsg = await this.client.sendMessage(this.chatId, {
+        const sendOpts = {
           image: imageBuffer,
           caption: `🖼️ ${questionText || "من هذه الشخصية؟"}`,
-        });
+        };
+        // نولّد معاينة (thumbnail) أوضح وأكبر يدوياً بدل الافتراضية الصغيرة
+        // جداً اللي تولدها Baileys تلقائياً — عشان تكون المعاينة اللي
+        // تطلع قبل التحميل الكامل واضحة بما يكفي للتخمين. لو فشل التوليد
+        // لأي سبب، نكمل عادي بدون معاينة مخصصة (Baileys تسوي وحدة تلقائية)
+        try {
+          const { Jimp } = require("jimp");
+          const img = await Jimp.read(imagePath);
+          const targetWidth = Math.min(320, img.bitmap.width);
+          const scale = targetWidth / img.bitmap.width;
+          const targetHeight = Math.round(img.bitmap.height * scale);
+          img.resize(targetWidth, targetHeight);
+          const thumbBuffer = await img.getBuffer("image/jpeg", { quality: 70 });
+          sendOpts.jpegThumbnail = thumbBuffer;
+        } catch (thumbErr) {
+          console.error("⚠️ ما قدرت أسوي معاينة مخصصة للصورة (استمرينا بدونها):", thumbErr.message);
+        }
+        sentMsg = await this.client.sendMessage(this.chatId, sendOpts);
       } catch (e) {
         this.currentRound = null; // فشل الإرسال، نلغي الجولة اللي عيّناها فوق
         await this.sendChat(`⚠️ ما قدرت أفتح الصورة: ${this._lastItem.file}. تأكد إنها موجودة بمجلد data/images`);

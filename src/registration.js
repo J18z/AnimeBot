@@ -3,7 +3,7 @@
 
 const { getDb } = require("./db");
 
-const registry = new Map(); // userId -> { type: "mobile"|"external", displayName }
+const registry = new Map(); // userId -> { type: "mobile"|"external", displayName, active }
 
 // يحفظ تسجيل شخص وحد بالخلفية (بدون ما يعطّل بقية الكود)
 async function persistOne(userId) {
@@ -14,7 +14,7 @@ async function persistOne(userId) {
     if (!e) return;
     await db.collection("registrations").updateOne(
       { _id: userId },
-      { $set: { type: e.type, displayName: e.displayName } },
+      { $set: { type: e.type, displayName: e.displayName, active: e.active } },
       { upsert: true }
     );
   } catch (err) {
@@ -37,11 +37,19 @@ function register(userId, type, displayName) {
   registry.set(userId, {
     type,
     displayName: displayName || existing.displayName || userId.split("@")[0],
+    active: true,
   });
   persistOne(userId); // بدون انتظار، يشتغل بالخلفية
 }
 
 function getType(userId) {
+  const e = registry.get(userId);
+  return e && e.active ? e.type : null;
+}
+
+// آخر نوع اتسجل فيه الشخص، حتى لو ألغى تسجيله بنفسه (.الغاء تسجيل) —
+// نستخدمها عشان نمنعه يسجل بنوع مختلف مباشرة بدون موافقة صاحب البوت
+function getLastType(userId) {
   const e = registry.get(userId);
   return e ? e.type : null;
 }
@@ -50,15 +58,27 @@ function isMobile(userId) {
   return getType(userId) === "mobile";
 }
 
+// إلغاء تسجيل "ناعم" (يستخدمه الشخص لنفسه بـ.الغاء تسجيل): يوقف تسجيله
+// الحالي بس يحتفظ بنوعه القديم بالذاكرة، عشان لو حاول يسجل بنوع مختلف
+// بعدها مباشرة، يوقفه القفل ويوجّهه لأمر .تغيير تسجيل (يحتاج موافقة)
 function unregister(userId) {
+  const existing = registry.get(userId);
+  if (!existing) return;
+  existing.active = false;
+  persistOne(userId);
+}
+
+// حذف كامل (يستخدمه صاحب البوت بـ.ازالة/.ازالة تصفير): يمسح كل أثر
+// للشخص، بما فيها القفل، فيقدر يسجل بأي نوع يبيه من جديد بحرية
+function hardDelete(userId) {
   registry.delete(userId);
   persistDelete(userId);
 }
 
-// يرجع كل المسجلين من نوع معين، بصيغة {userId, displayName} (لأمر .قائمة)
+// يرجع كل المسجلين النشيطين من نوع معين، بصيغة {userId, displayName} (لأمر .قائمة)
 function getAllByType(type) {
   return [...registry.entries()]
-    .filter(([, e]) => e.type === type)
+    .filter(([, e]) => e.active && e.type === type)
     .map(([userId, e]) => ({ userId, displayName: e.displayName }));
 }
 
@@ -69,7 +89,11 @@ async function loadFromDb() {
   try {
     const docs = await db.collection("registrations").find({}).toArray();
     for (const doc of docs) {
-      registry.set(doc._id, { type: doc.type, displayName: doc.displayName });
+      registry.set(doc._id, {
+        type: doc.type,
+        displayName: doc.displayName,
+        active: doc.active !== undefined ? doc.active : true, // توافق مع سجلات قديمة ما فيها هذا الحقل
+      });
     }
     console.log(`📥 تحميل ${docs.length} تسجيل من قاعدة البيانات.`);
   } catch (err) {
@@ -77,4 +101,13 @@ async function loadFromDb() {
   }
 }
 
-module.exports = { register, getType, isMobile, unregister, getAllByType, loadFromDb };
+module.exports = {
+  register,
+  getType,
+  getLastType,
+  isMobile,
+  unregister,
+  hardDelete,
+  getAllByType,
+  loadFromDb,
+};

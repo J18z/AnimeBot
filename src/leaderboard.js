@@ -26,9 +26,18 @@ async function persistPool(poolType) {
   }
 }
 
+// يسجل نتيجة جديدة — كل شخص له سجل واحد بس بكل فقرة (أفضل وقت له).
+// لو عنده سجل سابق ووقته الجديد أفضل (أقل)، يحدّثه. لو أسوأ، يتجاهله.
+// هذا يمنع شخص واحد قوي يحتل كل المراكز الخمسة لحاله بنفس الفقرة
 function record(poolType, entry) {
   if (!board[poolType]) return;
-  board[poolType].push(entry);
+  const existingIdx = board[poolType].findIndex((e) => e.userId === entry.userId);
+  if (existingIdx !== -1) {
+    if (entry.elapsed >= board[poolType][existingIdx].elapsed) return; // مو أفضل من سجله السابق
+    board[poolType][existingIdx] = entry;
+  } else {
+    board[poolType].push(entry);
+  }
   board[poolType].sort((a, b) => a.elapsed - b.elapsed);
   if (board[poolType].length > STORE_CAP) {
     board[poolType].length = STORE_CAP;
@@ -58,6 +67,15 @@ function reset(poolType) {
       persistPool(t);
     }
   }
+}
+
+function removeUserFromPool(poolType, userId) {
+  if (!board[poolType]) return false;
+  const before = board[poolType].length;
+  board[poolType] = board[poolType].filter((e) => e.userId !== userId);
+  const changed = board[poolType].length !== before;
+  if (changed) persistPool(poolType);
+  return changed;
 }
 
 function removeUser(userId) {
@@ -93,4 +111,4 @@ async function loadFromDb() {
   }
 }
 
-module.exports = { record, getTop, getTopFiltered, getAllTypes, reset, removeUser, loadFromDb };
+module.exports = { record, getTop, getTopFiltered, getAllTypes, reset, removeUser, removeUserFromPool, loadFromDb };
