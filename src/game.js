@@ -1,5 +1,4 @@
 const fs = require("fs");
-const Jimp = require("jimp");
 const { pickRandom, shuffle, formatSeconds, findAllMatches } = require("./utils");
 const store = require("./dataStore");
 const leaderboard = require("./leaderboard");
@@ -7,21 +6,6 @@ const standings = require("./standings");
 const moderation = require("./moderation");
 const registration = require("./registration");
 const templates = require("./templates");
-
-// يسوي معاينة مصغّرة (blur preview) للصورة يدوياً بمكتبة جافاسكربت خالصة
-// (بدون ملفات ثنائية خاصة بنظام التشغيل)، عشان تشتغل بثبات على أي جهاز
-// (جوال/Termux، لابتوب، أو أي سيرفر مستقبلاً) بدون ما تعتمد على مكتبات
-// تركيب أصلية ممكن تفشل بصمت على بعض الأجهزة
-async function generateThumbnail(imagePath) {
-  try {
-    const img = await Jimp.read(imagePath);
-    img.resize(60, Jimp.AUTO);
-    return await img.quality(50).getBufferAsync(Jimp.MIME_JPEG);
-  } catch (e) {
-    console.error("خطأ توليد معاينة الصورة:", e.message);
-    return null;
-  }
-}
 
 // أنواع الفقرات المدعومة
 const POOL_TYPES = ["writing", "images", "questions", "counts"];
@@ -184,11 +168,11 @@ class Contest {
       try {
         const imagePath = store.getImagePath(this._lastItem.file);
         const imageBuffer = fs.readFileSync(imagePath);
-        const jpegThumbnail = await generateThumbnail(imagePath);
+        // ما نتدخل بتوليد المعاينة يدوياً — نخلي Baileys تسويها بنفسها
+        // (تعتمد على jimp v1 كـ peer dependency، ومضمونة توافقها معها)
         sentMsg = await this.client.sendMessage(this.chatId, {
           image: imageBuffer,
           caption: `🖼️ ${questionText || "من هذه الشخصية؟"}`,
-          jpegThumbnail: jpegThumbnail || undefined,
         });
       } catch (e) {
         await this.sendChat(`⚠️ ما قدرت أفتح الصورة: ${this._lastItem.file}. تأكد إنها موجودة بمجلد data/images`);
