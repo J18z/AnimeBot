@@ -1,11 +1,14 @@
 // تسجيل نوع جهاز كل شخص (جوال / خارجي) + اسمه — بالثقة، البوت ما يتحقق تقنياً
-// يبقى بالذاكرة للسرعة، وينحفظ بالخلفية بقاعدة البيانات (لو متوفرة)
+// يبقى بالذاكرة للسرعة، وينحفظ فوراً بقاعدة البيانات (لو متوفرة)
 
 const { getDb } = require("./db");
 
 const registry = new Map(); // userId -> { type: "mobile"|"external", displayName, active }
 
-// يحفظ تسجيل شخص وحد بالخلفية (بدون ما يعطّل بقية الكود)
+// يحفظ تسجيل شخص وحد. مهم: ننتظرها (await) بعمليات التسجيل/الإلغاء —
+// لأن البوت يمكن يعيد التشغيل بأي لحظة (خمول سيرفر مجاني، إعادة نشر،
+// انقطاع مؤقت)، ولو الحفظ "بالخلفية بدون انتظار" ما اكتمل قبل إعادة
+// التشغيل، ينضاع التسجيل بالكامل من قاعدة البيانات وكأنه ما صار
 async function persistOne(userId) {
   const db = getDb();
   if (!db) return;
@@ -32,14 +35,14 @@ async function persistDelete(userId) {
   }
 }
 
-function register(userId, type, displayName) {
+async function register(userId, type, displayName) {
   const existing = registry.get(userId) || {};
   registry.set(userId, {
     type,
     displayName: displayName || existing.displayName || userId.split("@")[0],
     active: true,
   });
-  persistOne(userId); // بدون انتظار، يشتغل بالخلفية
+  await persistOne(userId); // ننتظرها هنا عمداً — عملية نادرة، والصحة أهم من السرعة
 }
 
 function getType(userId) {
@@ -61,18 +64,18 @@ function isMobile(userId) {
 // إلغاء تسجيل "ناعم" (يستخدمه الشخص لنفسه بـ.الغاء تسجيل): يوقف تسجيله
 // الحالي بس يحتفظ بنوعه القديم بالذاكرة، عشان لو حاول يسجل بنوع مختلف
 // بعدها مباشرة، يوقفه القفل ويوجّهه لأمر .تغيير تسجيل (يحتاج موافقة)
-function unregister(userId) {
+async function unregister(userId) {
   const existing = registry.get(userId);
   if (!existing) return;
   existing.active = false;
-  persistOne(userId);
+  await persistOne(userId);
 }
 
 // حذف كامل (يستخدمه صاحب البوت بـ.ازالة/.ازالة تصفير): يمسح كل أثر
 // للشخص، بما فيها القفل، فيقدر يسجل بأي نوع يبيه من جديد بحرية
-function hardDelete(userId) {
+async function hardDelete(userId) {
   registry.delete(userId);
-  persistDelete(userId);
+  await persistDelete(userId);
 }
 
 // يرجع كل المسجلين النشيطين من نوع معين، بصيغة {userId, displayName} (لأمر .قائمة)

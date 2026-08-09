@@ -52,14 +52,39 @@ const practiceWordCount = new Map(); // chatId -> عدد (1-5)
 const wordCountLabels = { كلمة: 1, كلمتين: 2, "ثلاث كلمات": 3, "اربع كلمات": 4, "خمس كلمات": 5 };
 
 // يبدأ جولة تقديم بسيطة (معاينة/تجربة، بدون تسجيل بـ.توب أو .سجل)
+// يبدأ أول جولة لمسابقة جديدة بأمان — لو صار خطأ (ملف تالف، مشكلة شبكة
+// لحظية...)، ننظف حالة المسابقة (عشان ما تفضل "عالقة" بالمنتصف) ونخبر
+// القروب بوضوح بدل ما يفضل ساكت بدون أي تفسير
+async function safeStartFirstRound(chatId, sock, contest) {
+  try {
+    await contest.nextRound();
+  } catch (e) {
+    console.error("⚠️ خطأ أثناء بدء أول سؤال بالمسابقة:", e);
+    contest.active = false;
+    activeContests.delete(chatId);
+    try {
+      await sock.sendMessage(chatId, { text: "⚠️ صار خطأ أثناء بدء المسابقة. جرب تبدأها من جديد." });
+    } catch (notifyErr) {
+      console.error("فشل حتى إرسال رسالة خطأ بدء المسابقة:", notifyErr);
+    }
+  }
+}
+
 async function startPractice(chatId, sock, msg, poolType, extraOpts = {}) {
-  if (activeContests.has(chatId) && activeContests.get(chatId).active) {
+  const existing = activeContests.get(chatId);
+  // نقفل بس لو فيه مسابقة حقيقية شغالة (فنش أو مستمرة) — التقديم البسيط
+  // مالها علاقة بالمسابقات أصلاً، فما نقفلها على بعض. لو فيه تقديم بسيط
+  // سابق ما انجاوب، نلغيه بصمت ونبدأ الجديد بدل ما نرفض
+  if (existing && existing.active && !existing.practiceMode) {
     await sock.sendMessage(chatId, { text: "⚠️ فيه مسابقة شغالة حالياً، خلها تخلص أول." }, { quoted: msg });
     return;
   }
+  if (existing && existing.practiceMode) {
+    existing.active = false;
+  }
   const contest = new Contest(chatId, sock, poolType, 1, { practiceMode: true, ...extraOpts });
   activeContests.set(chatId, contest);
-  await contest.nextRound();
+  await safeStartFirstRound(chatId, sock, contest);
 }
 
 const endlessTypeLabels = { images: "صور", writing: "كتابة", counts: "تعداد", questions: "أسئلة" };
@@ -75,7 +100,7 @@ async function startEndless(chatId, sock, msg, poolType, extraOpts = {}) {
   await sock.sendMessage(chatId, {
     text: `🎬 بدأت مسابقة *${endlessTypeLabels[poolType]}* مستمرة! ما تتوقف إلا بأمر الإيقاف المخصص لها.`,
   });
-  await contest.nextRound();
+  await safeStartFirstRound(chatId, sock, contest);
 }
 
 // يوقف مسابقة مستمرة ويعرض النتيجة النهائية
@@ -158,7 +183,7 @@ async function sendStandingsList(sock, chatId, msg, list, subtitle) {
     return;
   }
   const out = templates.formatStandingsList(list, subtitle);
-  const mentions = list.slice(0, 6).map((e) => e.userId);
+  const mentions = list.map((e) => e.userId);
   await sock.sendMessage(chatId, { text: out, mentions }, { quoted: msg });
 }
 
@@ -280,11 +305,13 @@ async function handleIncoming(sock, msg) {
  *◈ عـــام • 🔰◜*
 
 ◞◈ .فنش <رقم> •— فنش عام◜
+◞◈ .مسابقة <رقم> •— فقرات منوعة، تنتهي عند عدد أسئلة كلي (مو أول فايز)◜
 ◞◈ .فص <رقم> •— فنش صور◜
 ◞◈ .فكت <رقم> •— فنش كت◜ 
 ◞◈ .فتع <رقم> •— فنش تعداد◜ 
 ◞◈ .فسس <رقم> •— فنش سس◜ 
 ◞◈ .انهاء •— ايقاف المسابقة◜ 
+◞◈ .سكب •— تخطي السؤال الحالي وعرض إجابته والانتقال للي بعده◜
 ◞◈ النقاط •— عرض النقاط اثناء المسابقة◜ 
 *˼‏مثال: .فنش 15⋄◟*
 
@@ -311,7 +338,7 @@ async function handleIncoming(sock, msg) {
 
 ◞◈ .تسجيل جوال •— لاعب جوال◜
 ◞◈ .تسجيل خارجي •— لاعب كيبورد/لاب/بي سي◜
-◞◈ .تغيير تسجيل جوال/خارجي •— طلب تغيير النوع◜ 
+◞◈ .تغيير تسجيل جوال/خارجي •— طلب تغيير نوعك (يحتاج موافقة المالك)◜ 
 ◞◈ .الغاء التسجيل •— يمسح تسجيلك مع سجلاتك◜ 
 ◞◈ .قائمة •— يعرض المسجلين جوال/خارجي◜
 *˼‏مهم جدا: سجل بأمانة او يتم حظرك⋄◟*
@@ -337,8 +364,9 @@ async function handleIncoming(sock, msg) {
 ◞◈ .الغاء ايقاف/حظر @ •— الغاء الامرين◜ 
 ◞◈ .ازالة @ •— تزيل اللاعب من التسجيلات◜ 
 ◞◈ .ازالة تصفير @ •— ازالة اللاعب مع حذف السجلات◜
-◞◈ .قبول/.رفض تغيير @ •— الرد على طلب تغيير تسجيل◜
-◞◈ .ريسيت توب/سجل @ •— تصفير لشخص معين◜
+◞◈ .قبول تغيير @ / .رفض تغيير @ •— الرد على طلب تغيير تسجيل◜
+◞◈ .ريسيت توب [نوع] [@شخص] •— تصفير التوب (كامل/فقرة/شخص معين)◜
+◞◈ .ريسيت سجل [@شخص] •— تصفير السجل التراكمي (كامل أو شخص معين)◜
 ❆ ⋅ ┈── ─━ •⊰✣⊱ • ━─ ──┈ ⋅ ❆`;
     await sock.sendMessage(chatId, { text: helpText }, { quoted: msg });
     return;
@@ -393,7 +421,7 @@ if (text === ".تسجيل جوال" || text === ".تسجيل خارجي") {
     return;
   }
 
-  registration.register(senderId, type, msg.pushName);
+  await registration.register(senderId, type, msg.pushName);
   await sock.sendMessage(chatId, { text: `✅ تم تسجيلك كـ: ${typeLabel}` }, { quoted: msg });
   return;
 }
@@ -448,7 +476,7 @@ if (/^\.قبول تغيير(\s|$)/.test(text)) {
     await sock.sendMessage(chatId, { text: "ما فيه طلب تغيير معلّق لهذا الشخص." }, { quoted: msg });
     return;
   }
-  registration.register(target, requestedType);
+  await registration.register(target, requestedType);
   pendingChangeRequests.delete(target);
   const label = requestedType === "mobile" ? "جوال 📱" : "خارجي 💻";
   await sock.sendMessage(
@@ -484,7 +512,7 @@ if (/^\.رفض تغيير(\s|$)/.test(text)) {
 
   // أمر .الغاء تسجيل (أو إلغاء): يمسح تسجيلك وكل سجلاتك (توب وسجل) بالكامل
   if (text === ".الغاء تسجيل" || text === ".إلغاء تسجيل") {
-    registration.unregister(senderId);
+    await registration.unregister(senderId);
     leaderboard.removeUser(senderId);
     standings.removeUser(senderId);
     await sock.sendMessage(chatId, { text: "🗑️ تم إلغاء تسجيلك، وحذف كل سجلاتك من .توب و.سجل." }, { quoted: msg });
@@ -676,7 +704,7 @@ if (/^\.رفض تغيير(\s|$)/.test(text)) {
     const externals = registration.getAllByType("external");
     const mobiles = registration.getAllByType("mobile");
     const out = templates.formatMemberList(externals, mobiles);
-    const mentions = [...externals.slice(0, 6), ...mobiles.slice(0, 6)].map((e) => e.userId);
+    const mentions = [...externals, ...mobiles].map((e) => e.userId);
     await sock.sendMessage(chatId, { text: out, mentions }, { quoted: msg });
     return;
   }
@@ -730,7 +758,32 @@ if (/^\.رفض تغيير(\s|$)/.test(text)) {
     await sock.sendMessage(chatId, {
       text: `🎬 بدأت مسابقة *${typeLabels[startCmd.contestType]}*${mobileNote}!\nالنقاط المطلوبة للفوز: ${startCmd.target}\nبالتوفيق للجميع 🍀`,
     });
-    await contest.nextRound();
+    await safeStartFirstRound(chatId, sock, contest);
+    return;
+  }
+
+  // أمر .مسابقة <رقم> أو .مسابقة ج <رقم>: فقرات منوعة (زي .فنش) بس تنتهي
+  // لما مجموع عدد الأسئلة الكلي (بغض النظر مين جاوب) يوصل الرقم — مو
+  // أول شخص يوصل هدف
+  const mixedMatch = text.match(/^\.مسابقة(?:\s+(ج))?\s+(\d+)$/);
+  if (mixedMatch) {
+    if (activeContests.has(chatId) && activeContests.get(chatId).active) {
+      await sock.sendMessage(
+        chatId,
+        { text: "⚠️ فيه مسابقة شغالة بالفعل بهذي المحادثة. اكتب: .انهاء عشان تنهيها." },
+        { quoted: msg }
+      );
+      return;
+    }
+    const mobileOnly = mixedMatch[1] === "ج";
+    const roundsTarget = parseInt(mixedMatch[2], 10);
+    const contest = new Contest(chatId, sock, "general", Infinity, { roundsTarget, mobileOnly });
+    activeContests.set(chatId, contest);
+    const mobileNote = mobileOnly ? " 📱 (جوالات بس)" : "";
+    await sock.sendMessage(chatId, {
+      text: `🎬 بدأت مسابقة *منوعة*${mobileNote} (فقرات مختلفة)!\nعدد الأسئلة الكلي: ${roundsTarget}\nبالتوفيق للجميع 🍀`,
+    });
+    await safeStartFirstRound(chatId, sock, contest);
     return;
   }
 
@@ -821,7 +874,7 @@ if (/^\.رفض تغيير(\s|$)/.test(text)) {
       await sock.sendMessage(chatId, { text: "استخدم الأمر مع منشن للشخص: .ازالة تصفير @الشخص" }, { quoted: msg });
       return;
     }
-    registration.hardDelete(target);
+    await registration.hardDelete(target);
     leaderboard.removeUser(target);
     standings.removeUser(target);
     await sock.sendMessage(
@@ -842,7 +895,7 @@ if (/^\.رفض تغيير(\s|$)/.test(text)) {
       await sock.sendMessage(chatId, { text: "استخدم الأمر مع منشن للشخص: .ازالة @الشخص" }, { quoted: msg });
       return;
     }
-    registration.hardDelete(target);
+    await registration.hardDelete(target);
     await sock.sendMessage(
       chatId,
       { text: "✅ تم إزالة تسجيله (بدون تصفير سجلاته من .توب/.سجل).", mentions: [target] },
@@ -868,6 +921,21 @@ if (/^\.رفض تغيير(\s|$)/.test(text)) {
       return;
     }
     await contest.endContest(); // يوقف ويعرض النتائج مباشرة
+    return;
+  }
+
+  // أمر .سكب: يتخطى السؤال/الصورة/التعداد الحالي (مهما كان نوعه)، يرسل
+  // الإجابة الصحيحة، وينتقل للي بعده بدون ما يحسب نقاط لحد
+  if (text === ".سكب") {
+    const contest = activeContests.get(chatId);
+    if (!contest || !contest.active) {
+      await sock.sendMessage(chatId, { text: "ما فيه مسابقة شغالة حالياً." }, { quoted: msg });
+      return;
+    }
+    const skipped = await contest.skipRound(msg);
+    if (!skipped) {
+      await sock.sendMessage(chatId, { text: "ما فيه سؤال حالياً يُسكب." }, { quoted: msg });
+    }
     return;
   }
 

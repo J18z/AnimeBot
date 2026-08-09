@@ -13,7 +13,16 @@ const TOP_DIVIDER = "❆ ⋅ ┈── ─━ •⊰✣⊱ • ━─ ──┈ 
 const TOP_SUBTITLE_ALL = "     ◝لـلـكـل⇆🔰◟";
 const TOP_SUBTITLE_MOBILE = "     ◝جـوالات⇆📱◟";
 const TOP_DIVIDER2 = "      ❊ ┉ ٠ ┈─ • ⊰ 倖 ⊱ • ─┈ ٠ ┉ ❊";
-const CIRCLED = ["①", "②", "③", "④", "⑤", "⑥", "⑦", "⑧", "⑨", "⑩"];
+// أرقام دائرية مزخرفة (① إلى ㉟ = 1 إلى 35)، وبعدها نرجع لأرقام عادية
+const CIRCLED = [
+  "①", "②", "③", "④", "⑤", "⑥", "⑦", "⑧", "⑨", "⑩",
+  "⑪", "⑫", "⑬", "⑭", "⑮", "⑯", "⑰", "⑱", "⑲", "⑳",
+  "㉑", "㉒", "㉓", "㉔", "㉕", "㉖", "㉗", "㉘", "㉙", "㉚",
+  "㉛", "㉜", "㉝", "㉞", "㉟",
+];
+function numFor(i) {
+  return CIRCLED[i] || `${i + 1}.`;
+}
 const MEDALS = ["🥇", "🥈", "🥉"];
 
 const topTitles = {
@@ -39,7 +48,7 @@ function formatTopSection(poolType, entries, subtitle = TOP_SUBTITLE_ALL) {
     out += "ما فيه نتائج مسجلة بعد.\n";
   } else {
     entries.forEach((e, i) => {
-      out += formatEntryLines(CIRCLED[i] || `${i + 1}.`, e);
+      out += formatEntryLines(numFor(i), e);
     });
   }
   out += TOP_DIVIDER;
@@ -65,16 +74,15 @@ function formatCombinedTop(entriesByType, subtitle = TOP_SUBTITLE_ALL) {
   return out;
 }
 
-// رسالة .سجل / .سجل جوالات — أفضل 6، كل عنصر: اسم+منشن، عدد الفنشات
-// المكسوبة (wins)، ومجموع النقاط
+// رسالة .سجل / .سجل جوالات — كل المسجلين (بدون حد أقصى)، كل عنصر: اسم+منشن،
+// عدد الفنشات المكسوبة (wins)، ومجموع النقاط
 function formatStandingsList(list, subtitle = TOP_SUBTITLE_ALL) {
   let out = `${TOP_HEADER}\n${TOP_DIVIDER}\n◞سـجـل الـنـقـاط╎˼‏📑˹⤹◜\n${subtitle}\n${TOP_DIVIDER2}\n`;
-  const shown = list.slice(0, 6);
-  if (shown.length === 0) {
+  if (list.length === 0) {
     out += "ما فيه سجل بعد.\n";
   } else {
-    shown.forEach((e, i) => {
-      out += `˼‏${CIRCLED[i]}╎${isolate(e.displayName)} ⇆ @${e.userId.split("@")[0]} ⤹\n`;
+    list.forEach((e, i) => {
+      out += `˼‏${numFor(i)}╎${isolate(e.displayName)} ⇆ @${e.userId.split("@")[0]} ⤹\n`;
       out += `˼‏الـفـنـش˹ ﹝${e.wins || 0}﹞⋄🏅◟\n`;
       out += `˼‏الـنـقـاط˹﹝${e.points}﹞⋄🔢◟\n\n`;
     });
@@ -83,15 +91,14 @@ function formatStandingsList(list, subtitle = TOP_SUBTITLE_ALL) {
   return out;
 }
 
-// رسالة نهاية مسابقة (الترتيب النهائي)، أفضل 6
+// رسالة نهاية مسابقة (الترتيب النهائي)، بدون حد أقصى
 function formatContestEnd(ranking) {
   let out = `${TOP_HEADER}\n${TOP_DIVIDER}\n◞نـهـايـة الـمـسـابـقـة╎˼‏🏆˹⤹◜\n ◝الـتـرتـيـب الـنـهـائي⇆🎖️◟\n${TOP_DIVIDER2}\n`;
-  const shown = ranking.slice(0, 6);
-  if (shown.length === 0) {
+  if (ranking.length === 0) {
     out += "انتهت المسابقة بدون فائزين.\n";
   } else {
-    shown.forEach((e, i) => {
-      out += `˼‏${CIRCLED[i]}╎${isolate(e.displayName)} ⇆ @${e.userId.split("@")[0]} ⤹\n`;
+    ranking.forEach((e, i) => {
+      out += `˼‏${numFor(i)}╎${isolate(e.displayName)} ⇆ @${e.userId.split("@")[0]} ⤹\n`;
       out += `˼‏الـنـقـاط˹﹝${e.points}﹞⋄◟\n\n`;
     });
   }
@@ -99,26 +106,24 @@ function formatContestEnd(ranking) {
   return out;
 }
 
-// رسالة .قائمة — الأعضاء المسجلين (خارجي وجوال)، أفضل 6 لكل قسم
+// رسالة .قائمة — كل الأعضاء المسجلين (خارجي وجوال)، بدون حد أقصى
 function formatMemberList(externals, mobiles) {
   let out = `${TOP_HEADER}\n${TOP_DIVIDER}\n◞قـائـمـة الـتـسـجـيـلات╎˼‏📜˹⤹◜\n     ◝الـاعــضــاء⇆👥◟\n${TOP_DIVIDER2}\n`;
   out += `*✠ الـخـارجـي • 💻◜*\n\n`;
-  const shownExt = externals.slice(0, 6);
-  if (shownExt.length === 0) {
+  if (externals.length === 0) {
     out += "ما فيه أعضاء مسجلين.\n\n";
   } else {
-    shownExt.forEach((e, i) => {
-      out += `˼‏${CIRCLED[i]}╎${isolate(e.displayName)} ⇆ @${e.userId.split("@")[0]} ⋄◟\n`;
+    externals.forEach((e, i) => {
+      out += `˼‏${numFor(i)}╎${isolate(e.displayName)} ⇆ @${e.userId.split("@")[0]} ⋄◟\n`;
     });
     out += "\n";
   }
   out += `${TOP_DIVIDER2}\n*✠ الـجـوالات • 📱◜*\n\n`;
-  const shownMob = mobiles.slice(0, 6);
-  if (shownMob.length === 0) {
+  if (mobiles.length === 0) {
     out += "ما فيه أعضاء مسجلين.\n\n";
   } else {
-    shownMob.forEach((e, i) => {
-      out += `˼‏${CIRCLED[i]}╎${isolate(e.displayName)} ⇆ @${e.userId.split("@")[0]} ⋄◟\n`;
+    mobiles.forEach((e, i) => {
+      out += `˼‏${numFor(i)}╎${isolate(e.displayName)} ⇆ @${e.userId.split("@")[0]} ⋄◟\n`;
     });
   }
   out += TOP_DIVIDER;
@@ -133,6 +138,7 @@ module.exports = {
   TOP_SUBTITLE_MOBILE,
   TOP_DIVIDER2,
   CIRCLED,
+  numFor,
   MEDALS,
   topTitles,
   TOP_ORDER,

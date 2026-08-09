@@ -35,6 +35,8 @@ class Contest {
     this.endless = !!options.endless; // مسابقة مستمرة، ما تتوقف تلقائياً عند الهدف
     this.mobileOnly = !!options.mobileOnly; // بس المسجلين كجوال يقدرون يشاركون
     this.fixedWordCount = options.fixedWordCount || null; // عدد كلمات ثابت لفقرة الكتابة
+    this.roundsTarget = options.roundsTarget || null; // عدد أسئلة إجمالي تنتهي عنده المسابقة (بغض النظر مين جاوب)
+    this.roundsCompleted = 0; // عدّاد الأسئلة اللي خلصت (إجابة صحيحة أو سكب)
   }
 
   pickPoolType() {
@@ -176,27 +178,13 @@ class Contest {
       try {
         const imagePath = store.getImagePath(this._lastItem.file);
         const imageBuffer = fs.readFileSync(imagePath);
-        const sendOpts = {
+        // نخلي Baileys تولّد المعاينة بنفسها تلقائياً (موثوقة ومضمونة) —
+        // محاولة توليدها يدوياً بمكتبة jimp سببت صور فاسدة/رمادية لبعض
+        // الحالات (خلل بتوافق API الإصدار الجديد من jimp، مو مضمون 100%)
+        sentMsg = await this.client.sendMessage(this.chatId, {
           image: imageBuffer,
           caption: `🖼️ ${questionText || "من هذه الشخصية؟"}`,
-        };
-        // نولّد معاينة (thumbnail) أوضح وأكبر يدوياً بدل الافتراضية الصغيرة
-        // جداً اللي تولدها Baileys تلقائياً — عشان تكون المعاينة اللي
-        // تطلع قبل التحميل الكامل واضحة بما يكفي للتخمين. لو فشل التوليد
-        // لأي سبب، نكمل عادي بدون معاينة مخصصة (Baileys تسوي وحدة تلقائية)
-        try {
-          const { Jimp } = require("jimp");
-          const img = await Jimp.read(imagePath);
-          const targetWidth = Math.min(320, img.bitmap.width);
-          const scale = targetWidth / img.bitmap.width;
-          const targetHeight = Math.round(img.bitmap.height * scale);
-          img.resize(targetWidth, targetHeight);
-          const thumbBuffer = await img.getBuffer("image/jpeg", { quality: 70 });
-          sendOpts.jpegThumbnail = thumbBuffer;
-        } catch (thumbErr) {
-          console.error("⚠️ ما قدرت أسوي معاينة مخصصة للصورة (استمرينا بدونها):", thumbErr.message);
-        }
-        sentMsg = await this.client.sendMessage(this.chatId, sendOpts);
+        });
       } catch (e) {
         this.currentRound = null; // فشل الإرسال، نلغي الجولة اللي عيّناها فوق
         await this.sendChat(`⚠️ ما قدرت أفتح الصورة: ${this._lastItem.file}. تأكد إنها موجودة بمجلد data/images`);
@@ -290,31 +278,109 @@ class Contest {
   async completeRound(msg, senderId) {
     const round = this.currentRound;
     round.finished = true;
-    const rawElapsed = Math.max(0, Date.now() - round.startTime);
+    this.roundsCompleted += 1;
+
+    // حماية التايمر: نفس المعادلة بالضبط بدون أي تغيير، بس بحماية إضافية
+    // ضد أي قيمة غير طبيعية (NaN/undefined/سالب) لو صار خلل غير متوقع —
+    // بدل ما يطلع وقت "مقلتش" غريب للمستخدم، نرجع لقيمة آمنة (0) ونسجل
+    // تحذير بالـ Logs عشان نلاحظه ونحقق فيه، بدون ما نغيّر شكل الحساب
+    let rawElapsed = Date.now() - round.startTime;
+    if (!Number.isFinite(rawElapsed)) {
+      console.warn(
+        `⚠️ قيمة وقت غير طبيعية بجولة ${round.poolType} (startTime=${round.startTime}) — استخدمنا 0 كقيمة آمنة.`
+      );
+      rawElapsed = 0;
+    }
+    rawElapsed = Math.max(0, rawElapsed);
     // ننزل هامش ثابت وصغير بس (300 ملي ثانية) — تعويض بسيط لزمن وصول
     // رسالة السؤال، بدون أي تخمين متغيّر يقدر يشوّه الرقم
     const elapsed = Math.max(0, rawElapsed - NETWORK_OVERHEAD_MS);
     const total = this.addPoints(senderId, round.points);
 
     // نسجل هذي النتيجة بلوحة الصدارة (أفضل الأوقات) — إلا لو تقديم بسيط
-    // (تجربة/معاينة)، ما نحسبها بالمنافسة الرسمية
+    // (تجربة/معاينة)، ما نحسبها بالمنافسة الرسمية. محاطة بحماية عشان لو
+    // فشل التسجيل لأي سبب (مشكلة قاعدة بيانات لحظية)، ما توقف تقدم الجولة
     if (!this.practiceMode) {
-      leaderboard.record(round.poolType, {
-        userId: senderId,
-        displayName: this.displayNameFor(senderId),
-        elapsed,
-        answer: round.label,
-        ts: Date.now(),
-      });
+      try {
+        leaderboard.record(round.poolType, {
+          userId: senderId,
+          displayName: this.displayNameFor(senderId),
+          elapsed,
+          answer: round.label,
+          ts: Date.now(),
+        });
+      } catch (e) {
+        console.error("⚠️ خطأ تسجيل النتيجة بلوحة الصدارة (تجاهلناه، الجولة تكمل عادي):", e);
+      }
     }
 
     const resultLabel = round.required > 1 ? `جمعت ${round.required} إجابات` : "إجابة صحيحة";
-    await this.replyTo(
-      msg,
-      `🎉 ${resultLabel}!\n\n⏱️ الوقت: ${formatSeconds(elapsed)} ثانية\n\n⭐ +${round.points} نقطة\n(المجموع: ${total})`
-    );
+
+    // التقديم البسيط تجربة/معاينة كلاسيكية بدون وقت ولا نقاط حقيقية —
+    // الوقت والنقاط تخص المسابقات الفعلية بس
+    if (this.practiceMode) {
+      await this.replyTo(msg, `🎉 ${resultLabel}!`);
+    } else {
+      await this.replyTo(
+        msg,
+        `🎉 ${resultLabel}!\n\n⏱️ الوقت: ${formatSeconds(elapsed)} ثانية\n\n⭐ +${round.points} نقطة\n(المجموع: ${total})`
+      );
+    }
 
     await this.afterRoundWin(senderId, total);
+  }
+
+  // يجدول الجولة القادمة بعد تأخير، مع محاولة ثانية تلقائية لو فشلت
+  // الأولى (عطل مؤقت بالشبكة مثلاً)، وتنبيه واضح للقروب لو فشلت الاثنتين
+  // — بدل ما تفضل المسابقة "معلّقة" بصمت بدون أي توضيح لأي أحد
+  scheduleNextRound(delayMs, context = "الجولة القادمة") {
+    setTimeout(async () => {
+      try {
+        await this.nextRound();
+      } catch (e1) {
+        console.error(`⚠️ خطأ بـ${context} (محاولة أولى):`, e1);
+        setTimeout(async () => {
+          try {
+            await this.nextRound();
+          } catch (e2) {
+            console.error(`⚠️ خطأ بـ${context} (محاولة ثانية، توقفنا):`, e2);
+            try {
+              await this.sendChat(
+                "⚠️ صار خطأ متكرر أثناء تجهيز السؤال التالي، والمسابقة توقفت. جرب .انهاء وابدأها من جديد."
+              );
+            } catch (notifyErr) {
+              console.error("فشل حتى إرسال رسالة تنبيه الخطأ:", notifyErr);
+            }
+          }
+        }, 2000);
+      }
+    }, delayMs);
+  }
+
+  // أمر .سكب: يسكب (يتخطى) السؤال الحالي بدون ما يحسب نقاط لحد، يرسل
+  // الإجابة الصحيحة، وينتقل للسؤال اللي بعده. يرجع true لو فيه سؤال
+  // فعلاً انسكب، أو false لو ما فيه سؤال شغال أصلاً
+  async skipRound(msg) {
+    if (!this.active || !this.currentRound || this.currentRound.finished) return false;
+    const round = this.currentRound;
+    round.finished = true;
+    this.roundsCompleted += 1;
+    await this.replyTo(msg, `⏭️ تم سكب السؤال.\n📝 الإجابة كانت: ${round.label}`);
+
+    if (this.practiceMode) {
+      this.active = false;
+      return true;
+    }
+
+    // مسابقة بعدد أسئلة إجمالي: السؤال المسكوب يُحسب من العدد برضو
+    if (this.roundsTarget && this.roundsCompleted >= this.roundsTarget) {
+      await this.endContest();
+      return true;
+    }
+
+    const cfg = store.getConfig();
+    this.scheduleNextRound(cfg.nextQuestionDelayMs || 1000, "الجولة القادمة بعد السكب");
+    return true;
   }
 
   async afterRoundWin(senderId, total) {
@@ -323,15 +389,19 @@ class Contest {
       this.active = false;
       return;
     }
+    // مسابقة بعدد أسئلة إجمالي (.مسابقة <رقم>): تنتهي لما مجموع الأسئلة
+    // اللي خلصت (بغض النظر مين جاوب) يوصل الرقم المطلوب
+    if (this.roundsTarget && this.roundsCompleted >= this.roundsTarget) {
+      await this.endContest();
+      return;
+    }
     // مسابقة مستمرة: ما تتوقف تلقائياً عند أي هدف، تستمر لحد أمر الإيقاف اليدوي
     if (!this.endless && total >= this.target) {
       await this.endContest();
       return;
     }
     const cfg = store.getConfig();
-    setTimeout(() => {
-      this.nextRound().catch((e) => console.error("خطأ بالجولة القادمة:", e));
-    }, cfg.nextQuestionDelayMs || 1000);
+    this.scheduleNextRound(cfg.nextQuestionDelayMs || 1000, "الجولة القادمة");
   }
 
   // يعرض اسم العرض المخزن (لو موجود) وإلا رقم الشخص فقط
