@@ -388,14 +388,27 @@ async function handleIncoming(sock, msg) {
 // ═══ أمر .ستيكر — ميزة خاصة (ما موجودة بقائمة الأوامر) ═══
   const stickerMatch = text.match(/^\.ستيكر\s+(.+)$/);
   if (stickerMatch) {
-    const copyright = stickerMatch[1].trim();
-    if (!copyright) {
+    const raw = stickerMatch[1].trim();
+    if (!raw) {
       await sock.sendMessage(
         chatId,
-        { text: "⚠️ اكتب الحقوق بعد الأمر، مثال:\n.ستيكر J18" },
+        { text: "⚠️ اكتب الحقوق بعد الأمر، مثال:\n.ستيكر J18\n.ستيكر J18/فداك الستيكر" },
         { quoted: msg }
       );
       return;
+    }
+
+    // تفكيك: pack/author
+    // النص الأبيض (pack) = قبل /
+    // النص الرمادي (author) = بعد /
+    let pack, author;
+    if (raw.includes("/")) {
+      const parts = raw.split("/");
+      pack = parts[0].trim();
+      author = parts.slice(1).join("/").trim();
+    } else {
+      pack = raw;
+      author = raw;
     }
 
     const contextInfo = msg.message?.extendedTextMessage?.contextInfo;
@@ -411,46 +424,47 @@ async function handleIncoming(sock, msg) {
     }
 
     try {
-      let buffer;
-      let type = null;
+      let buffer = null;
 
       if (quoted.imageMessage) {
         const stream = await downloadContentFromMessage(quoted.imageMessage, "image");
         buffer = Buffer.from([]);
         for await (const chunk of stream) buffer = Buffer.concat([buffer, chunk]);
-        type = "image";
       } else if (quoted.stickerMessage) {
         const stream = await downloadContentFromMessage(quoted.stickerMessage, "image");
         buffer = Buffer.from([]);
         for await (const chunk of stream) buffer = Buffer.concat([buffer, chunk]);
-        type = "sticker";
+      } else if (quoted.videoMessage) {
+        const stream = await downloadContentFromMessage(quoted.videoMessage, "video");
+        buffer = Buffer.from([]);
+        for await (const chunk of stream) buffer = Buffer.concat([buffer, chunk]);
       }
 
-      if (!buffer || !type) {
+      if (!buffer || buffer.length === 0) {
         await sock.sendMessage(
           chatId,
-          { text: "⚠️ رد على صورة أو ستيكر فقط." },
+          { text: "⚠️ ما قدرت أحمل الصورة/الستيكر. جرب صورة ثانية." },
           { quoted: msg }
         );
         return;
       }
 
-      const stickerBuffer = await createSticker(buffer, copyright);
+      const stickerBuffer = await createSticker(buffer);
 
       await sock.sendMessage(
         chatId,
         {
           sticker: stickerBuffer,
-          pack: copyright,
-          author: copyright,
+          pack: pack,
+          author: author,
         },
         { quoted: msg }
       );
     } catch (err) {
-      console.error("⚠️ خطأ بإنشاء الستيكر:", err);
+      console.error("⚠️ خطأ بإنشاء الستيكر:", err.message, err.stack);
       await sock.sendMessage(
         chatId,
-        { text: "⚠️ صار خطأ أثناء معالجة الصورة/الستيكر." },
+        { text: `⚠️ صار خطأ: ${err.message}` },
         { quoted: msg }
       );
     }
