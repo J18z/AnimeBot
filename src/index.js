@@ -408,7 +408,7 @@ async function handleIncoming(sock, msg) {
       author = parts.slice(1).join("/").trim();
     } else {
       pack = raw;
-      author = raw;
+      author = "";
     }
 
     const contextInfo = msg.message?.extendedTextMessage?.contextInfo;
