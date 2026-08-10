@@ -449,7 +449,7 @@ async function handleIncoming(sock, msg) {
         return;
       }
 
-      const stickerBuffer = await createSticker(buffer);
+      const stickerBuffer = await createSticker(buffer, pack, author);
 
       await sock.sendMessage(
         chatId,
