@@ -37,6 +37,7 @@ class Contest {
     this.fixedWordCount = options.fixedWordCount || null; // عدد كلمات ثابت لفقرة الكتابة
     this.roundsTarget = options.roundsTarget || null; // عدد أسئلة إجمالي تنتهي عنده المسابقة (بغض النظر مين جاوب)
     this.roundsCompleted = 0; // عدّاد الأسئلة اللي خلصت (إجابة صحيحة أو سكب)
+    this.nextRoundTimer = null; // ✅ حفظ رقم Timer عشان نلغيه لاحقاً
   }
 
   pickPoolType() {
@@ -334,7 +335,7 @@ class Contest {
   // الأولى (عطل مؤقت بالشبكة مثلاً)، وتنبيه واضح للقروب لو فشلت الاثنتين
   // — بدل ما تفضل المسابقة "معلّقة" بصمت بدون أي توضيح لأي أحد
   scheduleNextRound(delayMs, context = "الجولة القادمة") {
-    setTimeout(async () => {
+    this.nextRoundTimer = setTimeout(async () => {
       try {
         await this.nextRound();
       } catch (e1) {
@@ -425,6 +426,10 @@ class Contest {
   }
 
   async endContest() {
+    if (this.nextRoundTimer) {
+      clearTimeout(this.nextRoundTimer);
+      this.nextRoundTimer = null;
+    }
     this.active = false;
     const ranking = [...this.scores.entries()].sort((a, b) => b[1] - a[1]);
 
@@ -448,6 +453,10 @@ class Contest {
   }
 
   stop() {
+    if (this.nextRoundTimer) {
+      clearTimeout(this.nextRoundTimer);
+      this.nextRoundTimer = null;
+    }
     this.active = false;
     this.currentRound = null;
   }

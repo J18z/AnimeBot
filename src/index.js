@@ -13,6 +13,9 @@ const templates = require("./templates");
 const db = require("./db");
 const { useMongoAuthState } = require("./mongoAuthState");
 const { startHealthServer, setQr, clearQr } = require("./healthServer");
+const { createSticker } = require("./stickerMaker");
+const { downloadContentFromMessage } = require("@whiskeysockets/baileys");
+const CONFIG = store.getConfig(); // ✅ نقرأ config مرة وحدة عند التشغيل
 
 // حماية كاملة من انهيار البرنامج: Baileys أحياناً يرمي أخطاء غير متوقعة
 // من داخل عمليات خلفية (مثلاً محاولة إعادة إرسال رسالة بعد ما ينقطع
@@ -43,8 +46,7 @@ function isChatAllowed(chatId) {
 // يتحقق إن الشخص هو صاحب البوت (المحدد بـ ownerId بملف config.json)
 // لو ownerId فاضي (ما تحدد بعد)، نرفض الأمر بدل ما نسمح لأي أحد افتراضياً
 function isOwner(senderId) {
-  const cfg = store.getConfig();
-  return !!cfg.ownerId && senderId === cfg.ownerId;
+  return !!CONFIG.ownerId && senderId === CONFIG.ownerId;
 }
 
 // عدد الكلمات الافتراضي لأمر ".كت" التقديمي (لكل محادثة)
@@ -119,6 +121,7 @@ async function stopEndless(chatId, sock, msg, poolType) {
     return;
   }
   await contest.endContest();
+  activeContests.delete(chatId); // ✅ نظف من الذاكرة
 }
 
 // يحلل أوامر بدء المسابقة من نص الرسالة
@@ -382,7 +385,77 @@ async function handleIncoming(sock, msg) {
 
 // طلبات تغيير نوع التسجيل المعلّقة، بانتظار موافقة صاحب البوت
 // userId -> "mobile" | "external"
+// ═══ أمر .ستيكر — ميزة خاصة (ما موجودة بقائمة الأوامر) ═══
+  const stickerMatch = text.match(/^\.ستيكر\s+(.+)$/);
+  if (stickerMatch) {
+    const copyright = stickerMatch[1].trim();
+    if (!copyright) {
+      await sock.sendMessage(
+        chatId,
+        { text: "⚠️ اكتب الحقوق بعد الأمر، مثال:\n.ستيكر J18" },
+        { quoted: msg }
+      );
+      return;
+    }
 
+    const contextInfo = msg.message?.extendedTextMessage?.contextInfo;
+    const quoted = contextInfo?.quotedMessage;
+
+    if (!quoted) {
+      await sock.sendMessage(
+        chatId,
+        { text: "⚠️ رد على *صورة* أو *ستيكر* أولاً، ثم اكتب الأمر." },
+        { quoted: msg }
+      );
+      return;
+    }
+
+    try {
+      let buffer;
+      let type = null;
+
+      if (quoted.imageMessage) {
+        const stream = await downloadContentFromMessage(quoted.imageMessage, "image");
+        buffer = Buffer.from([]);
+        for await (const chunk of stream) buffer = Buffer.concat([buffer, chunk]);
+        type = "image";
+      } else if (quoted.stickerMessage) {
+        const stream = await downloadContentFromMessage(quoted.stickerMessage, "image");
+        buffer = Buffer.from([]);
+        for await (const chunk of stream) buffer = Buffer.concat([buffer, chunk]);
+        type = "sticker";
+      }
+
+      if (!buffer || !type) {
+        await sock.sendMessage(
+          chatId,
+          { text: "⚠️ رد على صورة أو ستيكر فقط." },
+          { quoted: msg }
+        );
+        return;
+      }
+
+      const stickerBuffer = await createSticker(buffer, copyright);
+
+      await sock.sendMessage(
+        chatId,
+        {
+          sticker: stickerBuffer,
+          pack: copyright,
+          author: copyright,
+        },
+        { quoted: msg }
+      );
+    } catch (err) {
+      console.error("⚠️ خطأ بإنشاء الستيكر:", err);
+      await sock.sendMessage(
+        chatId,
+        { text: "⚠️ صار خطأ أثناء معالجة الصورة/الستيكر." },
+        { quoted: msg }
+      );
+    }
+    return;
+  }
 // أمر .تسجيل جوال / .تسجيل خارجي: يحدد نوع جهاز الشخص (بالثقة، بدون تحقق تقني)
 // — مقفول بمجرد ما يسجل الشخص أول مرة، ما يقدر يغيّر نوعه مباشرة بعدها
 // (حتى لو ألغى تسجيله)، لازم يمر بأمر .تغيير تسجيل (يحتاج موافقة المالك)
@@ -449,6 +522,12 @@ if (changeMatch) {
   }
 
   pendingChangeRequests.set(senderId, requestedType);
+  // حذف تلقائي بعد 24 ساعة لو ما تم الرد
+setTimeout(() => {
+  if (pendingChangeRequests.has(senderId)) {
+    pendingChangeRequests.delete(senderId);
+  }
+}, 24 * 60 * 60 * 1000);
   await sock.sendMessage(
     chatId,
     {
@@ -921,6 +1000,7 @@ if (/^\.رفض تغيير(\s|$)/.test(text)) {
       return;
     }
     await contest.endContest(); // يوقف ويعرض النتائج مباشرة
+    activeContests.delete(chatId); // ✅ نظف من الذاكرة
     return;
   }
 
