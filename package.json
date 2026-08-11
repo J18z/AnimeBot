@@ -16,6 +16,8 @@
     "jimp": "^1.6.0",
     "qrcode": "^1.5.4",
     "sharp": "^0.33.5",
-    "node-webpmux": "^3.2.0"
+    "node-webpmux": "^3.2.0",
+    "fluent-ffmpeg": "^2.1.2",
+    "@ffmpeg-installer/ffmpeg": "^1.1.3"
   }
 }

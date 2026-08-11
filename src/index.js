@@ -13,7 +13,7 @@ const templates = require("./templates");
 const db = require("./db");
 const { useMongoAuthState } = require("./mongoAuthState");
 const { startHealthServer, setQr, clearQr } = require("./healthServer");
-const { createSticker } = require("./stickerMaker");
+const { createSticker, createAnimatedSticker } = require("./stickerMaker");
 const { downloadContentFromMessage } = require("@whiskeysockets/baileys");
 const CONFIG = store.getConfig(); // ✅ نقرأ config مرة وحدة عند التشغيل
 
@@ -425,6 +425,7 @@ async function handleIncoming(sock, msg) {
 
     try {
       let buffer = null;
+      let isVideo = false;
 
       if (quoted.imageMessage) {
         const stream = await downloadContentFromMessage(quoted.imageMessage, "image");
@@ -438,17 +439,32 @@ async function handleIncoming(sock, msg) {
         const stream = await downloadContentFromMessage(quoted.videoMessage, "video");
         buffer = Buffer.from([]);
         for await (const chunk of stream) buffer = Buffer.concat([buffer, chunk]);
+        isVideo = true;
       }
 
       if (!buffer || buffer.length === 0) {
         await sock.sendMessage(
           chatId,
-          { text: "⚠️ ما قدرت أحمل الصورة/الستيكر. جرب صورة ثانية." },
+          { text: "⚠️ ما قدرت أحمل الملف. جرب صورة/فيديو/ستيكر ثاني." },
           { quoted: msg }
         );
         return;
       }
 
+      const stickerBuffer = isVideo
+        ? await createAnimatedSticker(buffer, pack, author)
+        : await createSticker(buffer, pack, author);
+
+      await sock.sendMessage(
+        chatId,
+        {
+          sticker: stickerBuffer,
+          pack: pack,
+          author: author,
+        },
+        { quoted: msg }
+      );
+    }
       const stickerBuffer = await createSticker(buffer, pack, author);
 
       await sock.sendMessage(

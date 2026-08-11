@@ -6,7 +6,8 @@ const standings = require("./standings");
 const moderation = require("./moderation");
 const registration = require("./registration");
 const templates = require("./templates");
-
+let sharp;
+try { sharp = require("sharp"); } catch (e) { sharp = null; }
 // هامش زمني ثابت وصغير (مو متغيّر أو متوقّع) نطرحه من وقت أي إجابة، تعويض
 // تقريبي بسيط لزمن وصول رسالة السؤال قبل ما يبدأ المتسابق يقرأها. متعمد
 // إنه رقم ثابت صغير (مو تخمين ديناميكي) عشان يبقى الوقت المعروض ثابت
@@ -178,16 +179,37 @@ class Contest {
     } else if (poolType === "images") {
       try {
         const imagePath = store.getImagePath(this._lastItem.file);
-        const imageBuffer = fs.readFileSync(imagePath);
-        // نخلي Baileys تولّد المعاينة بنفسها تلقائياً (موثوقة ومضمونة) —
-        // محاولة توليدها يدوياً بمكتبة jimp سببت صور فاسدة/رمادية لبعض
-        // الحالات (خلل بتوافق API الإصدار الجديد من jimp، مو مضمون 100%)
-        sentMsg = await this.client.sendMessage(this.chatId, {
-          image: imageBuffer,
-          caption: `🖼️ ${questionText || "من هذه الشخصية؟"}`,
-        });
+        let imageBuffer = fs.readFileSync(imagePath);
+
+        if (sharp) {
+          // نصغّر الصورة شوي عشان تتحمل بسرعة (WhatsApp يحب الصور الخفيفة)
+          imageBuffer = await sharp(imageBuffer)
+            .resize(1000, 1000, { fit: "inside", withoutEnlargement: true })
+            .jpeg({ quality: 85, progressive: true })
+            .toBuffer();
+
+          // ✅ نولّد thumbnail يدوياً — هذا اللي يظهر فوراً بدون "تالف"
+          const thumbBuffer = await sharp(imageBuffer)
+            .resize(120, 120, { fit: "cover" })
+            .jpeg({ quality: 60 })
+            .toBuffer();
+
+          sentMsg = await this.client.sendMessage(this.chatId, {
+            image: imageBuffer,
+            caption: `🖼️ ${questionText || "من هذه الشخصية؟"}`,
+            jpegThumbnail: thumbBuffer,  // ← المعاينة الفورية
+            mimetype: "image/jpeg",
+          });
+        } else {
+          // لو sharp مو موجود
+          sentMsg = await this.client.sendMessage(this.chatId, {
+            image: imageBuffer,
+            caption: `🖼️ ${questionText || "من هذه الشخصية؟"}`,
+            mimetype: "image/jpeg",
+          });
+        }
       } catch (e) {
-        this.currentRound = null; // فشل الإرسال، نلغي الجولة اللي عيّناها فوق
+        this.currentRound = null;
         await this.sendChat(`⚠️ ما قدرت أفتح الصورة: ${this._lastItem.file}. تأكد إنها موجودة بمجلد data/images`);
         return;
       }
@@ -215,33 +237,32 @@ class Contest {
   async handleMessage(msg, text, senderId) {
     if (!this.active || !this.currentRound || this.currentRound.finished) return;
     if (!text) return;
-    if (moderation.isBanned(senderId)) return; // محظور: نتجاهله كأنه مو موجود
+    if (moderation.isBanned(senderId)) return;
 
-    // أي مشارك مو مسجل (لا جوال ولا خارجي) ما تُحسب له نقاط بأي مسابقة —
-    // نحذّره مرة وحدة بس خلال هذي المسابقة، وبعدها نتجاهل رسائله بصمت
-    if (this.mobileOnly) {
-      // مسابقة مخصصة للجوالات: لازم يكون مسجل كـ"جوال" بالتحديد
-      if (!registration.isMobile(senderId)) {
-        if (!this.remindedMobileOnly.has(senderId)) {
-          this.remindedMobileOnly.add(senderId);
-          await this.replyTo(
-            msg,
-            "🚫 هذي مسابقة *جوالات بس*، ما تُحسب لك مشاركتك. اكتب .تسجيل جوال عشان تقدر تشارك وتنحسب لك النقاط."
-          );
+    // التقديم البسيط (معاينة/تجربة): مجاني للجميع بدون تسجيل ولا تحذير
+    if (!this.practiceMode) {
+      if (this.mobileOnly) {
+        if (!registration.isMobile(senderId)) {
+          if (!this.remindedMobileOnly.has(senderId)) {
+            this.remindedMobileOnly.add(senderId);
+            await this.replyTo(
+              msg,
+              "🚫 هذي مسابقة *جوالات بس*، ما تُحسب لك مشاركتك. اكتب .تسجيل جوال عشان تقدر تشارك وتنحسب لك النقاط."
+            );
+          }
+          return;
         }
-        return;
-      }
-    } else {
-      // مسابقة عادية: يكفي يكون مسجل (جوال أو خارجي)، وإلا ما تُحسب له النقاط
-      if (!registration.getType(senderId)) {
-        if (!this.remindedUsers.has(senderId)) {
-          this.remindedUsers.add(senderId);
-          await this.replyTo(
-            msg,
-            "💡 لازم تسجل نوع جهازك أول عشان تُحسب لك النقاط. اكتب .تسجيل جوال أو .تسجيل خارجي."
-          );
+      } else {
+        if (!registration.getType(senderId)) {
+          if (!this.remindedUsers.has(senderId)) {
+            this.remindedUsers.add(senderId);
+            await this.replyTo(
+              msg,
+              "💡 لازم تسجل نوع جهازك أول عشان تُحسب لك النقاط. اكتب .تسجيل جوال أو .تسجيل خارجي."
+            );
+          }
+          return;
         }
-        return;
       }
     }
 
