@@ -455,19 +455,7 @@ async function handleIncoming(sock, msg) {
         ? await createAnimatedSticker(buffer, pack, author)
         : await createSticker(buffer, pack, author);
 
-      await sock.sendMessage(
-        chatId,
-        {
-          sticker: stickerBuffer,
-          pack: pack,
-          author: author,
-        },
-        { quoted: msg }
-      );
-    }
-      const stickerBuffer = await createSticker(buffer, pack, author);
-
-      await sock.sendMessage(
+     await sock.sendMessage(
         chatId,
         {
           sticker: stickerBuffer,
@@ -477,7 +465,7 @@ async function handleIncoming(sock, msg) {
         { quoted: msg }
       );
     } catch (err) {
-      console.error("⚠️ خطأ بإنشاء الستيكر:", err.message, err.stack);
+      console.error("⚠️ خطأ بإنشاء الستيكر:", err.message);
       await sock.sendMessage(
         chatId,
         { text: `⚠️ صار خطأ: ${err.message}` },
