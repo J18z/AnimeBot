@@ -24,7 +24,9 @@ async function persistOne(userId) {
   }
 }
 
-function addContestResult(scoresMap, nameCache) {
+// options.countWin: هل نحسب "فوز فنش" لصاحب أعلى نقاط بهذي المسابقة؟
+// (بس المسابقات اللي مو مستمرة — تمرَّر من game.js حسب this.endless)
+function addContestResult(scoresMap, nameCache, options = {}) {
   if (!scoresMap || scoresMap.size < MIN_PLAYERS) return;
 
   // نحدد الفائز بالمركز الأول بهذي المسابقة (أعلى نقاط)
@@ -36,13 +38,14 @@ function addContestResult(scoresMap, nameCache) {
       winnerId = userId;
     }
   }
+  const countWin = options.countWin !== false && winnerPoints > 0;
 
   for (const [userId, points] of scoresMap.entries()) {
     const displayName = (nameCache && nameCache.get(userId)) || userId.split("@")[0];
     const current = totals.get(userId) || { displayName, points: 0, wins: 0 };
     current.points += points;
     current.displayName = displayName;
-    if (userId === winnerId) current.wins += 1;
+    if (countWin && userId === winnerId) current.wins += 1;
     totals.set(userId, current);
     persistOne(userId); // بدون انتظار
   }

@@ -383,8 +383,6 @@ async function handleIncoming(sock, msg) {
     return;
   }
 
-// طلبات تغيير نوع التسجيل المعلّقة، بانتظار موافقة صاحب البوت
-// userId -> "mobile" | "external"
 // ═══ أمر .ستيكر — ميزة خاصة (ما موجودة بقائمة الأوامر) ═══
   const stickerMatch = text.match(/^\.ستيكر\s+(.+)$/);
   if (stickerMatch) {

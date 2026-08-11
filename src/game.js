@@ -39,6 +39,7 @@ class Contest {
     this.roundsTarget = options.roundsTarget || null; // عدد أسئلة إجمالي تنتهي عنده المسابقة (بغض النظر مين جاوب)
     this.roundsCompleted = 0; // عدّاد الأسئلة اللي خلصت (إجابة صحيحة أو سكب)
     this.nextRoundTimer = null; // ✅ حفظ رقم Timer عشان نلغيه لاحقاً
+    this.roundWatchdog = null; // مؤقت حراسة: ينبّه لو سؤال "علق" بدون أي رد لفترة طويلة
   }
 
   pickPoolType() {
@@ -143,7 +144,7 @@ class Contest {
         slots = item.answers;
         required = item.required;
         questionText = item.topic;
-        label = item.topic;
+        label = item.answers.map((a) => a[0]).join("، ");
       } else {
         // صور أو سؤال عادي: إجابة وحدة، لكن نقبلها بأي مكان بالرسالة
         slots = [item.answers];
@@ -228,6 +229,27 @@ class Contest {
     // "زمن شبكة" متغيّر. نعدّل نفس كائن الجولة (مو نستبدله) عشان أي رد
     // وصل بالفترة القصيرة اللي بين التعيين والإرسال يشوف نفس المرجع
     round.startTime = Date.now();
+
+    // مؤقت حراسة: لو ما صار أي رد (ولا حتى محاولة خطأ) خلال دقيقة ونصف،
+    // على الأغلب الرسالة (سؤال/صورة) ما وصلت فعلياً لواتساب رغم إن سيرفرنا
+    // ظن إنها انرسلت بنجاح — هذا وارد لو الاتصال متذبذب. بدل ما تفضل
+    // المسابقة "عالقة" بصمت بدون أي تفسير، ننبّه القروب بوضوح
+    this.clearRoundWatchdog();
+    this.roundWatchdog = setTimeout(() => {
+      if (this.currentRound === round && !round.finished && this.active) {
+        this.sendChat(
+          "⚠️ يبدو إن السؤال الحالي ما وصل بشكل طبيعي (تأخير غير عادي بالاتصال). جرب .سكب للانتقال للسؤال التالي، أو .انهاء لو تبي توقف المسابقة."
+        ).catch((e) => console.error("فشل إرسال تنبيه انتظار السؤال:", e));
+      }
+    }, 15000); // 15 ثانية
+  }
+
+  // يلغي مؤقت الحراسة الحالي (لو موجود) — يُستدعى كل ما جولة تخلص/تُسكب/تنتهي المسابقة
+  clearRoundWatchdog() {
+    if (this.roundWatchdog) {
+      clearTimeout(this.roundWatchdog);
+      this.roundWatchdog = null;
+    }
   }
 
   // يعالج رسالة واردة أثناء وجود جولة نشطة
@@ -301,6 +323,7 @@ class Contest {
     const round = this.currentRound;
     round.finished = true;
     this.roundsCompleted += 1;
+    this.clearRoundWatchdog();
 
     // حماية التايمر: نفس المعادلة بالضبط بدون أي تغيير، بس بحماية إضافية
     // ضد أي قيمة غير طبيعية (NaN/undefined/سالب) لو صار خلل غير متوقع —
@@ -387,6 +410,7 @@ class Contest {
     const round = this.currentRound;
     round.finished = true;
     this.roundsCompleted += 1;
+    this.clearRoundWatchdog();
     await this.replyTo(msg, `⏭️ تم سكب السؤال.\n📝 الإجابة كانت: ${round.label}`);
 
     if (this.practiceMode) {
@@ -451,11 +475,14 @@ class Contest {
       clearTimeout(this.nextRoundTimer);
       this.nextRoundTimer = null;
     }
+    this.clearRoundWatchdog();
     this.active = false;
     const ranking = [...this.scores.entries()].sort((a, b) => b[1] - a[1]);
 
-    // نضيف نتيجة هذي المسابقة للسجل التراكمي (بس لو فيه 3 مشاركين فأكثر)
-    standings.addContestResult(this.scores, this.nameCache);
+    // نضيف نتيجة هذي المسابقة للسجل التراكمي (بس لو فيه مشاركين كافيين)
+    // countWin: فوز "فنش" يُحسب بس بالمسابقات اللي مو مستمرة (فنش رسمي أو
+    // مسابقة بعدد أسئلة محدد) — المستمرة (.مسص/.مسس/.متع/.مسكت) ما تُحسب
+    standings.addContestResult(this.scores, this.nameCache, { countWin: !this.endless });
 
     if (ranking.length === 0) {
       await this.sendChat("انتهت المسابقة بدون فائزين 😅");
@@ -478,6 +505,7 @@ class Contest {
       clearTimeout(this.nextRoundTimer);
       this.nextRoundTimer = null;
     }
+    this.clearRoundWatchdog();
     this.active = false;
     this.currentRound = null;
   }
