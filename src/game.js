@@ -221,11 +221,7 @@ class Contest {
         return;
       }
     } else if (poolType === "questions") {
-      if (required > 1) {
-        sentMsg = await this.sendChat(`❓ سؤال جديد\n\n${questionText}\n(المطلوب ${required} إجابات)`);
-      } else {
         sentMsg = await this.sendChat(`❓ سؤال جديد\n\n${questionText}`);
-      }
     } else if (poolType === "counts") {
       sentMsg = await this.sendChat(`🔢 فقرة التعداد\n\n${questionText}`);
     }
