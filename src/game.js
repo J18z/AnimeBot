@@ -15,6 +15,12 @@ try { sharp = require("sharp"); } catch (e) { sharp = null; }
 // مجانية زي Render ممكن تتأخر لحظياً وتشوّه أي تخمين ديناميكي)
 const NETWORK_OVERHEAD_MS = 300;
 
+// حد أدنى منطقي (فيزيائياً) لأي وقت إجابة — ولا إنسان يقرأ سؤال/صورة
+// ويكتب إجابة أسرع من هذا. أي قيمة أقل من كذا (0.00، 0.05...) مؤكد خطأ
+// قياس (تذبذب سيرفر/شبكة)، مو سرعة حقيقية — نحميها بحد أدنى ثابت بدل ما
+// تطلع رقم مستحيل يقدر يُستغل كـ"سرعة خارقة" مزيّفة
+const MIN_PLAUSIBLE_ELAPSED_MS = 200;
+
 // أنواع الفقرات المدعومة
 const POOL_TYPES = ["writing", "images", "questions", "counts"];
 
@@ -339,7 +345,19 @@ class Contest {
     rawElapsed = Math.max(0, rawElapsed);
     // ننزل هامش ثابت وصغير بس (300 ملي ثانية) — تعويض بسيط لزمن وصول
     // رسالة السؤال، بدون أي تخمين متغيّر يقدر يشوّه الرقم
-    const elapsed = Math.max(0, rawElapsed - NETWORK_OVERHEAD_MS);
+    let elapsed = Math.max(0, rawElapsed - NETWORK_OVERHEAD_MS);
+    // حماية إضافية: لو طلعت القيمة أقل من الحد الفيزيائي الممكن (يعني
+    // خطأ قياس مؤكد، مو سرعة حقيقية)، نثبتها على الحد الأدنى بدل ما
+    // تطلع رقم مستحيل (0.00 أو أقل من العادة بشكل مريب)
+    if (elapsed < MIN_PLAUSIBLE_ELAPSED_MS) {
+      if (elapsed < 50) {
+        // فرق واضح ومريب (مو مجرد اقتراب من الحد) — نسجله للمراجعة
+        console.warn(
+          `⚠️ وقت غير منطقي بجولة ${round.poolType} (elapsed=${elapsed}ms قبل التثبيت) — ثبّتناه على ${MIN_PLAUSIBLE_ELAPSED_MS}ms.`
+        );
+      }
+      elapsed = MIN_PLAUSIBLE_ELAPSED_MS;
+    }
     const total = this.addPoints(senderId, round.points);
 
     // نسجل هذي النتيجة بلوحة الصدارة (أفضل الأوقات) — إلا لو تقديم بسيط

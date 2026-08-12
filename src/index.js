@@ -345,6 +345,8 @@ async function handleIncoming(sock, msg) {
 ◞◈ .تغيير تسجيل جوال/خارجي •— طلب تغيير النوع◜ 
 ◞◈ .الغاء التسجيل •— يمسح تسجيلك مع سجلاتك◜ 
 ◞◈ .قائمة •— يعرض المسجلين جوال/خارجي◜
+◞◈ .قائمة_تع •— كل عناصر التعداد مع إجاباتها◜
+◞◈ .قائمة_سس •— كل الأسئلة مع إجاباتها◜
 *˼‏مهم جدا: سجل بأمانة او يتم حظرك⋄◟*
       ❊ ┉ ٠ ┈─ • ⊰ 倖 ⊱ • ─┈ ٠ ┉ ❊
 > *✠ الـتـرتـيـب والصدارة • 🏆◜*
@@ -804,6 +806,20 @@ if (/^\.رفض تغيير(\s|$)/.test(text)) {
     return;
   }
 
+  // أمر .قائمة_تع: يعرض كل عناصر التعداد مع إجاباتها
+  if (text === ".قائمة_تع") {
+    const out = templates.formatCountsList(store.getCounts());
+    await sock.sendMessage(chatId, { text: out }, { quoted: msg });
+    return;
+  }
+
+  // أمر .قائمة_سس: يعرض كل الأسئلة مع إجاباتها
+  if (text === ".قائمة_سس") {
+    const out = templates.formatQuestionsList(store.getQuestions());
+    await sock.sendMessage(chatId, { text: out }, { quoted: msg });
+    return;
+  }
+
   // أمر .ريسيت سجل [@شخص]: يصفّر السجل التراكمي كامل، أو سجل شخص معين بس
   // لو فيه منشن — مخصص لصاحب البوت بس
   if (/^\.ريسيت سجل(\s|$)/.test(text)) {
@@ -921,7 +937,7 @@ if (/^\.رفض تغيير(\s|$)/.test(text)) {
     await startEndless(chatId, sock, msg, "questions");
     return;
   }
-  if (text === ".متع") {
+  if (text === ".مستع") {
     await startEndless(chatId, sock, msg, "counts");
     return;
   }

@@ -130,6 +130,40 @@ function formatMemberList(externals, mobiles) {
   return out;
 }
 
+// رسالة .قائمة_تع — كل عناصر التعداد مع إجاباتها
+function formatCountsList(items) {
+  let out = `${TOP_HEADER}\n${TOP_DIVIDER}\n◞قـائـمـة الإجـابـات╎˼‏🧾˹⤹◜\n     ◝الـتـعـداد⇆🔢◟\n${TOP_DIVIDER2}\n\n`;
+  if (items.length === 0) {
+    out += "ما فيه بيانات تعداد بعد.\n";
+  } else {
+    out += items
+      .map((item) => {
+        const answer = item.answers.map((g) => g[0]).join(" ");
+        return `*˼‏تع/ ${item.topic} ⤹*\n˼‏ج/ ${answer} ⋄◟`;
+      })
+      .join("\n");
+  }
+  out += "\n" + TOP_DIVIDER;
+  return out;
+}
+
+// رسالة .قائمة_سس — كل الأسئلة مع إجاباتها (عادية ومتعددة)
+function formatQuestionsList(items) {
+  let out = `${TOP_HEADER}\n${TOP_DIVIDER}\n◞قـائـمـة الإجـابـات╎˼‏🧾˹⤹◜\n     ◝الاسـئـلـة⇆❓◟\n${TOP_DIVIDER2}\n\n`;
+  if (items.length === 0) {
+    out += "ما فيه أسئلة بعد.\n";
+  } else {
+    out += items
+      .map((item) => {
+        const answer = item.type === "count" ? item.answers.map((g) => g[0]).join(" ") : item.answers[0];
+        return `*˼‏س/ ${item.question} ⤹*\n˼‏ج/ ${answer} ⋄◟`;
+      })
+      .join("\n");
+  }
+  out += "\n" + TOP_DIVIDER;
+  return out;
+}
+
 module.exports = {
   isolate,
   TOP_HEADER,
@@ -148,4 +182,6 @@ module.exports = {
   formatStandingsList,
   formatContestEnd,
   formatMemberList,
+  formatCountsList,
+  formatQuestionsList,
 };

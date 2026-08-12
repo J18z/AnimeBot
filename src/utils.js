@@ -48,8 +48,18 @@ function relaxLetters(text) {
   return text.replace(/[غقج]/g, "ق");
 }
 
+/**
+ * يقصّ أي تكرار متتالي لنفس الحرف لحرف واحد بس — مثلاً "نااغي"،
+ * "نااااغي"، و"ناغي" كلهم يصيرون "ناقي" (بعد التطبيع المرن). يعالج
+ * حالات كتابة زيادة بالحماس (كاااكاشي، ككاكاشي، كييسكي...). يُستخدم مع
+ * نفس فقرات relaxLetters بالضبط (كل شي عدا الكتابة).
+ */
+function collapseRepeats(text) {
+  return text.replace(/(.)\1+/g, "$1");
+}
+
 function normalizeRelaxed(text) {
-  return relaxLetters(normalizeText(text));
+  return collapseRepeats(relaxLetters(normalizeText(text)));
 }
 
 function pickRandom(arr) {
