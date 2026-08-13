@@ -265,16 +265,30 @@ async function connectSocket() {
     // الدفعة كاملة تنضاع أول رسالة حقيقية وتحتاج ترسل مرتين. بدل كذا،
     // نفحص عمر كل رسالة لحالها ونتجاهل بس اللي قديمة فعلاً (مزامنة تاريخ
     // حقيقية بعد أول اتصال، مو رسالة حالية توصل بلحظة إعادة اتصال)
+    // ✅ إصلاح مهم لدقة التوقيت: نعالج كل رسائل الدفعة بالتوازي (Promise.all)
+    // مو بالتسلسل (for + await واحدة وحدة). قبل هذا التعديل، لو شخصين
+    // جاوبوا بنفس اللحظة تقريبًا، الشخص الثاني كان ينتظر لين يخلص البوت
+    // كامل معالجة رد الشخص الأول (اللي فيها إرسال فعلي لواتساب — طلب
+    // شبكة ياخذ وقت حقيقي) قبل حتى ما يبدأ يعالج رسالته هو. وقت الانتظار
+    // هذا كان ينحسب غلط كجزء من "سرعة" الشخص الثاني، فيطلع له وقت متضخم
+    // رغم إنه جاوب بسرعة فعلية. المعالجة المتوازية تخلي كل رسالة تُعالَج
+    // بأسرع وقت ممكن بشكل مستقل، فالتوقيت المحسوب يعكس السرعة الحقيقية.
+    //
+    // ملاحظة: هذا آمن تمامًا ولا يسبب تعارض/سباق — أول رسالة توصل لجملة
+    // "round.finished = true" بالكود (بشكل متزامن، قبل أي await داخلي)
+    // هي اللي تفوز بالجولة دايمًا، بغض النظر عن ترتيب اكتمال المعالجة.
     const now = Date.now();
-    for (const msg of messages) {
-      try {
-        const tsMs = Number(msg.messageTimestamp || 0) * 1000;
-        if (tsMs && now - tsMs > 60000) continue; // أقدم من دقيقة: تجاهلها
-        await handleIncoming(sock, msg);
-      } catch (err) {
-        console.error("خطأ بمعالجة الرسالة:", err);
-      }
-    }
+    await Promise.all(
+      messages.map(async (msg) => {
+        try {
+          const tsMs = Number(msg.messageTimestamp || 0) * 1000;
+          if (tsMs && now - tsMs > 60000) return; // أقدم من دقيقة: تجاهلها
+          await handleIncoming(sock, msg);
+        } catch (err) {
+          console.error("خطأ بمعالجة الرسالة:", err);
+        }
+      })
+    );
   });
 
   return sock;
@@ -347,7 +361,7 @@ async function handleIncoming(sock, msg) {
 ◞◈ .تسجيل خارجي •— لاعب كيبورد/لاب/بي سي◜
 ◞◈ .تغيير تسجيل جوال/خارجي •— طلب تغيير النوع◜ 
 ◞◈ .الغاء التسجيل •— يمسح تسجيلك مع سجلاتك◜ 
-◞◈ .قائمة •— يعرض المسجلين جوال/خارجي◜
+◞◈ .تسجيلات •— يعرض المسجلين جوال/خارجي◜
 ◞◈ .قائمة_تع •— كل عناصر التعداد مع إجاباتها◜
 ◞◈ .قائمة_سس •— كل الأسئلة مع إجاباتها◜
 *˼‏مهم جدا: سجل بأمانة او يتم حظرك⋄◟*
@@ -375,6 +389,7 @@ async function handleIncoming(sock, msg) {
 ◞◈ .ازالة تصفير @ •— ازالة اللاعب مع حذف السجلات◜
 ◞◈ .قبول/.رفض تغيير @ •— الرد على طلب تغيير تسجيل◜
 ◞◈ .ريسيت توب/سجل @ •— تصفير لشخص معين◜
+◞◈ .ريسيت تسجيلات •— تصفير كل التسجيلات (الكل يسجل من جديد)◜
 ❆ ⋅ ┈── ─━ •⊰✣⊱ • ━─ ──┈ ⋅ ❆`;
     await sock.sendMessage(chatId, { text: helpText }, { quoted: msg });
     return;
@@ -799,13 +814,30 @@ if (/^\.رفض تغيير(\s|$)/.test(text)) {
     return;
   }
 
-  // أمر .قائمة: يعرض كل الأعضاء المسجلين (خارجي وجوال) مع منشنهم
-  if (text === ".قائمة") {
+  // أمر .تسجيلات: يعرض كل الأعضاء المسجلين (خارجي وجوال) مع منشنهم
+  // (اسمها القديم كان .قائمة)
+  if (text === ".تسجيلات") {
     const externals = registration.getAllByType("external");
     const mobiles = registration.getAllByType("mobile");
     const out = templates.formatMemberList(externals, mobiles);
     const mentions = [...externals, ...mobiles].map((e) => e.userId);
     await sock.sendMessage(chatId, { text: out, mentions }, { quoted: msg });
+    return;
+  }
+
+  // أمر .ريسيت تسجيلات: يصفّر كل التسجيلات (جوال/خارجي) لكل الأعضاء
+  // كاملة، فيرجعون يحتاجون يسجلوا نوع جهازهم من جديد — مخصص لصاحب البوت بس
+  if (text === ".ريسيت تسجيلات") {
+    if (!isOwner(senderId)) {
+      await sock.sendMessage(chatId, { text: "⛔ هذا الأمر مخصص لصاحب البوت بس." }, { quoted: msg });
+      return;
+    }
+    const count = await registration.resetAll();
+    await sock.sendMessage(
+      chatId,
+      { text: `🗑️ تم تصفير كل التسجيلات بالكامل (${count || 0} تسجيل). الكل يحتاج يسجل من جديد.` },
+      { quoted: msg }
+    );
     return;
   }
 
@@ -869,9 +901,16 @@ if (/^\.رفض تغيير(\s|$)/.test(text)) {
       questions: "أسئلة",
     };
     const mobileNote = startCmd.mobileOnly ? " 📱 (جوالات بس)" : "";
-    await sock.sendMessage(chatId, {
-      text: `🎬 بدأت مسابقة *${typeLabels[startCmd.contestType]}*${mobileNote}!\nالنقاط المطلوبة للفوز: ${startCmd.target}\nبالتوفيق للجميع 🍀`,
-    });
+    // ✅ محمية بـ try/catch: لو فشلت رسالة "بدأت مسابقة" (انقطاع لحظي
+    // بالاتصال)، لازم نكمل ونبدأ السؤال الأول برضو — قبل كذا، فشل هذي
+    // الرسالة وحدها كان يوقف كل شي (ما يوصل السؤال الأول أبدًا) بصمت
+    try {
+      await sock.sendMessage(chatId, {
+        text: `🎬 بدأت مسابقة *${typeLabels[startCmd.contestType]}*${mobileNote}!\nالنقاط المطلوبة للفوز: ${startCmd.target}\nبالتوفيق للجميع 🍀`,
+      });
+    } catch (e) {
+      console.error("⚠️ فشل إرسال رسالة بدء المسابقة (تجاهلناه، نكمل لبدء السؤال الأول):", e);
+    }
     await safeStartFirstRound(chatId, sock, contest);
     return;
   }
@@ -894,9 +933,14 @@ if (/^\.رفض تغيير(\s|$)/.test(text)) {
     const contest = new Contest(chatId, sock, "general", Infinity, { roundsTarget, mobileOnly });
     activeContests.set(chatId, contest);
     const mobileNote = mobileOnly ? " 📱 (جوالات بس)" : "";
-    await sock.sendMessage(chatId, {
-      text: `🎬 بدأت مسابقة *منوعة*${mobileNote} (فقرات مختلفة)!\nعدد الأسئلة الكلي: ${roundsTarget}\nبالتوفيق للجميع 🍀`,
-    });
+    // ✅ نفس الحماية: فشل رسالة البدء ما لازم يمنع بدء السؤال الأول
+    try {
+      await sock.sendMessage(chatId, {
+        text: `🎬 بدأت مسابقة *منوعة*${mobileNote} (فقرات مختلفة)!\nعدد الأسئلة الكلي: ${roundsTarget}\nبالتوفيق للجميع 🍀`,
+      });
+    } catch (e) {
+      console.error("⚠️ فشل إرسال رسالة بدء المسابقة المنوعة (تجاهلناه، نكمل لبدء السؤال الأول):", e);
+    }
     await safeStartFirstRound(chatId, sock, contest);
     return;
   }

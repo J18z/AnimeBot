@@ -46,6 +46,7 @@ class Contest {
     this.roundsCompleted = 0; // عدّاد الأسئلة اللي خلصت (إجابة صحيحة أو سكب)
     this.nextRoundTimer = null; // ✅ حفظ رقم Timer عشان نلغيه لاحقاً
     this.roundWatchdog = null; // مؤقت حراسة: ينبّه لو سؤال "علق" بدون أي رد لفترة طويلة
+    this.processedMsgIds = new Set(); // حماية من معالجة نفس الرسالة مرتين (لو بيليز كررها)
   }
 
   pickPoolType() {
@@ -263,6 +264,35 @@ class Contest {
     if (!text) return;
     if (moderation.isBanned(senderId)) return;
 
+    // ✅ تجاهل رسائل السبام المكوّنة من حرف واحد بس (زي "ا" مكررة عدة
+    // رسائل ورا بعض) — ما تقدر أصلاً تكون إجابة صحيحة لأي فقرة (المطابقة
+    // بحدود الكلمة الكاملة، فحرف وحيد ما يطابق إجابة أطول أبدًا)، فتجاهلها
+    // بدري يقلل الإزعاج والمعالجة الزايدة بدون فايدة. استثناء: نسمح بالأرقام
+    // المفردة (زي "5")، لأن فيه سؤال إجابته رقم واحد بالضبط بالبنك الحالي
+    const trimmedText = text.trim();
+    if (trimmedText.length === 1 && !/[0-9٠-٩]/.test(trimmedText)) return;
+
+    // ✅ حماية من معالجة نفس الرسالة أكثر من مرة (بيليز أحياناً يكرر
+    // نفس الحدث، خصوصاً بعد أي إعادة اتصال) — لو سبق عالجناها، نتجاهلها
+    const msgId = msg.key && msg.key.id;
+    if (msgId) {
+      if (this.processedMsgIds.has(msgId)) return;
+      this.processedMsgIds.add(msgId);
+    }
+
+    // ✅ حماية دقة التوقيت: نتجاهل أي رسالة يكون توقيتها الحقيقي بواتساب
+    // (messageTimestamp، بالثواني من سيرفر واتساب نفسه) قبل بداية الجولة
+    // الحالية. هذا يحمينا من حالة نادرة بس حقيقية: بيليز أحياناً "يعيد
+    // تشغيل" رسائل قديمة (مزامنة بعد انقطاع اتصال لحظي بالسيرفر)، فلو
+    // صدف إن رسالة قديمة (قبل ما نرسل السؤال أصلاً) تطابق الإجابة بالغلط،
+    // كانت تنحسب كـ"إجابة خارقة السرعة" (قريبة من 0 أو حتى قبل السؤال).
+    // نسمح بهامش تسامح بسيط (2 ثانية) لفروقات الساعة الطبيعية بين
+    // سيرفرنا وسيرفر واتساب، بدون ما نرفض ردود شرعية جاية بسرعة حقيقية
+    const msgTsMs = Number(msg.messageTimestamp || 0) * 1000;
+    if (msgTsMs && this.currentRound && msgTsMs < this.currentRound.startTime - 2000) {
+      return;
+    }
+
     // التقديم البسيط (معاينة/تجربة): مجاني للجميع بدون تسجيل ولا تحذير
     if (!this.practiceMode) {
       if (this.mobileOnly) {
@@ -356,6 +386,18 @@ class Contest {
     }
     const total = this.addPoints(senderId, round.points);
 
+    // 🔍 سطر تشخيص مؤقت: يطبع كل مكونات حساب الوقت بالتفصيل. لو صار
+    // فرق غريب تاني (زي اللي وصفته: شخص "ثاني" بوقت 0.20 وشخص "أول"
+    // بوقت 1.61+)، انسخ هذا السطر من لوق Render وابعثه لي، بيوريني بالضبط
+    // وين المشكلة (فرق واتساب-تايمستامب مقابل وقت السيرفر، أو تأخير معالجة)
+    console.log(
+      `🔍 [توقيت] poolType=${round.poolType} sender=${senderId} ` +
+        `rawElapsed=${rawElapsed}ms elapsed(بعد التصحيح)=${elapsed}ms ` +
+        `roundStartTime=${round.startTime} serverNow=${Date.now()} ` +
+        `msgTimestamp(واتساب)=${Number(msg.messageTimestamp || 0) * 1000} ` +
+        `فرق(msgTs - roundStart)=${Number(msg.messageTimestamp || 0) * 1000 - round.startTime}ms`
+    );
+
     // نسجل هذي النتيجة بلوحة الصدارة (أفضل الأوقات) — إلا لو تقديم بسيط
     // (تجربة/معاينة)، ما نحسبها بالمنافسة الرسمية. محاطة بحماية عشان لو
     // فشل التسجيل لأي سبب (مشكلة قاعدة بيانات لحظية)، ما توقف تقدم الجولة
@@ -375,17 +417,30 @@ class Contest {
 
     const resultLabel = round.required > 1 ? `جمعت ${round.required} إجابات` : "إجابة صحيحة";
 
-    // التقديم البسيط تجربة/معاينة كلاسيكية بدون وقت ولا نقاط حقيقية —
-    // الوقت والنقاط تخص المسابقات الفعلية بس
-    if (this.practiceMode) {
-      await this.replyTo(msg, `🎉 ${resultLabel}!`);
-    } else {
-      await this.replyTo(
-        msg,
-        `🎉 ${resultLabel}!\n\n⏱️ الوقت: ${formatSeconds(elapsed)} ثانية\n\n⭐ +${round.points} نقطة\n(المجموع: ${total})`
-      );
+    // ✅ إصلاح مهم: نلف الإرسال بـ try/catch. قبل كذا، لو فشل إرسال رسالة
+    // "إجابة صحيحة" لأي سبب (انقطاع لحظي بالاتصال)، الكود كان يتوقف هنا
+    // تمامًا — يعني afterRoundWin() ما ينفّذ أبدًا، والسؤال التالي ما
+    // ينجدول، وتفضل المسابقة "معلّقة" بصمت بدون أي تنبيه (لأن round.finished
+    // صارت true من البداية، فمؤقت الحراسة ما يشتغل). النقطة كانت تنحسب
+    // برضو (لأن addPoints فوق) بس بدون أي رسالة ولا استمرار — بالضبط
+    // المشكلة اللي وصفتها. الحين: نحاول نرسل، ولو فشلت نسجلها بالـ logs
+    // ونكمل عادي، عشان تقدم المسابقة ما يعتمد على نجاح رسالة تأكيد واحدة
+    try {
+      // التقديم البسيط تجربة/معاينة كلاسيكية بدون وقت ولا نقاط حقيقية —
+      // الوقت والنقاط تخص المسابقات الفعلية بس
+      if (this.practiceMode) {
+        await this.replyTo(msg, `🎉 ${resultLabel}!`);
+      } else {
+        await this.replyTo(
+          msg,
+          `🎉 ${resultLabel}!\n\n⏱️ الوقت: ${formatSeconds(elapsed)} ثانية\n\n⭐ +${round.points} نقطة\n(المجموع: ${total})`
+        );
+      }
+    } catch (e) {
+      console.error("⚠️ فشل إرسال رسالة الإجابة الصحيحة (تجاهلناه، الجولة تكمل عادي):", e);
     }
 
+    // خارج الـ try عمدًا: لازم تشتغل دايمًا بغض النظر عن نجاح رسالة التأكيد
     await this.afterRoundWin(senderId, total);
   }
 
@@ -425,7 +480,13 @@ class Contest {
     round.finished = true;
     this.roundsCompleted += 1;
     this.clearRoundWatchdog();
-    await this.replyTo(msg, `⏭️ تم سكب السؤال.\n📝 الإجابة كانت: ${round.label}`);
+    // ✅ نفس إصلاح completeRound: فشل رسالة "تم سكب السؤال" ما لازم يوقف
+    // انتقال المسابقة للسؤال التالي
+    try {
+      await this.replyTo(msg, `⏭️ تم سكب السؤال.\n📝 الإجابة كانت: ${round.label}`);
+    } catch (e) {
+      console.error("⚠️ فشل إرسال رسالة السكب (تجاهلناه، ننتقل للسؤال التالي عادي):", e);
+    }
 
     if (this.practiceMode) {
       this.active = false;

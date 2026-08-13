@@ -78,7 +78,22 @@ async function hardDelete(userId) {
   await persistDelete(userId);
 }
 
-// يرجع كل المسجلين النشيطين من نوع معين، بصيغة {userId, displayName} (لأمر .قائمة)
+// يمسح كل التسجيلات كاملة (بالذاكرة وبقاعدة البيانات) — يستخدمها صاحب
+// البوت بأمر .ريسيت تسجيلات لما يبي الجميع يسجلوا نوع جهازهم من جديد
+async function resetAll() {
+  const allIds = [...registry.keys()];
+  registry.clear();
+  const db = getDb();
+  if (!db) return;
+  try {
+    await db.collection("registrations").deleteMany({});
+  } catch (err) {
+    console.error("خطأ تصفير كل التسجيلات:", err.message);
+  }
+  return allIds.length;
+}
+
+// يرجع كل المسجلين النشيطين من نوع معين، بصيغة {userId, displayName} (لأمر .تسجيلات)
 function getAllByType(type) {
   return [...registry.entries()]
     .filter(([, e]) => e.active && e.type === type)
@@ -111,6 +126,7 @@ module.exports = {
   isMobile,
   unregister,
   hardDelete,
+  resetAll,
   getAllByType,
   loadFromDb,
 };
