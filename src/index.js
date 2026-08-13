@@ -16,6 +16,7 @@ const { startHealthServer, setQr, clearQr } = require("./healthServer");
 const { createSticker, createAnimatedSticker } = require("./stickerMaker");
 const { downloadContentFromMessage } = require("@whiskeysockets/baileys");
 const CONFIG = store.getConfig(); // ✅ نقرأ config مرة وحدة عند التشغيل
+const { handleMatsuriMessage } = require("../matsuri/matsuri");
 
 // حماية كاملة من انهيار البرنامج: Baileys أحياناً يرمي أخطاء غير متوقعة
 // من داخل عمليات خلفية (مثلاً محاولة إعادة إرسال رسالة بعد ما ينقطع
@@ -290,6 +291,8 @@ async function handleIncoming(sock, msg) {
   const text = extractText(msg);
   // بالقروبات: participant هو آيدي الشخص الفعلي. بالخاص: remoteJid هو نفسه
   const senderId = msg.key.participant || msg.key.remoteJid;
+
+  if (await handleMatsuriMessage(sock, msg, text, chatId)) return;
 
   // أمر مساعدة: يعطيك آيدي المحادثة عشان تحطه بـ config.json لو تبي تحصر البوت بقروب معين
   if (text === "شات الايدي" || text === "chat id") {
