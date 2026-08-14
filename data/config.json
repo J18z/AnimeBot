@@ -3,5 +3,6 @@
   "nextQuestionDelayMs": 1000,
   "ownerId": "",
   "mongoUri": "",
-  "matsuriChatId": ""
+  "matsuriChatId": "",
+  "matsuriOwnerId": ""
 }

@@ -36,6 +36,7 @@ function getConfig() {
     mongoUri: process.env.MONGO_URI || fileConfig.mongoUri,
     ownerId: process.env.OWNER_ID || fileConfig.ownerId,
     matsuriChatId: process.env.MATSURI_CHAT_ID || fileConfig.matsuriChatId,
+    matsuriOwnerId: process.env.MATSURI_OWNER_ID || fileConfig.matsuriOwnerId,
   };
 }
 

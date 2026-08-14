@@ -306,7 +306,7 @@ async function handleIncoming(sock, msg) {
   // بالقروبات: participant هو آيدي الشخص الفعلي. بالخاص: remoteJid هو نفسه
   const senderId = msg.key.participant || msg.key.remoteJid;
 
-  if (await handleMatsuriMessage(sock, msg, text, chatId)) return;
+  if (await handleMatsuriMessage(sock, msg, text, chatId, senderId)) return;
 
   // أمر مساعدة: يعطيك آيدي المحادثة عشان تحطه بـ config.json لو تبي تحصر البوت بقروب معين
   if (text === "شات الايدي" || text === "chat id") {
@@ -1126,6 +1126,7 @@ async function main() {
     standings.loadFromDb(),
     registration.loadFromDb(),
     moderation.loadFromDb(),
+    roulette.loadFromDb(),
   ]);
   await connectSocket();
 }

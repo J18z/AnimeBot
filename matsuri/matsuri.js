@@ -11,6 +11,7 @@
 
 const store = require("../src/dataStore");
 const DATA = require("./matsuriData");
+const { handleRouletteMessage } = require("./roulette");
 
 // يطبع الألف بكل أشكالها (أ إ آ) لألف عادية، وكذا التاء المربوطة/الألف
 // المقصورة — عشان لو المستخدم غلط بكتابة الهمزة يضبط معه الأمر برضو
@@ -39,8 +40,14 @@ function isMatsuriChat(chatId) {
   return !!cfg.matsuriChatId && chatId === cfg.matsuriChatId;
 }
 
-// يرسل استمارة عادية (نص واحد فقط، بدون نتائج منفصلة)
+// يرسل استمارة عادية (نص واحد)، أو عدة رسائل بالترتيب لو الأمر عنده "parts"
 async function sendForm(sock, chatId, msg, entry) {
+  if (entry && Array.isArray(entry.parts) && entry.parts.length) {
+    for (const part of entry.parts) {
+      await sock.sendMessage(chatId, { text: part }, { quoted: msg });
+    }
+    return;
+  }
   if (!entry || !entry.form) {
     await sock.sendMessage(chatId, { text: NOT_ADDED }, { quoted: msg });
     return;
@@ -99,10 +106,13 @@ async function handleResults(sock, chatId, msg, rawName, tierRaw) {
 // نقطة الدخول الوحيدة لهذا الملف — تُستدعى من index.js لكل رسالة
 // ترجع true لو تكفلت بالرسالة (عشان index.js يوقف ويرجع)، و false لو
 // الرسالة مالها علاقة بماتسوري (يكمل index.js شغله العادي)
-async function handleMatsuriMessage(sock, msg, text, chatId) {
+async function handleMatsuriMessage(sock, msg, text, chatId, senderId) {
   if (!isMatsuriChat(chatId)) return false;
 
   const t = text.trim();
+
+  // قسم الروليت (.000 وكل أوامره) — خاص بصاحب البوت + صاحب وزارة ماتسوري فقط
+  if (await handleRouletteMessage(sock, msg, t, chatId, senderId)) return true;
 
   if (t === ".ماتسوري") {
     await sock.sendMessage(chatId, { text: DATA.menus.main }, { quoted: msg });
