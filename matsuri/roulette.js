@@ -187,6 +187,7 @@ async function handleRouletteMessage(sock, msg, text, chatId, senderId) {
     const label = plusMatch[3].trim();
     const { text: purchaseText, totalMoney, totalStars } = buildPurchase(parts, label);
     addPurchaseRecord(state, label, totalMoney, totalStars);
+    state.counts[label] = (state.counts[label] || 0) + RD.LIMITS.plusExtra;
     await persist();
     await reply(sock, chatId, msg, purchaseText);
     return true;
@@ -209,7 +210,8 @@ async function handleRouletteMessage(sock, msg, text, chatId, senderId) {
       return true;
     }
 
-    const already = state.counts[senderId] || 0;
+    const key = label; // الحد يُحسب على الشخص المستلم (اللقب)، مو على الأدمن المشتري
+    const already = state.counts[key] || 0;
     const requested = totalRolls(parts);
 
     if (already + requested > limit) {
@@ -218,14 +220,14 @@ async function handleRouletteMessage(sock, msg, text, chatId, senderId) {
         sock,
         chatId,
         msg,
-        `🚫 وصلت الحد الأقصى (${limit} لفات).\nمتبقي لك: ${remaining} فقط.`
+        `🚫 "${label}" وصل الحد الأقصى (${limit} لفات).\nمتبقي له: ${remaining} فقط.`
       );
       return true;
     }
 
     const { text: purchaseText, totalMoney, totalStars } = buildPurchase(parts, label);
     addPurchaseRecord(state, label, totalMoney, totalStars);
-    state.counts[senderId] = already + requested;
+    state.counts[key] = already + requested;
     await persist();
     await reply(sock, chatId, msg, purchaseText);
     return true;
