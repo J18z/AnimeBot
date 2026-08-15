@@ -40,6 +40,11 @@ function isMatsuriChat(chatId) {
   return !!cfg.matsuriChatId && chatId === cfg.matsuriChatId;
 }
 
+function isRouletteChat(chatId) {
+  const cfg = store.getConfig();
+  return !!cfg.rouletteChatId && chatId === cfg.rouletteChatId;
+}
+
 // يرسل استمارة عادية (نص واحد)، أو عدة رسائل بالترتيب لو الأمر عنده "parts"
 async function sendForm(sock, chatId, msg, entry) {
   if (entry && Array.isArray(entry.parts) && entry.parts.length) {
@@ -107,12 +112,16 @@ async function handleResults(sock, chatId, msg, rawName, tierRaw) {
 // ترجع true لو تكفلت بالرسالة (عشان index.js يوقف ويرجع)، و false لو
 // الرسالة مالها علاقة بماتسوري (يكمل index.js شغله العادي)
 async function handleMatsuriMessage(sock, msg, text, chatId, senderId) {
-  if (!isMatsuriChat(chatId)) return false;
-
   const t = text.trim();
 
-  // قسم الروليت (.000 وكل أوامره) — خاص بصاحب البوت + صاحب وزارة ماتسوري فقط
-  if (await handleRouletteMessage(sock, msg, t, chatId, senderId)) return true;
+  // قسم الروليت (.000 وكل أوامره) — يشتغل بشات ماتسوري أو بشات الروليت
+  // المستقل، وبكل الحالتين محصور بصاحب البوت + صاحب وزارة ماتسوري فقط
+  if (isMatsuriChat(chatId) || isRouletteChat(chatId)) {
+    if (await handleRouletteMessage(sock, msg, t, chatId, senderId)) return true;
+  }
+
+  // باقي أوامر ماتسوري (الاستمارات) محصورة بشات ماتسوري فقط
+  if (!isMatsuriChat(chatId)) return false;
 
   if (t === ".ماتسوري") {
     await sock.sendMessage(chatId, { text: DATA.menus.main }, { quoted: msg });
