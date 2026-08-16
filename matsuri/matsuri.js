@@ -12,6 +12,7 @@
 const store = require("../src/dataStore");
 const DATA = require("./matsuriData");
 const { handleRouletteMessage } = require("./roulette");
+const { handleRasadMessage } = require("./rasad");
 
 // يطبع الألف بكل أشكالها (أ إ آ) لألف عادية، وكذا التاء المربوطة/الألف
 // المقصورة — عشان لو المستخدم غلط بكتابة الهمزة يضبط معه الأمر برضو
@@ -113,6 +114,10 @@ async function handleResults(sock, chatId, msg, rawName, tierRaw) {
 // الرسالة مالها علاقة بماتسوري (يكمل index.js شغله العادي)
 async function handleMatsuriMessage(sock, msg, text, chatId, senderId) {
   const t = text.trim();
+
+  // قسم الرصد — قروب مستقل خاص فيه بس (rasadChatId)، غير مرتبط بشات
+  // ماتسوري أو الروليت إطلاقاً. handleRasadMessage يتحقق من الشات لحاله
+  if (await handleRasadMessage(sock, msg, t, chatId, senderId)) return true;
 
   // قسم الروليت (.000 وكل أوامره) — يشتغل بشات ماتسوري أو بشات الروليت
   // المستقل، وبكل الحالتين محصور بصاحب البوت + صاحب وزارة ماتسوري فقط

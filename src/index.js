@@ -18,6 +18,7 @@ const { downloadContentFromMessage } = require("@whiskeysockets/baileys");
 const CONFIG = store.getConfig(); // ✅ نقرأ config مرة وحدة عند التشغيل
 const { handleMatsuriMessage } = require("../matsuri/matsuri");
 const roulette = require("../matsuri/roulette");
+const rasad = require("../matsuri/rasad");
 
 // حماية كاملة من انهيار البرنامج: Baileys أحياناً يرمي أخطاء غير متوقعة
 // من داخل عمليات خلفية (مثلاً محاولة إعادة إرسال رسالة بعد ما ينقطع
@@ -1130,6 +1131,7 @@ async function main() {
     registration.loadFromDb(),
     moderation.loadFromDb(),
     roulette.loadFromDb(),
+    rasad.loadFromDb(),
   ]);
   await connectSocket();
 }

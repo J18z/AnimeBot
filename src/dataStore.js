@@ -38,6 +38,7 @@ function getConfig() {
     matsuriChatId: process.env.MATSURI_CHAT_ID || fileConfig.matsuriChatId,
     matsuriOwnerId: process.env.MATSURI_OWNER_ID || fileConfig.matsuriOwnerId,
     rouletteChatId: process.env.ROULETTE_CHAT_ID || fileConfig.rouletteChatId,
+    rasadChatId: process.env.RASAD_CHAT_ID || fileConfig.rasadChatId,
   };
 }
 
