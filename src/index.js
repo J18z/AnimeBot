@@ -1,4 +1,4 @@
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require("@whiskeysockets/baileys");
+const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion } = require("@whiskeysockets/baileys");
 const { Boom } = require("@hapi/boom");
 const P = require("pino");
 const fs = require("fs");
@@ -225,9 +225,11 @@ async function connectSocket() {
     authState = await useMultiFileAuthState("auth_info_baileys");
   }
   const { state, saveCreds } = authState;
+  const { version } = await fetchLatestBaileysVersion();
 
   const sock = makeWASocket({
     auth: state,
+     version,
     logger: P({ level: "silent" }),
   });
 
@@ -245,9 +247,9 @@ async function connectSocket() {
     if (connection === "close") {
       const statusCode = new Boom(lastDisconnect?.error)?.output?.statusCode;
       const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
-      if (shouldReconnect) {
-        console.log("⚠️ انقطع الاتصال. إعادة محاولة...");
-        connectSocket();
+      if (shouldReconnect) {                    // ← وهذا جواه
+      console.log("⚠️ انقطع الاتصال. إعادة محاولة خلال 5 ثواني...");
+      setTimeout(connectSocket, 5000);
       } else {
         console.log("⚠️ تم تسجيل الخروج من واتساب. نمسح الجلسة القديمة ونطلب QR جديد...");
         await clearAuthSession();
@@ -1131,5 +1133,9 @@ async function main() {
   ]);
   await connectSocket();
 }
+setInterval(() => {
+  const mem = process.memoryUsage();
+  console.log(`📊 الذاكرة: RSS=${(mem.rss / 1024 / 1024).toFixed(1)}MB | Heap=${(mem.heapUsed / 1024 / 1024).toFixed(1)}MB`);
+}, 5 * 60 * 1000); // كل 5 دقايق
 
 main();
