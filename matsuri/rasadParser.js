@@ -43,9 +43,11 @@ function parseAmountToken(numStr, sign1, sign2) {
 // الشعار هنا اختياري (لو الاسم متسجل مسبقاً بالقائمة، ما يحتاج المرسل
 // يكرر الشعار كل مرة عند التعديل بالسالب/الموجب — نحلّه لاحقاً بـ rasad.js
 // بمطابقته مع الأسماء المعروفة أصلاً)
+// (مُثبَّت بأول ونهاية السطر — لازم السطر كامل يكون بس "اسم + مبلغ"
+// وبس، بدون أي كلام زيادة حواليه، وإلا ما نعتبرها محاولة رصد أصلاً)
 function matchDirect(line) {
   const re = new RegExp(
-    `^\\s*(${NAME_CHARS})\\s*(${EMOJI_CLUSTER})?\\s*([+-]?)\\s*(\\d+)\\s*[kKكـ]?\\s*([+-]?)`,
+    `^\\s*(${NAME_CHARS})\\s*(${EMOJI_CLUSTER})?\\s*([+-]?)\\s*(\\d+)\\s*[kKكـ]?\\s*([+-]?)\\s*$`,
     "u"
   );
   const m = line.match(re);
@@ -144,4 +146,12 @@ function resolvePartialName(namePartial, knownKeys) {
   return matches.length === 1 ? matches[0] : null;
 }
 
-module.exports = { parseMessage, makeKey, resolvePartialName };
+// يفحص هل الرسالة فيها أي رقم إطلاقاً (عادي أو مرفوع) — نستخدمها كفلتر
+// أولي: لو ما فيه أرقام، الرسالة أكيد مو محاولة رصد (دردشة عادية)،
+// فما داعي نرد عليها بـ"مشكلة" أو نحاول نرصدها أصلاً
+const HAS_DIGIT_RE = new RegExp(`[0-9${Object.keys(SUPERSCRIPT_MAP).join("")}]`);
+function looksLikeAmount(text) {
+  return HAS_DIGIT_RE.test(String(text || ""));
+}
+
+module.exports = { parseMessage, makeKey, resolvePartialName, looksLikeAmount };

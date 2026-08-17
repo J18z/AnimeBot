@@ -301,8 +301,12 @@ async function handleRasadMessage(sock, msg, text, chatId, senderId) {
   let parsed = false;
   let replied = false;
 
-  if (active) {
-    const entries = parseMessage(t);
+  // نحاول نرصد بس لو الرسالة انطابقت فعلاً مع أحد أشكال الرصد المعروفة
+  // (الـ parser نفسه يرفض أي سطر فيه كلام زيادة غير الاسم والمبلغ).
+  // رسالة عادية ما تطابق أي شكل → نتجاهلها بصمت تام
+  const entries = parseMessage(t);
+
+  if (active && entries.length > 0) {
     parsed = applyEntries(entries);
     if (parsed) {
       await persist();
