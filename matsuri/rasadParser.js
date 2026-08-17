@@ -164,12 +164,18 @@ function resolvePartialName(namePartial, knownKeys) {
   return matches.length === 1 ? matches[0] : null;
 }
 
-// يفحص هل الرسالة فيها أي رقم إطلاقاً (عادي أو مرفوع) — نستخدمها كفلتر
-// أولي: لو ما فيه أرقام، الرسالة أكيد مو محاولة رصد (دردشة عادية)،
-// فما داعي نرد عليها بـ"مشكلة" أو نحاول نرصدها أصلاً
+// يفحص هل الرسالة فيها أي رقم إطلاقاً (عادي أو مرفوع) — غير مستخدمة
+// حالياً بـ rasad.js (استُبدلت بفحص أدق)، بس نتركها متاحة لو احتجناها
 const HAS_DIGIT_RE = new RegExp(`[0-9${Object.keys(SUPERSCRIPT_MAP).join("")}]`);
 function looksLikeAmount(text) {
   return HAS_DIGIT_RE.test(String(text || ""));
 }
 
-module.exports = { parseMessage, makeKey, resolvePartialName, looksLikeAmount };
+// يستخرج الشعار (الإيموجي) من مفتاح "اسم+شعار" — يرجع "" لو ما لقى شي
+function extractEmoji(key) {
+  const re = new RegExp(`${EMOJI_CLUSTER}+$`, "u");
+  const m = String(key || "").match(re);
+  return m ? m[0] : "";
+}
+
+module.exports = { parseMessage, makeKey, resolvePartialName, looksLikeAmount, extractEmoji };

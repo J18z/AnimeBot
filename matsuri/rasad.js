@@ -15,7 +15,7 @@
 const { getDb } = require("../src/db");
 const store = require("../src/dataStore");
 const RD = require("./rasadData");
-const { parseMessage, resolvePartialName } = require("./rasadParser");
+const { parseMessage, resolvePartialName, extractEmoji } = require("./rasadParser");
 
 // حالة بالذاكرة
 let totals = {}; // { key: amountK }
@@ -121,11 +121,22 @@ function applyEntries(entries) {
   return appliedAny;
 }
 
+// نقابات ماتسوري الأربع — للإضافة/التعديل مستقبلاً لو تغيّرت الشعارات
+// أو زاد عدد النقابات، عدّل هذي القائمة بس
+const GUILDS = [
+  { emoji: "⚡", name: "نـاكـامـا" },
+  { emoji: "⛰️", name: "يـامـا" },
+  { emoji: "🎴", name: "تـايـو" },
+  { emoji: "🔆", name: "تـسـوكـي" },
+];
+
 function formatAmount(n) {
   const sign = n < 0 ? "-" : "";
   return `${sign}${Math.abs(n)}k`;
 }
 
+// القائمة العادية (تُستخدم بأمر .الجويل بأي وقت أثناء أو قبل الرصد) —
+// بترتيب الإضافة العادي، بدون تجميع
 function renderList() {
   const keys = Object.keys(totals);
   if (!keys.length) {
@@ -133,6 +144,49 @@ function renderList() {
   }
   const entries = keys.map((k) => `⪦ ${k} ${formatAmount(totals[k])}`).join("\n");
   return RD.listTemplate.replace("{entries}", entries);
+}
+
+// خلط عشوائي بسيط (Fisher-Yates) — لترتيب النقابات عشوائياً كل مرة
+function shuffle(arr) {
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+// القائمة المجمّعة حسب النقابة (تُستخدم بأمر .انهاء_الرصد بس) — كل
+// نقابة بترتيبها الطبيعي (حسب وقت الإضافة)، وترتيب النقابات نفسها عشوائي
+function renderGroupedList() {
+  const keys = Object.keys(totals);
+  if (!keys.length) {
+    return RD.listTemplate.replace("{entries}", "⪦ لا يوجد بيانات حالياً");
+  }
+
+  const buckets = new Map(GUILDS.map((g) => [g.emoji, []]));
+  const extra = []; // لأي شعار مو من ضمن النقابات الأربع المعروفة
+
+  for (const k of keys) {
+    const emoji = extractEmoji(k);
+    if (buckets.has(emoji)) buckets.get(emoji).push(k);
+    else extra.push(k);
+  }
+
+  const blocks = [];
+  for (const guild of shuffle(GUILDS)) {
+    const list = buckets.get(guild.emoji);
+    if (!list.length) continue; // نتخطى نقابة فاضية بدون عنوان فاضي
+    const lines = list.map((k) => `⪦ ${k} ${formatAmount(totals[k])}`).join("\n");
+    blocks.push(`> *✠ ${guild.name} • ${guild.emoji}◜*\n${lines}`);
+  }
+
+  if (extra.length) {
+    const lines = extra.map((k) => `⪦ ${k} ${formatAmount(totals[k])}`).join("\n");
+    blocks.push(`> *✠ غير مصنّف◜*\n${lines}`);
+  }
+
+  return RD.listTemplate.replace("{entries}", blocks.join("\n\n"));
 }
 
 async function reply(sock, chatId, msg, text) {
@@ -220,7 +274,7 @@ async function handleRasadMessage(sock, msg, text, chatId, senderId) {
     active = false;
     await persist();
     await reply(sock, chatId, msg, "🛑 انتهى الرصد.");
-    await reply(sock, chatId, msg, renderList());
+    await reply(sock, chatId, msg, renderGroupedList());
     return true;
   }
 
