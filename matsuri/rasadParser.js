@@ -72,19 +72,25 @@ function matchSuperscriptLabeled(line) {
   return [{ key: makeKey(name, emoji), amount }];
 }
 
-// الشكل 3: قوسين معقوفين { اسم شعار } ... رقمk شعار
-// مثال: "{ سيزار🎴 } 🥇30K💎"
+// الشكل 3: قوسين (معقوفين { } أو ❲❳) فيهم اسم واحد أو أكثر (مفصولين
+// بشرطة لو أكثر من اسم يشتركون بنفس المبلغ)، وبعدهم المبلغ بأي شكل:
+// "{ سيزار🎴 } 🥇30K💎"  أو  "❲ اوبيتو ⚡❳🥇 : *65k* 💎"  أو
+// "❲ داريل 🔆 - تيريون ⚡❳🥈 : *63k* 💎" (اسمين بنفس القوس)
 function matchBraced(line) {
-  const re = new RegExp(
-    `\\{\\s*(${NAME_CHARS})\\s*(${EMOJI_CLUSTER})\\s*\\}[^\\d]*(\\d+)\\s*[kK]`,
-    "u"
-  );
+  const re = new RegExp(`[{❲]\\s*(.+?)\\s*[}❳][^\\d*]*\\*?\\s*(\\d+)\\s*[kK]?\\s*\\*?`, "u");
   const m = line.match(re);
   if (!m) return null;
-  const [, name, emoji, numStr] = m;
+  const [, namesBlob, numStr] = m;
   const amount = parseInt(numStr, 10);
   if (Number.isNaN(amount)) return null;
-  return [{ key: makeKey(name, emoji), amount }];
+
+  const singleRe = new RegExp(`(${NAME_CHARS})\\s*(${EMOJI_CLUSTER})`, "gu");
+  const results = [];
+  let sm;
+  while ((sm = singleRe.exec(namesBlob))) {
+    results.push({ key: makeKey(sm[1], sm[2]), amount });
+  }
+  return results.length ? results : null;
 }
 
 // الشكل 4: رقم مشترك + : + أسماء مفصولة بشرطة (كل واحد ياخذ نفس المبلغ كامل)

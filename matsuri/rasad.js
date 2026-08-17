@@ -4,10 +4,12 @@
 //
 // طريقة العمل:
 //  - أثناء الرصد الفعّال، أي رسالة توصل بقروب الرصد تتفحص فوراً (بدون أي
-//    فحص دوري/polling — بس رد فعل على حدث "رسالة جديدة")
+//    فحص دوري/polling — بس رد فعل على حدث "رسالة جديدة")، وترد فوراً
+//    إما "✅ تم الرصد" أو "❌ حدثت مشكلة أثناء الرصد"
 //  - كل رسالة (بغض النظر هل الرصد شغال أو لا) تُسجَّل بسجل خام مؤقت
-//    بقاعدة البيانات، عشان أمر ".رصد_الكل" يقدر يعيد حساب الأسبوع كامل
-//    حتى لو نسينا نبدأ الرصد أو صار انقطاع بمنتصف الأسبوع
+//    بقاعدة البيانات (مع آيدي الرسالة نفسها)، عشان أمر ".رصد_الكل" يقدر
+//    يعيد حساب الأسبوع كامل، وعشان أمر ".رصد" يقدر يتأكد من رسالة معينة
+//  - أمر ".رصد" لازم يُرسل كـ"رد" (reply) على الرسالة المطلوب التأكد منها
 //  - النتيجة النهائية (قائمة الجويل) تُحفظ بالخلفية بعد كل تحديث
 
 const { getDb } = require("../src/db");
@@ -19,9 +21,6 @@ const { parseMessage, resolvePartialName } = require("./rasadParser");
 let totals = {}; // { key: amountK }
 let active = false;
 let startedAt = null;
-// آخر رسالة معروفة من كل شخص بقروب الرصد (لأمر ".رصد")
-// { senderId: { text, timestamp, parsed: boolean } }
-let lastFromSender = {};
 
 async function loadFromDb() {
   const db = getDb();
@@ -50,14 +49,35 @@ async function persist() {
   }
 }
 
-// سجل خام لكل رسالة تدخل قروب الرصد (لأجل .رصد_الكل والاسترجاع)
-async function logRawMessage(senderId, text, timestamp, parsed) {
+// سجل خام لكل رسالة تدخل قروب الرصد (لأجل .رصد_الكل و.رصد)
+async function logRawMessage(msgId, senderId, text, timestamp, parsed) {
   const db = getDb();
   if (!db) return;
   try {
-    await db.collection("matsuri_rasad_log").insertOne({ senderId, text, timestamp, parsed });
+    await db.collection("matsuri_rasad_log").insertOne({ msgId, senderId, text, timestamp, parsed });
   } catch (err) {
     console.error("خطأ تسجيل رسالة الرصد:", err.message);
+  }
+}
+
+async function markLogParsed(msgId) {
+  const db = getDb();
+  if (!db || !msgId) return;
+  try {
+    await db.collection("matsuri_rasad_log").updateOne({ msgId }, { $set: { parsed: true } });
+  } catch (err) {
+    console.error("خطأ تحديث سجل الرصد:", err.message);
+  }
+}
+
+async function findLogByMsgId(msgId) {
+  const db = getDb();
+  if (!db || !msgId) return null;
+  try {
+    return await db.collection("matsuri_rasad_log").findOne({ msgId });
+  } catch (err) {
+    console.error("خطأ بحث سجل الرصد:", err.message);
+    return null;
   }
 }
 
@@ -117,6 +137,22 @@ function renderList() {
 
 async function reply(sock, chatId, msg, text) {
   await sock.sendMessage(chatId, { text }, { quoted: msg });
+}
+
+// يستخرج نص وآيدي الرسالة المقتبسة (المردود عليها) — يرجع null لو
+// الرسالة الحالية مو رد على شي
+function extractQuoted(msg) {
+  const ctx = msg.message?.extendedTextMessage?.contextInfo;
+  if (!ctx || !ctx.quotedMessage) return null;
+  const qm = ctx.quotedMessage;
+  const text = (
+    qm.conversation ||
+    qm.extendedTextMessage?.text ||
+    qm.imageMessage?.caption ||
+    qm.videoMessage?.caption ||
+    ""
+  ).trim();
+  return { text, msgId: ctx.stanzaId || null };
 }
 
 // يعيد حساب الإجمالي من الصفر بالاعتماد على السجل الخام، من بداية يوم
@@ -205,7 +241,6 @@ async function handleRasadMessage(sock, msg, text, chatId, senderId) {
     totals = {};
     active = false;
     startedAt = null;
-    lastFromSender = {};
     await persist();
     await clearRawLog();
     await reply(sock, chatId, msg, "✅ تم تصفير الرصد بالكامل. جاهزين لأسبوع جديد.");
@@ -229,39 +264,58 @@ async function handleRasadMessage(sock, msg, text, chatId, senderId) {
   }
 
   if (t === ".رصد") {
-    const prev = lastFromSender[senderId];
-    if (!prev) {
-      await reply(sock, chatId, msg, "⚠️ ما وصلتني أي رسالة منك قبل هذي — تأكد إذا كان البوت متصل وقتها.");
+    const quoted = extractQuoted(msg);
+    if (!quoted || !quoted.text) {
+      await reply(sock, chatId, msg, "⚠️ لازم ترسل الأمر كـ«رد» (reply) على الرسالة اللي تبي تتأكد منها.");
       return true;
     }
-    if (prev.parsed) {
-      await reply(sock, chatId, msg, "✅ رسالتك السابقة انرصدت مسبقاً، تمام 👍");
+
+    // نشوف هل هذي الرسالة مسجلة عندنا مسبقاً بالسجل
+    const logEntry = quoted.msgId ? await findLogByMsgId(quoted.msgId) : null;
+
+    if (logEntry && logEntry.parsed) {
+      await reply(sock, chatId, msg, "✅ تم رصدها سابقاً.");
       return true;
     }
-    // نحاول نرصدها الحين (احتياط لو صار خلل وقتها)
-    const entries = parseMessage(prev.text);
+
+    // إما ما لها سجل (البوت فاته وقتها)، أو موجودة بس فشلت وقتها — نحاول الآن
+    const entries = parseMessage(quoted.text);
     const applied = applyEntries(entries);
+
     if (applied) {
-      prev.parsed = true;
       await persist();
-      await reply(sock, chatId, msg, "✅ تم رصدها الحين (كانت فاتت متأخر).");
+      if (logEntry) {
+        await markLogParsed(quoted.msgId);
+      } else {
+        await logRawMessage(quoted.msgId, senderId, quoted.text, now, true);
+      }
+      await reply(sock, chatId, msg, "✅ تم الرصد.");
     } else {
-      await reply(sock, chatId, msg, "⚠️ ما لقيت مبلغ واضح برسالتك السابقة، تأكد من الصيغة.");
+      await reply(sock, chatId, msg, "⚠️ ما لقيت مبلغ واضح بهذي الرسالة.");
     }
     return true;
   }
 
-  // مو أمر معروف — نعتبرها رسالة عادية بالقروب، نسجّلها ونحاول نرصدها لو الرصد شغال
+  // مو أمر معروف — رسالة عادية بالقروب
+  const msgId = msg.key?.id || null;
   let parsed = false;
+  let replied = false;
+
   if (active) {
     const entries = parseMessage(t);
     parsed = applyEntries(entries);
-    if (parsed) await persist();
+    if (parsed) {
+      await persist();
+      await reply(sock, chatId, msg, "✅ تم الرصد.");
+    } else {
+      await reply(sock, chatId, msg, "❌ حدثت مشكلة أثناء الرصد.");
+    }
+    replied = true;
   }
-  lastFromSender[senderId] = { text: t, timestamp: now, parsed };
-  await logRawMessage(senderId, t, now, parsed);
 
-  return false; // نسمح لباقي البوت يكمل شغله على نفس الرسالة لو يحتاج
+  await logRawMessage(msgId, senderId, t, now, parsed);
+
+  return replied; // لو رددنا (الرصد شغال)، نوقف هنا. غير كذا نسمح لباقي البوت يكمل
 }
 
 module.exports = { handleRasadMessage, loadFromDb, isRasadChat };
