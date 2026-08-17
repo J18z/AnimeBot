@@ -43,11 +43,11 @@ function parseAmountToken(numStr, sign1, sign2) {
 // الشعار هنا اختياري (لو الاسم متسجل مسبقاً بالقائمة، ما يحتاج المرسل
 // يكرر الشعار كل مرة عند التعديل بالسالب/الموجب — نحلّه لاحقاً بـ rasad.js
 // بمطابقته مع الأسماء المعروفة أصلاً)
-// (مُثبَّت بأول ونهاية السطر — لازم السطر كامل يكون بس "اسم + مبلغ"
-// وبس، بدون أي كلام زيادة حواليه، وإلا ما نعتبرها محاولة رصد أصلاً)
-function matchDirect(line) {
+// (فيه إيموجي ملاصق = مؤكد محاولة رصد حقيقية، فنسمح بأي كلام زيادة
+// بعد المبلغ زي "| ن3" أو تفاصيل ثانية بنفس السطر)
+function matchDirectWithEmoji(line) {
   const re = new RegExp(
-    `^\\s*(${NAME_CHARS})\\s*(${EMOJI_CLUSTER})?\\s*([+-]?)\\s*(\\d+)\\s*[kKكـ]?\\s*([+-]?)\\s*$`,
+    `^\\s*(${NAME_CHARS})\\s*(${EMOJI_CLUSTER})\\s*([+-]?)\\s*(\\d+)\\s*[kKكـ]?\\s*([+-]?)`,
     "u"
   );
   const m = line.match(re);
@@ -55,8 +55,26 @@ function matchDirect(line) {
   const [, name, emoji, sign1, numStr, sign2] = m;
   const amount = parseAmountToken(numStr, sign1, sign2);
   if (amount === null) return null;
-  if (emoji) return [{ key: makeKey(name, emoji), amount }];
-  return [{ namePartial: name.trim(), amount }]; // بلا شعار — يحتاج مطابقة لاحقة
+  return [{ key: makeKey(name, emoji), amount }];
+}
+
+// (بدون إيموجي — تعديل بالسالب/الموجب لاسم متسجل مسبقاً. بما إنه ما فيه
+// إيموجي يميزه عن جملة عادية، لازم السطر كامل يكون بس "اسم + مبلغ" وخلاص)
+function matchDirectBare(line) {
+  const re = new RegExp(
+    `^\\s*(${NAME_CHARS})\\s*([+-]?)\\s*(\\d+)\\s*[kKكـ]?\\s*([+-]?)\\s*$`,
+    "u"
+  );
+  const m = line.match(re);
+  if (!m) return null;
+  const [, name, sign1, numStr, sign2] = m;
+  const amount = parseAmountToken(numStr, sign1, sign2);
+  if (amount === null) return null;
+  return [{ namePartial: name.trim(), amount }]; // يحتاج مطابقة لاحقة مع اسم معروف
+}
+
+function matchDirect(line) {
+  return matchDirectWithEmoji(line) || matchDirectBare(line);
 }
 
 // الشكل 2: تسمية + رقم مرفوع + (: أو مسافة) + اسم + شعار
