@@ -99,6 +99,25 @@ async function safeStartFirstRound(chatId, sock, contest) {
   }
 }
 
+// ✅ "التقديم البسيط" (أمر .كت وأمثاله) تجربة خفيفة بس، ما لازم تقفل
+// ولا تأثر على أي مسابقة حقيقية بعدها — بس كانت تحسب "مسابقة شغالة"
+// بنفس معاملة المسابقة الحقيقية، فتقفل أوامر البدء الحقيقية غلط. هذي
+// الدالة تتحقق فيه مسابقة "حقيقية" فعلاً (مو مجرد تقديم بسيط متروك)
+function hasBlockingContest(chatId) {
+  const c = activeContests.get(chatId);
+  return !!(c && c.active && !c.practiceMode);
+}
+
+// لو الموجود تقديم بسيط بس (مو مسابقة حقيقية)، ننظفه بصمت قبل ما نبدأ
+// مسابقة حقيقية جديدة — نفس أسلوب startPractice بالضبط، عشان ما يفضل
+// عالق بالخلفية بدون داعي
+function clearStalePracticeContest(chatId) {
+  const existing = activeContests.get(chatId);
+  if (existing && existing.practiceMode) {
+    existing.active = false;
+  }
+}
+
 async function startPractice(chatId, sock, msg, poolType, extraOpts = {}) {
   const existing = activeContests.get(chatId);
   // نقفل بس لو فيه مسابقة حقيقية شغالة (فنش أو مستمرة) — التقديم البسيط
@@ -120,10 +139,11 @@ const endlessTypeLabels = { images: "صور", writing: "كتابة", counts: "ت
 
 // يبدأ مسابقة مستمرة (ما تتوقف تلقائياً، بس بأمر إيقاف مخصص)
 async function startEndless(chatId, sock, msg, poolType, extraOpts = {}) {
-  if (activeContests.has(chatId) && activeContests.get(chatId).active) {
+  if (hasBlockingContest(chatId)) {
     await sock.sendMessage(chatId, { text: "⚠️ فيه مسابقة شغالة بالفعل بهذي المحادثة." }, { quoted: msg });
     return;
   }
+  clearStalePracticeContest(chatId);
   const contest = new Contest(chatId, sock, poolType, Infinity, { endless: true, ...extraOpts });
   activeContests.set(chatId, contest);
   await sock.sendMessage(chatId, {
@@ -943,7 +963,7 @@ if (/^\.رفض تغيير(\s|$)/.test(text)) {
   // أمر بدء مسابقة
   const startCmd = parseStartCommand(text);
   if (startCmd) {
-    if (activeContests.has(chatId) && activeContests.get(chatId).active) {
+    if (hasBlockingContest(chatId)) {
       await sock.sendMessage(
         chatId,
         { text: "⚠️ فيه مسابقة شغالة بالفعل بهذي المحادثة. اكتب: .انهاء عشان تنهيها." },
@@ -951,6 +971,7 @@ if (/^\.رفض تغيير(\s|$)/.test(text)) {
       );
       return;
     }
+    clearStalePracticeContest(chatId);
     const contest = new Contest(chatId, sock, startCmd.contestType, startCmd.target, {
       mobileOnly: startCmd.mobileOnly,
     });
@@ -983,7 +1004,7 @@ if (/^\.رفض تغيير(\s|$)/.test(text)) {
   // أول شخص يوصل هدف
   const mixedMatch = text.match(/^\.مسابقة(?:\s+(ج))?\s+(\d+)$/);
   if (mixedMatch) {
-    if (activeContests.has(chatId) && activeContests.get(chatId).active) {
+    if (hasBlockingContest(chatId)) {
       await sock.sendMessage(
         chatId,
         { text: "⚠️ فيه مسابقة شغالة بالفعل بهذي المحادثة. اكتب: .انهاء عشان تنهيها." },
@@ -991,6 +1012,7 @@ if (/^\.رفض تغيير(\s|$)/.test(text)) {
       );
       return;
     }
+    clearStalePracticeContest(chatId);
     const mobileOnly = mixedMatch[1] === "ج";
     const roundsTarget = parseInt(mixedMatch[2], 10);
     const contest = new Contest(chatId, sock, "general", Infinity, { roundsTarget, mobileOnly });
