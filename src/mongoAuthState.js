@@ -13,26 +13,72 @@ async function useMongoAuthState() {
   }
   const col = db.collection("baileys_auth");
 
-  async function readData(id) {
+  // ✅ إصلاح تأخير/تعليق البوت وقت اللعب الكثير: قبل هذا التعديل، كل
+  // قراءة أو كتابة لمفتاح تشفير (session/sender-key — بيليز يستخدمها
+  // بشكل متكرر جداً، تقريباً مع كل رسالة) كانت رحلة كاملة عبر الشبكة
+  // لـMongoDB (await منفصل لكل مفتاح). وقت اللعب الكثير (رسايل متزاحمة)
+  // هالرحلات تتراكم فوق بعض وتعلّق معالجة الرسائل فعلياً.
+  //
+  // الحل: كاش كامل بالذاكرة (نفس نمط matsuri/roulette.js و rasad.js) —
+  // نحمّل كل جلسة واتساب دفعة وحدة عند البداية، وبعدها كل قراءة فورية
+  // من الذاكرة (صفر انتظار شبكة)، وكل كتابة تُسجَّل بالذاكرة فوراً
+  // وتُحفظ لقاعدة البيانات بالخلفية (مجمّعة كل 800ms) بدون ما توقف
+  // معالجة الرسالة الحالية بانتظارها
+  const cache = new Map();
+  const dirty = new Set();
+  let flushTimer = null;
+
+  const allDocs = await col.find({}).toArray();
+  for (const doc of allDocs) {
+    if (doc.value === undefined) continue;
     try {
-      const doc = await col.findOne({ _id: id });
-      if (!doc || doc.value === undefined) return null;
-      return JSON.parse(doc.value, BufferJSON.reviver);
+      cache.set(doc._id, JSON.parse(doc.value, BufferJSON.reviver));
     } catch (e) {
-      return null;
+      // مفتاح تالف بقاعدة البيانات — نتجاهله بدل ما يوقف تحميل الجلسة كلها
     }
   }
 
-  async function writeData(id, data) {
-    const value = JSON.stringify(data, BufferJSON.replacer);
-    await col.updateOne({ _id: id }, { $set: { value } }, { upsert: true });
+  function scheduleFlush() {
+    if (flushTimer) return; // فيه فلاش مجدول أصلاً، ما نكرر المؤقت
+    flushTimer = setTimeout(async () => {
+      flushTimer = null;
+      const keysToFlush = Array.from(dirty);
+      dirty.clear();
+      await Promise.all(
+        keysToFlush.map(async (id) => {
+          try {
+            if (!cache.has(id)) {
+              await col.deleteOne({ _id: id });
+            } else {
+              const value = JSON.stringify(cache.get(id), BufferJSON.replacer);
+              await col.updateOne({ _id: id }, { $set: { value } }, { upsert: true });
+            }
+          } catch (e) {
+            console.error(`⚠️ خطأ حفظ مفتاح جلسة واتساب بالخلفية (${id}):`, e.message);
+          }
+        })
+      );
+    }, 800);
   }
 
-  async function removeData(id) {
-    await col.deleteOne({ _id: id });
+  function readData(id) {
+    return cache.has(id) ? cache.get(id) : null;
   }
 
-  const creds = (await readData("creds")) || initAuthCreds();
+  function writeData(id, data) {
+    cache.set(id, data);
+    dirty.add(id);
+    scheduleFlush();
+  }
+
+  function removeData(id) {
+    cache.delete(id);
+    dirty.add(id);
+    scheduleFlush();
+  }
+
+  const creds = readData("creds") || initAuthCreds();
+  if (!cache.has("creds")) cache.set("creds", creds);
 
   return {
     state: {
@@ -40,27 +86,24 @@ async function useMongoAuthState() {
       keys: {
         get: async (type, ids) => {
           const data = {};
-          await Promise.all(
-            ids.map(async (id) => {
-              let value = await readData(`${type}-${id}`);
-              if (type === "app-state-sync-key" && value) {
-                value = proto.Message.AppStateSyncKeyData.fromObject(value);
-              }
-              data[id] = value;
-            })
-          );
+          for (const id of ids) {
+            let value = readData(`${type}-${id}`);
+            if (type === "app-state-sync-key" && value) {
+              value = proto.Message.AppStateSyncKeyData.fromObject(value);
+            }
+            data[id] = value;
+          }
           return data;
         },
         set: async (data) => {
-          const tasks = [];
           for (const category in data) {
             for (const id in data[category]) {
               const value = data[category][id];
               const key = `${category}-${id}`;
-              tasks.push(value ? writeData(key, value) : removeData(key));
+              if (value) writeData(key, value);
+              else removeData(key);
             }
           }
-          await Promise.all(tasks);
         },
       },
     },

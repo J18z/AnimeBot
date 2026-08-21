@@ -62,6 +62,15 @@ function normalizeRelaxed(text) {
   return collapseRepeats(relaxLetters(normalizeText(text)));
 }
 
+/**
+ * نفس تطبيع الكتابة العادي (تطابق حرفي دقيق، بدون غ/ق/ج) لكن مع قص تكرار
+ * الأحرف المتتالي — مثلاً "روجرر" أو "نااغي روجرر" (لو الاسم أصلاً فيه غ)
+ * تُحسب صحيحة، بدون ما نلغي دقة التمييز بين غ/ق/ج نفسها بفقرة الكتابة
+ */
+function normalizeWritingRelaxed(text) {
+  return collapseRepeats(normalizeText(text));
+}
+
 function pickRandom(arr) {
   return arr[Math.floor(Math.random() * arr.length)];
 }
@@ -86,11 +95,12 @@ function formatSeconds(ms) {
  *
  * slots: مصفوفة مصفوفات (كل عنصر = الصيغ المقبولة لعنصر/كلمة وحدة)
  * claimedSet: Set فيها فهارس العناصر المستخدمة مسبقاً (ما نعيد مطابقتها)
- * relaxed: لو true، يستخدم التطبيع المرن (غ/ق/ج كحرف واحد) — لكل الفقرات
- * عدا الكتابة، اللي لازم فيها تطابق حرفي كامل
+ * relaxed: لو true، يستخدم التطبيع المرن الكامل (غ/ق/ج + تكرار الأحرف) —
+ * لكل الفقرات عدا الكتابة. الكتابة نفسها لسا تقص تكرار الأحرف (روجرر →
+ * روجر) بس بدون توحيد غ/ق/ج، عشان يبقى التمييز الحرفي الدقيق بينهم
  */
 function findAllMatches(message, slots, claimedSet, relaxed = false) {
-  const normalize = relaxed ? normalizeRelaxed : normalizeText;
+  const normalize = relaxed ? normalizeRelaxed : normalizeWritingRelaxed;
   let text = " " + normalize(message) + " ";
 
   // نجمع كل الاحتمالات (فهرس + صيغة) ونرتبها بحيث الصيغ الأطول (بعدد كلمات
@@ -126,6 +136,7 @@ function findAllMatches(message, slots, claimedSet, relaxed = false) {
 module.exports = {
   normalizeText,
   normalizeRelaxed,
+  normalizeWritingRelaxed,
   matchesAnswer,
   pickRandom,
   shuffle,

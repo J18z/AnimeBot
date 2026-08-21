@@ -180,10 +180,11 @@ class Contest {
 
     let sentMsg = null;
 
-    // إرسال السؤال بحسب نوع الفقرة
+    // إرسال السؤال بحسب نوع الفقرة — سادة بدون أي نص زائد، بادئة "س/"
+    // للأسئلة و"تع/" للتعداد بس (الكتابة والصور بدون بادئة إطلاقاً)
     if (poolType === "writing") {
       const preview = slots.map((s) => `*${s[0]}*`).join(" - ");
-      sentMsg = await this.sendChat(`✍️ اكتب التالي:\n\n${preview}`);
+      sentMsg = await this.sendChat(preview);
     } else if (poolType === "images") {
       try {
         const imagePath = store.getImagePath(this._lastItem.file);
@@ -204,15 +205,13 @@ class Contest {
 
           sentMsg = await this.client.sendMessage(this.chatId, {
             image: imageBuffer,
-            caption: `🖼️ ${questionText || "من هذه الشخصية؟"}`,
-            jpegThumbnail: thumbBuffer,  // ← المعاينة الفورية
+            jpegThumbnail: thumbBuffer, // ← المعاينة الفورية
             mimetype: "image/jpeg",
           });
         } else {
           // لو sharp مو موجود
           sentMsg = await this.client.sendMessage(this.chatId, {
             image: imageBuffer,
-            caption: `🖼️ ${questionText || "من هذه الشخصية؟"}`,
             mimetype: "image/jpeg",
           });
         }
@@ -222,9 +221,9 @@ class Contest {
         return;
       }
     } else if (poolType === "questions") {
-        sentMsg = await this.sendChat(`❓ سؤال جديد\n\n${questionText}`);
+      sentMsg = await this.sendChat(`*س/ ${questionText}*`);
     } else if (poolType === "counts") {
-      sentMsg = await this.sendChat(`🔢 فقرة التعداد\n\n${questionText}`);
+      sentMsg = await this.sendChat(`*تع/ ${questionText}*`);
     }
 
     // وقت البداية = لحظة تأكد إرسال السؤال فعلياً (بعد ما ينتهي الـ await)،
@@ -233,18 +232,21 @@ class Contest {
     // وصل بالفترة القصيرة اللي بين التعيين والإرسال يشوف نفس المرجع
     round.startTime = Date.now();
 
-    // مؤقت حراسة: لو ما صار أي رد (ولا حتى محاولة خطأ) خلال دقيقة ونصف،
+    // مؤقت حراسة: لو ما صار أي رد (ولا حتى محاولة خطأ) خلال 10 ثواني،
     // على الأغلب الرسالة (سؤال/صورة) ما وصلت فعلياً لواتساب رغم إن سيرفرنا
     // ظن إنها انرسلت بنجاح — هذا وارد لو الاتصال متذبذب. بدل ما تفضل
-    // المسابقة "عالقة" بصمت بدون أي تفسير، ننبّه القروب بوضوح
+    // المسابقة "عالقة" بصمت بدون أي تفسير، ننبّه القروب بوضوح. التقديم
+    // البسيط مستثنى: مهمته يرسل الفقرة بس، بدون أي رسائل إضافية إطلاقاً
     this.clearRoundWatchdog();
-    this.roundWatchdog = setTimeout(() => {
-      if (this.currentRound === round && !round.finished && this.active) {
-        this.sendChat(
-          "⚠️ يبدو إن السؤال الحالي ما وصل بشكل طبيعي (تأخير غير عادي بالاتصال). جرب .سكب للانتقال للسؤال التالي، أو .انهاء لو تبي توقف المسابقة."
-        ).catch((e) => console.error("فشل إرسال تنبيه انتظار السؤال:", e));
-      }
-    }, 10000); // 10س ثانية
+    if (!this.practiceMode) {
+      this.roundWatchdog = setTimeout(() => {
+        if (this.currentRound === round && !round.finished && this.active) {
+          this.sendChat(
+            "⚠️ يبدو إن السؤال الحالي ما وصل بشكل طبيعي (تأخير غير عادي بالاتصال). جرب .سكب للانتقال للسؤال التالي، أو .انهاء لو تبي توقف المسابقة."
+          ).catch((e) => console.error("فشل إرسال تنبيه انتظار السؤال:", e));
+        }
+      }, 10000); // 10 ثواني
+    }
   }
 
   // يلغي مؤقت الحراسة الحالي (لو موجود) — يُستدعى كل ما جولة تخلص/تُسكب/تنتهي المسابقة
@@ -426,11 +428,9 @@ class Contest {
     // المشكلة اللي وصفتها. الحين: نحاول نرسل، ولو فشلت نسجلها بالـ logs
     // ونكمل عادي، عشان تقدم المسابقة ما يعتمد على نجاح رسالة تأكيد واحدة
     try {
-      // التقديم البسيط تجربة/معاينة كلاسيكية بدون وقت ولا نقاط حقيقية —
-      // الوقت والنقاط تخص المسابقات الفعلية بس
-      if (this.practiceMode) {
-        await this.replyTo(msg, `🎉 ${resultLabel}!`);
-      } else {
+      // التقديم البسيط: مهمته يرسل الفقرة بس، بدون أي رد أو رسالة تأكيد
+      // إجابة إطلاقاً (لا وقت ولا نقاط ولا حتى "إجابة صحيحة")
+      if (!this.practiceMode) {
         await this.replyTo(
           msg,
           `🎉 ${resultLabel}!\n\n⏱️ الوقت: ${formatSeconds(elapsed)} ثانية\n\n⭐ +${round.points} نقطة\n(المجموع: ${total})`

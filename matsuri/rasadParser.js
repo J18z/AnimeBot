@@ -45,9 +45,16 @@ function parseAmountToken(numStr, sign1, sign2) {
 // بمطابقته مع الأسماء المعروفة أصلاً)
 // (فيه إيموجي ملاصق = مؤكد محاولة رصد حقيقية، فنسمح بأي كلام زيادة
 // بعد المبلغ زي "| ن3" أو تفاصيل ثانية بنفس السطر)
+// يسمح بأي رمز/نقطة قائمة زخرفية بأول السطر (⪦ - ∙ • ⁃ ⋅ إلخ) قبل
+// الاسم — مو جزء من الاسم، بس علامة تنسيق يتجاهلها
+const LEADING_BULLET = "[^\\p{L}\\p{N}]{0,4}\\s*";
+
+// (فيه إيموجي ملاصق = مؤكد محاولة رصد حقيقية، فنسمح بأي كلام زيادة
+// بعد المبلغ زي "| ن3" أو تفاصيل ثانية بنفس السطر. وبنسمح كمان بإيموجي
+// عملة اختياري (💰/⭐...) بين الاسم والرقم، سواء قبل الرقم أو بعده)
 function matchDirectWithEmoji(line) {
   const re = new RegExp(
-    `^\\s*(${NAME_CHARS})\\s*(${EMOJI_CLUSTER})\\s*([+-]?)\\s*(\\d+)\\s*[kKكـ]?\\s*([+-]?)`,
+    `^${LEADING_BULLET}(${NAME_CHARS})\\s*(${EMOJI_CLUSTER})\\s*(?:${EMOJI_CLUSTER}\\s*)?([+-]?)\\s*(\\d+)\\s*[kKكـ]?\\s*([+-]?)`,
     "u"
   );
   const m = line.match(re);
@@ -62,7 +69,7 @@ function matchDirectWithEmoji(line) {
 // إيموجي يميزه عن جملة عادية، لازم السطر كامل يكون بس "اسم + مبلغ" وخلاص)
 function matchDirectBare(line) {
   const re = new RegExp(
-    `^\\s*(${NAME_CHARS})\\s*([+-]?)\\s*(\\d+)\\s*[kKكـ]?\\s*([+-]?)\\s*$`,
+    `^${LEADING_BULLET}(${NAME_CHARS})\\s*([+-]?)\\s*(\\d+)\\s*[kKكـ]?\\s*([+-]?)\\s*$`,
     "u"
   );
   const m = line.match(re);
@@ -178,4 +185,4 @@ function extractEmoji(key) {
   return m ? m[0] : "";
 }
 
-module.exports = { parseMessage, makeKey, resolvePartialName, looksLikeAmount, extractEmoji };
+module.exports = { parseMessage, makeKey, resolvePartialName, looksLikeAmount, extractEmoji }; 

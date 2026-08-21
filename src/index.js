@@ -33,6 +33,30 @@ process.on("unhandledRejection", (err) => {
   console.error("⚠️ خطأ Promise غير معالج (تم تجاهله عشان البوت يفضل شغال):", err);
 });
 
+// ✅ إصلاح تسرّب السوكتات: نحتفظ بمرجع للسوكت الحالي + قفل يمنع أكثر من
+// محاولة اتصال بنفس الوقت. بدون هذا، كل انقطاع كان يبني سوكت جديد بدون
+// ما يقفل القديم (اللي يفضل شغال بالخلفية ويعالج نفس الرسائل مرتين)
+let currentSock = null;
+let connecting = false;
+
+// ✅ حماية إضافية (خط دفاع ثاني): نتجاهل أي رسالة سبق نعالجها فعلاً حسب
+// آيدي الرسالة (msg.key.id)، حتى لو وصلت من أكثر من سوكت أو تكررت لأي
+// سبب ثاني. نحتفظ بآخر 500 آيدي بس (كافي لأي تكرار خلال دقيقة) عشان
+// ما تكبر الذاكرة بلا داعي
+const recentlyProcessedIds = new Set();
+const recentlyProcessedOrder = [];
+function alreadyProcessed(id) {
+  if (!id) return false;
+  if (recentlyProcessedIds.has(id)) return true;
+  recentlyProcessedIds.add(id);
+  recentlyProcessedOrder.push(id);
+  if (recentlyProcessedOrder.length > 500) {
+    const oldest = recentlyProcessedOrder.shift();
+    recentlyProcessedIds.delete(oldest);
+  }
+  return false;
+}
+
 // كل محادثة (قروب أو خاص) عندها مسابقة مستقلة
 const activeContests = new Map(); // chatId -> Contest
 
@@ -213,7 +237,35 @@ async function clearAuthSession() {
   }
 }
 
+// يقفل ويفصل سوكت قديم تماماً (يشيل كل المستمعين + يقفل الاتصال الفعلي)
+// قبل ما ننشئ سوكت جديد، عشان ما يفضل شغال بالخلفية "شبح" يعالج رسائل
+function cleanupSocket(sock) {
+  if (!sock) return;
+  try {
+    sock.ev.removeAllListeners();
+  } catch (e) {
+    /* تجاهل — السوكت ممكن يكون مقفول أصلاً */
+  }
+  try {
+    sock.end(new Error("إعادة اتصال: تنظيف السوكت القديم"));
+  } catch (e) {
+    /* تجاهل — السوكت ممكن يكون مقفول أصلاً */
+  }
+}
+
 async function connectSocket() {
+  // ✅ قفل: لو فيه محاولة اتصال شغالة أصلاً، ما ننشئ وحدة ثانية بالتوازي
+  // (يحصل لو Baileys بعث أكثر من حدث "close" بلحظات متقاربة)
+  if (connecting) {
+    console.log("⏳ فيه محاولة اتصال شغالة أصلاً، تجاهلنا هذي المحاولة المكررة.");
+    return;
+  }
+  connecting = true;
+
+  // ✅ ننظف السوكت القديم (لو موجود) قبل ما ننشئ سوكت جديد بالكامل
+  cleanupSocket(currentSock);
+  currentSock = null;
+
   // لو متصلين بقاعدة بيانات، نحفظ جلسة واتساب فيها (تفضل موجودة حتى لو
   // السيرفر أعاد التشغيل أو تغيّر). لو ما فيه اتصال، نستخدم ملفات محلية
   // كخطة احتياطية (يشتغل تمام للتشغيل من جهازك مباشرة)
@@ -233,6 +285,10 @@ async function connectSocket() {
      version,
     logger: P({ level: "silent" }),
   });
+
+  // ✅ هذا الآن هو السوكت "الرسمي" الوحيد — أي سوكت سابق انقفل فعلياً فوق
+  currentSock = sock;
+  connecting = false;
 
   sock.ev.on("creds.update", saveCreds);
 
@@ -287,6 +343,9 @@ async function connectSocket() {
         try {
           const tsMs = Number(msg.messageTimestamp || 0) * 1000;
           if (tsMs && now - tsMs > 60000) return; // أقدم من دقيقة: تجاهلها
+          // ✅ خط دفاع ثاني: لو نفس الرسالة (بنفس آيدي واتساب) سبق
+          // اتعالجت (من هذا السوكت أو سوكت ثاني)، نتجاهلها هنا نهائياً
+          if (alreadyProcessed(msg.key?.id)) return;
           await handleIncoming(sock, msg);
         } catch (err) {
           console.error("خطأ بمعالجة الرسالة:", err);

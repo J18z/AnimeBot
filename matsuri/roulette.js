@@ -106,6 +106,23 @@ function buildPurchase(parts, label) {
   return { text, totalMoney, totalStars };
 }
 
+// يسحب أوامر عشوائية بس (بدون حساب تكلفة ولا قالب) — يُستخدم بأمر
+// ".روليت" لتغيير/إضافة لفة يدوياً بدون ما يتحسب شراء أو يأثر بالحدود
+function drawOnly(parts) {
+  const usedGold = new Set();
+  const usedNormal = new Set();
+  const lines = [];
+  for (const p of parts) {
+    const list = p.tier === "ذهبي" ? RD.goldCommands : RD.normalCommands;
+    const usedSet = p.tier === "ذهبي" ? usedGold : usedNormal;
+    for (let i = 0; i < p.count; i++) {
+      const cmd = pickRandom(list, usedSet);
+      lines.push(p.tier === "ذهبي" ? `*⬩⧼⬦ ${cmd} ⧽⬩*` : `*⛋ ${cmd}*`);
+    }
+  }
+  return lines.join("\n");
+}
+
 function addPurchaseRecord(state, label, money, stars) {
   let entry = state.purchases.find((p) => p.label === label);
   if (!entry) {
@@ -149,7 +166,8 @@ async function handleRouletteMessage(sock, msg, text, chatId, senderId) {
     t === ".روليت_اوامر" ||
     t === ".المشتريات" ||
     t === ".تصفير_المشتريات" ||
-    /^\.شراء(\+|_مميز)?\s+روليت(\s|$)/.test(t);
+    /^\.شراء(\+|_مميز)?\s+روليت(\s|$)/.test(t) ||
+    /^\.روليت\s+\d/.test(t);
 
   if (!isRouletteCmd) return false;
 
@@ -177,6 +195,25 @@ async function handleRouletteMessage(sock, msg, text, chatId, senderId) {
     state = { purchases: [], counts: {} };
     await persist();
     await reply(sock, chatId, msg, "✅ تم تصفير قائمة المشتريات، تقدرون تبدأون من جديد.");
+    return true;
+  }
+
+  // .روليت <عدد> <عادي|ذهبي> ... — سحب عشوائي بس، بدون لقب ولا حساب
+  // فلوس ولا تسجيل بالمشتريات ولا تأثير على حدود الشراء. لتغيير/زيادة
+  // لفة يدوياً (مثلاً لو طلع أمر ممنوع على المشرفين)
+  const rouletteOnlyMatch = t.match(/^\.روليت\s+(.+)$/);
+  if (rouletteOnlyMatch) {
+    const { parts } = parseParts(rouletteOnlyMatch[1]);
+    if (!parts.length) {
+      await reply(
+        sock,
+        chatId,
+        msg,
+        "⚠️ صيغة الأمر غلط. مثال:\n.روليت 1 ذهبي 1 عادي"
+      );
+      return true;
+    }
+    await reply(sock, chatId, msg, drawOnly(parts));
     return true;
   }
 
