@@ -1,11 +1,12 @@
 const fs = require("fs");
-const { pickRandom, shuffle, formatSeconds, findAllMatches } = require("./utils");
+const { pickRandom, formatSeconds, findAllMatches } = require("./utils");
 const store = require("./dataStore");
 const leaderboard = require("./leaderboard");
 const standings = require("./standings");
 const moderation = require("./moderation");
 const registration = require("./registration");
 const templates = require("./templates");
+const weightedPicker = require("./weightedPicker");
 let sharp;
 try { sharp = require("sharp"); } catch (e) { sharp = null; }
 // هامش زمني ثابت وصغير (مو متغيّر أو متوقّع) نطرحه من وقت أي إجابة، تعويض
@@ -14,12 +15,6 @@ try { sharp = require("sharp"); } catch (e) { sharp = null; }
 // ويعتمد على، بدل ما يتقلب حسب سرعة السيرفر اللحظية (خصوصاً بسيرفرات
 // مجانية زي Render ممكن تتأخر لحظياً وتشوّه أي تخمين ديناميكي)
 const NETWORK_OVERHEAD_MS = 300;
-
-// حد أدنى منطقي (فيزيائياً) لأي وقت إجابة — ولا إنسان يقرأ سؤال/صورة
-// ويكتب إجابة أسرع من هذا. أي قيمة أقل من كذا (0.00، 0.05...) مؤكد خطأ
-// قياس (تذبذب سيرفر/شبكة)، مو سرعة حقيقية — نحميها بحد أدنى ثابت بدل ما
-// تطلع رقم مستحيل يقدر يُستغل كـ"سرعة خارقة" مزيّفة
-const MIN_PLAUSIBLE_ELAPSED_MS = 200;
 
 // أنواع الفقرات المدعومة
 const POOL_TYPES = ["writing", "images", "questions", "counts"];
@@ -31,7 +26,6 @@ class Contest {
     this.contestType = contestType; // 'general' | 'writing' | 'images' | 'questions' | 'counts'
     this.target = target; // النقاط المطلوبة للفوز (Infinity للمسابقات المستمرة)
     this.scores = new Map(); // userId -> points
-    this.usedIds = { writing: new Set(), images: new Set(), questions: new Set(), counts: new Set() };
     this.active = true;
     this.currentRound = null;
     this.nameCache = new Map(); // userId -> اسم للعرض (pushName)
@@ -56,7 +50,10 @@ class Contest {
     return this.contestType;
   }
 
-  // يجيب عنصر عشوائي غير مستخدم من مجموعة بيانات (صور/أسئلة/تعداد)
+  // يجيب عنصر من مجموعة بيانات (صور/أسئلة/تعداد) بنظام وزن متناقص عالمي
+  // (يشمل كل المسابقات الشغالة بكل القروبات) — مو استبعاد صارم لحالنا،
+  // عشان البنك الكبير (مئات العناصر) يتوزع ويتغطى كامل مع الوقت، مع بقاء
+  // احتمال ضئيل لتكرار عنصر قريب. التفاصيل بملف weightedPicker.js
   pickItem(poolType) {
     let pool;
     if (poolType === "images") pool = store.getImages();
@@ -65,37 +62,35 @@ class Contest {
 
     if (!pool || pool.length === 0) return null;
 
-    const used = this.usedIds[poolType];
-    let available = pool.filter((it) => !used.has(it.id));
-    if (available.length === 0) {
-      used.clear();
-      available = pool;
-    }
-    const item = pickRandom(available);
-    used.add(item.id);
-    return item;
+    return weightedPicker.pickWeighted(poolType, pool, (it) => it.id);
   }
 
-  // فقرة الكتابة: يسحب عشوائياً 1-3 كلمات من بنك كلمات واحد (بدون تكرار
-  // بنفس الجولة/الجلسة)، كل كلمة لها صيغ مقبولة (aliases)، ولازم كلها تنكتب
-  // (بأي رسالة، بأي ترتيب، حتى لو وسط كلام زيادة) عشان تفوز بالجولة
+  // فقرة الكتابة: يسحب 1-3 كلمات من بنك كلمات واحد بنفس نظام الوزن
+  // المتناقص العالمي (excludeKeys يمنع بس تكرار نفس الكلمة داخل هذي
+  // الجولة الواحدة، مالها علاقة بتتبع الاستخدام عبر الزمن). كل كلمة لها
+  // صيغ مقبولة (aliases)، ولازم كلها تنكتب (بأي رسالة، بأي ترتيب، حتى لو
+  // وسط كلام زيادة) عشان تفوز بالجولة
   pickWritingRound(forcedCount) {
     const pool = store.getWords(); // array of { word: ["لوفي","luffy", ...] }
     if (!pool || pool.length === 0) return null;
 
-    const used = this.usedIds.writing; // Set من فهارس الكلمات المستخدمة
-    let availableIdx = pool.map((_, i) => i).filter((i) => !used.has(i));
-    if (availableIdx.length === 0) {
-      used.clear();
-      availableIdx = pool.map((_, i) => i);
-    }
+    // مفتاح ثابت لكل كلمة: أول صيغة (aliases[0])، وهي عمليًا فريدة عبر
+    // بنك الكلمات (اسم الشخصية الأساسي بالعربي)
+    const keyFn = (it) => it.word[0];
 
     const desired = forcedCount || Math.floor(Math.random() * 3) + 1;
-    const count = Math.min(desired, availableIdx.length);
-    const selected = shuffle(availableIdx).slice(0, count);
-    selected.forEach((i) => used.add(i));
+    const count = Math.min(desired, pool.length);
 
-    return selected.map((i) => pool[i].word); // مصفوفة مصفوفات (slots)
+    const chosenKeys = new Set();
+    const result = [];
+    for (let i = 0; i < count; i++) {
+      const item = weightedPicker.pickWeighted("writing", pool, keyFn, chosenKeys);
+      if (!item) break;
+      chosenKeys.add(keyFn(item));
+      result.push(item.word);
+    }
+
+    return result.length > 0 ? result : null; // مصفوفة مصفوفات (slots)
   }
 
   // يرسل نص عادي، ويرجع كائن الرسالة المُرسلة (نحتاج توقيتها لحساب الوقت بدقة)
@@ -372,33 +367,11 @@ class Contest {
     }
     rawElapsed = Math.max(0, rawElapsed);
     // ننزل هامش ثابت وصغير بس (300 ملي ثانية) — تعويض بسيط لزمن وصول
-    // رسالة السؤال، بدون أي تخمين متغيّر يقدر يشوّه الرقم
-    let elapsed = Math.max(0, rawElapsed - NETWORK_OVERHEAD_MS);
-    // حماية إضافية: لو طلعت القيمة أقل من الحد الفيزيائي الممكن (يعني
-    // خطأ قياس مؤكد، مو سرعة حقيقية)، نثبتها على الحد الأدنى بدل ما
-    // تطلع رقم مستحيل (0.00 أو أقل من العادة بشكل مريب)
-    if (elapsed < MIN_PLAUSIBLE_ELAPSED_MS) {
-      if (elapsed < 50) {
-        // فرق واضح ومريب (مو مجرد اقتراب من الحد) — نسجله للمراجعة
-        console.warn(
-          `⚠️ وقت غير منطقي بجولة ${round.poolType} (elapsed=${elapsed}ms قبل التثبيت) — ثبّتناه على ${MIN_PLAUSIBLE_ELAPSED_MS}ms.`
-        );
-      }
-      elapsed = MIN_PLAUSIBLE_ELAPSED_MS;
-    }
+    // رسالة السؤال، بدون أي تخمين متغيّر يقدر يشوّه الرقم. ما فيه حد
+    // أدنى إضافي بعد كذا — لو طلعت 0.00 أو قريبة منها فهذا وقت حقيقي
+    // (شخص جاوب بسرعة كبيرة فعلاً)، نعرضه زي ما هو بدون تثبيت
+    const elapsed = Math.max(0, rawElapsed - NETWORK_OVERHEAD_MS);
     const total = this.addPoints(senderId, round.points);
-
-    // 🔍 سطر تشخيص مؤقت: يطبع كل مكونات حساب الوقت بالتفصيل. لو صار
-    // فرق غريب تاني (زي اللي وصفته: شخص "ثاني" بوقت 0.20 وشخص "أول"
-    // بوقت 1.61+)، انسخ هذا السطر من لوق Render وابعثه لي، بيوريني بالضبط
-    // وين المشكلة (فرق واتساب-تايمستامب مقابل وقت السيرفر، أو تأخير معالجة)
-    console.log(
-      `🔍 [توقيت] poolType=${round.poolType} sender=${senderId} ` +
-        `rawElapsed=${rawElapsed}ms elapsed(بعد التصحيح)=${elapsed}ms ` +
-        `roundStartTime=${round.startTime} serverNow=${Date.now()} ` +
-        `msgTimestamp(واتساب)=${Number(msg.messageTimestamp || 0) * 1000} ` +
-        `فرق(msgTs - roundStart)=${Number(msg.messageTimestamp || 0) * 1000 - round.startTime}ms`
-    );
 
     // نسجل هذي النتيجة بلوحة الصدارة (أفضل الأوقات) — إلا لو تقديم بسيط
     // (تجربة/معاينة)، ما نحسبها بالمنافسة الرسمية. محاطة بحماية عشان لو
