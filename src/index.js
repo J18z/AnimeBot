@@ -413,7 +413,15 @@ async function connectSocket() {
     }
 
     if (connection === "close") {
-      const statusCode = new Boom(lastDisconnect?.error)?.output?.statusCode;
+      const boomError = new Boom(lastDisconnect?.error);
+      const statusCode = boomError?.output?.statusCode;
+      // 🔍 تشخيص: نطبع كل تفاصيل سبب الانقطاع (حتى لو logger مسكوت) —
+      // عشان نعرف السبب الحقيقي من واتساب بدل ما نخمّن
+      console.log(
+        `🔍 [تشخيص قطع الاتصال] statusCode=${statusCode} ` +
+          `errorMessage="${boomError?.message}" ` +
+          `reasonData=${JSON.stringify(lastDisconnect?.error?.data || {})}`
+      );
       const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
       if (shouldReconnect) {
         console.log("⚠️ انقطع الاتصال. إعادة محاولة خلال 5 ثواني...");
