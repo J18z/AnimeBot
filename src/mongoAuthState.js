@@ -40,25 +40,33 @@ async function useMongoAuthState() {
 
   function scheduleFlush() {
     if (flushTimer) return; // فيه فلاش مجدول أصلاً، ما نكرر المؤقت
-    flushTimer = setTimeout(async () => {
+    flushTimer = setTimeout(flushNow, 800);
+  }
+
+  // يحفظ كل المفاتيح المعلّقة فورًا (بدون انتظار الـ800ms) — نستخدمها
+  // وقت إغلاق البرنامج (SIGTERM/SIGINT) عشان نضمن ما نفقد أي مفتاح جلسة
+  // معلّق بالذاكرة لو صار إعادة تشغيل مفاجئة للسيرفر بنفس لحظة تحديث مفتاح
+  async function flushNow() {
+    if (flushTimer) {
+      clearTimeout(flushTimer);
       flushTimer = null;
-      const keysToFlush = Array.from(dirty);
-      dirty.clear();
-      await Promise.all(
-        keysToFlush.map(async (id) => {
-          try {
-            if (!cache.has(id)) {
-              await col.deleteOne({ _id: id });
-            } else {
-              const value = JSON.stringify(cache.get(id), BufferJSON.replacer);
-              await col.updateOne({ _id: id }, { $set: { value } }, { upsert: true });
-            }
-          } catch (e) {
-            console.error(`⚠️ خطأ حفظ مفتاح جلسة واتساب بالخلفية (${id}):`, e.message);
+    }
+    const keysToFlush = Array.from(dirty);
+    dirty.clear();
+    await Promise.all(
+      keysToFlush.map(async (id) => {
+        try {
+          if (!cache.has(id)) {
+            await col.deleteOne({ _id: id });
+          } else {
+            const value = JSON.stringify(cache.get(id), BufferJSON.replacer);
+            await col.updateOne({ _id: id }, { $set: { value } }, { upsert: true });
           }
-        })
-      );
-    }, 800);
+        } catch (e) {
+          console.error(`⚠️ خطأ حفظ مفتاح جلسة واتساب (${id}):`, e.message);
+        }
+      })
+    );
   }
 
   function readData(id) {
@@ -79,6 +87,22 @@ async function useMongoAuthState() {
 
   const creds = readData("creds") || initAuthCreds();
   if (!cache.has("creds")) cache.set("creds", creds);
+
+  let shuttingDown = false;
+  async function gracefulShutdown(signal) {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.log(`🛑 استلمنا ${signal} — نحفظ جلسة واتساب المعلّقة قبل الإغلاق...`);
+    try {
+      await flushNow();
+      console.log("✅ تم حفظ جلسة واتساب بالكامل، جاهزين للإغلاق.");
+    } catch (e) {
+      console.error("⚠️ خطأ أثناء حفظ الجلسة وقت الإغلاق:", e.message);
+    }
+    process.exit(0);
+  }
+  process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
+  process.on("SIGINT", () => gracefulShutdown("SIGINT"));
 
   return {
     state: {

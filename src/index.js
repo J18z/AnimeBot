@@ -323,6 +323,13 @@ async function sendStandingsList(sock, chatId, msg, list, subtitle) {
 
 // يمسح جلسة واتساب المخزنة (سواء بقاعدة البيانات أو ملف محلي) — يُستخدم
 // لما تصير الجلسة غير صالحة (تسجيل خروج) عشان نطلب QR جديد بدل ما نعلق
+let consecutiveLogouts = 0;
+let lastLogoutTime = 0;
+const MAX_CONSECUTIVE_LOGOUTS = 3;
+const LOGOUT_WINDOW_MS = 5 * 60 * 1000; // 5 دقائق
+
+// يمسح جلسة واتساب المخزنة (سواء بقاعدة البيانات أو ملف محلي) — يُستخدم
+// لما تصير الجلسة غير صالحة (تسجيل خروج) عشان نطلب QR جديد بدل ما نعلق
 async function clearAuthSession() {
   if (db.getDb()) {
     try {
@@ -408,16 +415,31 @@ async function connectSocket() {
     if (connection === "close") {
       const statusCode = new Boom(lastDisconnect?.error)?.output?.statusCode;
       const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
-      if (shouldReconnect) {                    // ← وهذا جواه
-      console.log("⚠️ انقطع الاتصال. إعادة محاولة خلال 5 ثواني...");
-      setTimeout(connectSocket, 5000);
+      if (shouldReconnect) {
+        console.log("⚠️ انقطع الاتصال. إعادة محاولة خلال 5 ثواني...");
+        setTimeout(connectSocket, 5000);
       } else {
-        console.log("⚠️ تم تسجيل الخروج من واتساب. نمسح الجلسة القديمة ونطلب QR جديد...");
+        const now = Date.now();
+        if (now - lastLogoutTime > LOGOUT_WINDOW_MS) consecutiveLogouts = 0;
+        consecutiveLogouts += 1;
+        lastLogoutTime = now;
+
+        if (consecutiveLogouts >= MAX_CONSECUTIVE_LOGOUTS) {
+          console.error(
+            `🛑 تسجيل خروج متكرر (${consecutiveLogouts} مرات خلال دقايق قليلة) — أوقفنا إعادة المحاولة التلقائية ` +
+              `عشان ما نتسبب بقيد إضافي من واتساب على الرقم. انتظر شوي (ساعات على الأقل) وبعدين أعد تشغيل ` +
+              `السيرفر يدويًا لما يصير جاهز تربط من جديد.`
+          );
+          return;
+        }
+
+        console.log("⚠️ تم تسجيل الخروج من واتساب. نمسح الجلسة القديمة ونطلب QR جديد خلال 8 ثواني...");
         await clearAuthSession();
-        connectSocket();
+        setTimeout(connectSocket, 8000);
       }
     } else if (connection === "open") {
       console.log("✅ البوت جاهز ومتصل بواتساب!");
+      consecutiveLogouts = 0;
       clearQr();
     }
   });

@@ -14,7 +14,7 @@ try { sharp = require("sharp"); } catch (e) { sharp = null; }
 // إنه رقم ثابت صغير (مو تخمين ديناميكي) عشان يبقى الوقت المعروض ثابت
 // ويعتمد على، بدل ما يتقلب حسب سرعة السيرفر اللحظية (خصوصاً بسيرفرات
 // مجانية زي Render ممكن تتأخر لحظياً وتشوّه أي تخمين ديناميكي)
-const NETWORK_OVERHEAD_MS = 300;
+const NETWORK_OVERHEAD_MS = 400;
 
 // أنواع الفقرات المدعومة
 const POOL_TYPES = ["writing", "images", "questions", "counts"];
