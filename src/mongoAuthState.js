@@ -58,14 +58,21 @@ async function useMongoAuthState() {
   let flushTimer = null;
 
   const allDocs = await col.find({}).toArray();
+  let totalBytes = 0;
   for (const doc of allDocs) {
     if (doc.value === undefined) continue;
+    totalBytes += doc.value.length;
     try {
       cache.set(doc._id, JSON.parse(doc.value, BufferJSON.reviver));
     } catch (e) {
       // مفتاح تالف بقاعدة البيانات — نتجاهله بدل ما يوقف تحميل الجلسة كلها
     }
   }
+  // 🔍 تشخيص: نطبع حجم كاش الجلسة الفعلي عشان نعرف هل هو السبب الرئيسي
+  // باستهلاك الذاكرة (350+MB) ولا في مكان ثاني يستحق نركز عليه
+  console.log(
+    `📦 كاش جلسة واتساب: ${allDocs.length} مفتاح، ${(totalBytes / 1024 / 1024).toFixed(2)}MB (كنص JSON مضغوط، الحجم الفعلي بالذاكرة بعد التحليل أكبر عادة).`
+  );
 
   function scheduleFlush() {
     if (flushTimer) return; // فيه فلاش مجدول أصلاً، ما نكرر المؤقت
