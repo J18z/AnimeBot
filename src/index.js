@@ -15,6 +15,7 @@ const { useMongoAuthState } = require("./mongoAuthState");
 const { startHealthServer, setQr, clearQr } = require("./healthServer");
 const { createSticker, createAnimatedSticker } = require("./stickerMaker");
 const dmPermissions = require("./dmPermissions");
+const instanceLock = require("./instanceLock");
 const { downloadContentFromMessage } = require("@whiskeysockets/baileys");
 const CONFIG = store.getConfig(); // ✅ نقرأ config مرة وحدة عند التشغيل
 const { handleMatsuriMessage } = require("../matsuri/matsuri");
@@ -95,20 +96,6 @@ function isGroupChat(chatId) {
   return chatId.endsWith("@g.us");
 }
 
-// أوامر متعلقة بمسابقة (بدء/تفاعل/إيقاف) — تُستخدم لقفل اللعب بالخاص.
-// لازم parseStartCommand معرّفة قبلها بالتنفيذ الفعلي، بس بفضل الـ
-// function hoisting ترتيب التعريف بالملف مو مهم
-function isContestCommand(t) {
-  if (parseStartCommand(t)) return true; // .فنش/.فص/.فكت/.فتع/.فسس [ج] <رقم>
-  if (/^\.مسابقة(?:\s+ج)?\s+\d+$/.test(t)) return true;
-  if (t === ".ص" || t === ".تع" || t === ".س") return true;
-  if (t === ".كت" || /^\.كت (كلمة|كلمتين|ثلاث كلمات|اربع كلمات|خمس كلمات)$/.test(t)) return true;
-  if ([".مسص", ".مسس", ".مستع", ".سص", ".سس", ".ستع", ".سكت"].includes(t)) return true;
-  if (/^\.مسكت\s+\d+$/.test(t)) return true;
-  if (t === ".انهاء" || t === ".سكب" || t === "النقاط") return true;
-  return false;
-}
-
 // يدور عن شخص بالاسم المسجل (نفس الاسم اللي يظهر جنب المنشن بـ.تسجيلات/
 // .سجل) — مطابقة كاملة غير حساسة لحالة الأحرف. يرجع كل التطابقات (ممكن
 // أكثر من شخص عندهم بالضبط نفس الاسم المسجل)
@@ -142,15 +129,32 @@ function resolveTarget(msg, trailingText) {
   return { error: "ambiguous", matches };
 }
 
-// رسالة موحّدة لما resolveTarget ما يقدر يحدد هدف واضح — تستخدمها كل
-// الأوامر الإدارية اللي تحتاج منشن أو اسم
-async function replyTargetError(sock, chatId, msg, resolved, usageHint) {
+// أوامر إدارية معلّقة بانتظار رد برقم (لما فيه تشابه أسماء ولا فيه منشن
+// متاح) — key = senderId (المالك دايمًا هو المستخدم لهذي الأوامر)
+const pendingDisambiguation = new Map(); // senderId -> { matches, onResolved, expiresAt }
+const DISAMBIGUATION_TIMEOUT_MS = 5 * 60 * 1000; // 5 دقايق
+
+// نسخة أشمل من resolveTarget: لو تحدد الهدف فورًا (منشن أو اسم فريد)،
+// ينفّذ onResolved(userId) على طول. لو فيه تشابه أسماء، يعرض قائمة مرقّمة
+// ويخزّن الحالة عشان لو المالك رد برقم بس (1، 2...) خلال 5 دقايق، ننفّذ
+// نفس الأمر تلقائيًا بدون ما يحتاج يعيد كتابة الأمر بمنشن
+async function resolveTargetOrAsk(sock, chatId, msg, senderId, trailingText, usageHint, onResolved) {
+  const resolved = resolveTarget(msg, trailingText);
+  if (resolved.userId) {
+    await onResolved(resolved.userId);
+    return;
+  }
   if (resolved.error === "ambiguous") {
-    const lines = resolved.matches.map((m) => `- @${m.userId.split("@")[0]} (${m.displayName})`).join("\n");
+    pendingDisambiguation.set(senderId, {
+      matches: resolved.matches,
+      onResolved,
+      expiresAt: Date.now() + DISAMBIGUATION_TIMEOUT_MS,
+    });
+    const lines = resolved.matches.map((m, i) => `${i + 1}. @${m.userId.split("@")[0]} (${m.displayName})`).join("\n");
     await sock.sendMessage(
       chatId,
       {
-        text: `⚠️ فيه أكثر من شخص مسجل بنفس الاسم:\n${lines}\n\nاستخدم منشن بدل الاسم عشان أتأكد مين بالضبط.`,
+        text: `⚠️ فيه أكثر من شخص مسجل بنفس الاسم:\n${lines}\n\nرد بالرقم بس (مثلاً 1) خلال 5 دقايق وأكمل الأمر تلقائيًا — أو استخدم منشن بدل الاسم.`,
         mentions: resolved.matches.map((m) => m.userId),
       },
       { quoted: msg }
@@ -321,12 +325,25 @@ async function sendStandingsList(sock, chatId, msg, list, subtitle) {
   await sock.sendMessage(chatId, { text: out, mentions }, { quoted: msg });
 }
 
-// يمسح جلسة واتساب المخزنة (سواء بقاعدة البيانات أو ملف محلي) — يُستخدم
-// لما تصير الجلسة غير صالحة (تسجيل خروج) عشان نطلب QR جديد بدل ما نعلق
+// ✅ حماية من "عاصفة" إعادة اتصال سريعة: لو واتساب رفض الجلسة (تسجيل خروج)
+// عدة مرات متتالية بفترة قصيرة، نوقف المحاولات التلقائية تمامًا بدل ما
+// نستمر نطلب QR جديد فورًا كل مرة — لأن هذا التكرار السريع هو بالضبط
+// اللي يخلي واتساب يحط قيد مؤقت على الرقم (نفس مشكلة "Couldn't link
+// device: Try again later")
 let consecutiveLogouts = 0;
 let lastLogoutTime = 0;
 const MAX_CONSECUTIVE_LOGOUTS = 3;
 const LOGOUT_WINDOW_MS = 5 * 60 * 1000; // 5 دقائق
+
+// ✅ نفس فكرة حماية "تسجيل الخروج" بس لأي نوع انقطاع عام (مو بس logout
+// رسمي) — لو صار انقطاع متكرر بكثرة بفترة قصيرة (القيد اللي يحطه واتساب
+// أحياناً يسبب انقطاعات متكررة مو logout صريح)، نبطّئ ونطوّل المهلة بدل
+// ما نستمر نحاول كل 5 ثواني بلا توقف طول فترة القيد كاملة
+let consecutiveCloses = 0;
+let lastCloseTime = 0;
+const CLOSE_WINDOW_MS = 2 * 60 * 1000; // دقيقتين
+const MAX_FAST_RETRIES = 5; // بعدها نبطّئ الوتيرة بشكل كبير
+const SLOW_RETRY_MS = 10 * 60 * 1000; // 10 دقايق بين كل محاولة بعد كذا
 
 // يمسح جلسة واتساب المخزنة (سواء بقاعدة البيانات أو ملف محلي) — يُستخدم
 // لما تصير الجلسة غير صالحة (تسجيل خروج) عشان نطلب QR جديد بدل ما نعلق
@@ -413,20 +430,29 @@ async function connectSocket() {
     }
 
     if (connection === "close") {
-      const boomError = new Boom(lastDisconnect?.error);
-      const statusCode = boomError?.output?.statusCode;
-      // 🔍 تشخيص: نطبع كل تفاصيل سبب الانقطاع (حتى لو logger مسكوت) —
-      // عشان نعرف السبب الحقيقي من واتساب بدل ما نخمّن
-      console.log(
-        `🔍 [تشخيص قطع الاتصال] statusCode=${statusCode} ` +
-          `errorMessage="${boomError?.message}" ` +
-          `reasonData=${JSON.stringify(lastDisconnect?.error?.data || {})}`
-      );
+      const statusCode = new Boom(lastDisconnect?.error)?.output?.statusCode;
       const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
       if (shouldReconnect) {
-        console.log("⚠️ انقطع الاتصال. إعادة محاولة خلال 5 ثواني...");
-        setTimeout(connectSocket, 5000);
+        const now = Date.now();
+        if (now - lastCloseTime > CLOSE_WINDOW_MS) consecutiveCloses = 0;
+        consecutiveCloses += 1;
+        lastCloseTime = now;
+
+        if (consecutiveCloses > MAX_FAST_RETRIES) {
+          console.error(
+            `🛑 انقطاعات متكررة (${consecutiveCloses} مرة خلال دقايق) — على الأغلب قيد مؤقت من واتساب. ` +
+              `نبطّئ لمحاولة كل ${SLOW_RETRY_MS / 60000} دقايق بدل ما نستمر نقصف بسرعة.`
+          );
+          setTimeout(connectSocket, SLOW_RETRY_MS);
+        } else {
+          console.log("⚠️ انقطع الاتصال. إعادة محاولة خلال 5 ثواني...");
+          setTimeout(connectSocket, 5000);
+        }
       } else {
+        // ✅ عداد "تسجيل خروج متتالي": لو صار 3 مرات خلال 5 دقائق، نوقف
+        // المحاولات التلقائية كليًا — الاستمرار بطلب QR فورًا كل مرة هو
+        // اللي يخلي واتساب يحط قيد مؤقت على الرقم (يمنعه يربط أي جهاز
+        // إطلاقًا لفترة). أفضل نتوقف ونطلب تدخل يدوي بدل ما نزيد الطين بلة
         const now = Date.now();
         if (now - lastLogoutTime > LOGOUT_WINDOW_MS) consecutiveLogouts = 0;
         consecutiveLogouts += 1;
@@ -438,7 +464,7 @@ async function connectSocket() {
               `عشان ما نتسبب بقيد إضافي من واتساب على الرقم. انتظر شوي (ساعات على الأقل) وبعدين أعد تشغيل ` +
               `السيرفر يدويًا لما يصير جاهز تربط من جديد.`
           );
-          return;
+          return; // ما نعيد الاتصال ولا نمسح الجلسة — نوقف كليًا هنا
         }
 
         console.log("⚠️ تم تسجيل الخروج من واتساب. نمسح الجلسة القديمة ونطلب QR جديد خلال 8 ثواني...");
@@ -447,7 +473,8 @@ async function connectSocket() {
       }
     } else if (connection === "open") {
       console.log("✅ البوت جاهز ومتصل بواتساب!");
-      consecutiveLogouts = 0;
+      consecutiveLogouts = 0; // اتصال ناجح = نصفّر العدادات
+      consecutiveCloses = 0;
       clearQr();
     }
   });
@@ -503,6 +530,33 @@ async function handleIncoming(sock, msg) {
 
   const text = extractText(msg);
 
+  // 🚪 قفل شامل للخاص: أي حد غير صاحب البوت (وغير المسموح له صراحة بأمر
+  // .سماح المخفي) يرسل بالخاص، نتجاهله كليًا بصمت — ولا حتى رد واحد، ولا
+  // .ريم اوامر ولا أي أمر تشخيصي. كأن الرسالة ما وصلت أصلاً. هذي البوابة
+  // أول شي بالدالة عمداً عشان ولا سطر ثاني يتنفذ لغير صاحب البوت بالخاص
+  if (!isGroupChat(chatId) && !isOwner(senderId) && !dmPermissions.isAllowed(senderId)) {
+    return;
+  }
+
+  // 🔢 رد برقم بس لحل تشابه أسماء بأمر إداري معلّق (زي .ريسيت توب J18
+  // لما فيه أكثر من J18 مسجلين) — لازم يكون صاحب البوت، وفيه أمر معلّق
+  // له، والرسالة رقم صريح بس (عشان ما نتعارض مع إجابة عادية بمسابقة)
+  if (isOwner(senderId) && pendingDisambiguation.has(senderId) && /^\d+$/.test(text)) {
+    const pending = pendingDisambiguation.get(senderId);
+    if (Date.now() > pending.expiresAt) {
+      pendingDisambiguation.delete(senderId);
+    } else {
+      const idx = parseInt(text, 10) - 1;
+      const match = pending.matches[idx];
+      if (match) {
+        pendingDisambiguation.delete(senderId);
+        await pending.onResolved(match.userId);
+        return;
+      }
+      // رقم برا النطاق — نسيبه يكمل مساره الطبيعي (ممكن يكون إجابة لعبة)
+    }
+  }
+
   if (await handleMatsuriMessage(sock, msg, text, chatId, senderId)) return;
 
   // أمر مساعدة: يعطيك آيدي المحادثة عشان تحطه بـ config.json لو تبي تحصر البوت بقروب معين
@@ -515,21 +569,6 @@ async function handleIncoming(sock, msg) {
   if (text === "ايديي" || text === "my id") {
     await sock.sendMessage(chatId, { text: `آيديك بهذي المحادثة:\n${senderId}`, mentions: [senderId] }, { quoted: msg });
     return;
-  }
-
-  // 🚪 قفل المسابقات بالخاص: المسابقات تشتغل بالقروبات بس. صاحب البوت
-  // مستثنى دايمًا (تشتغل معه بالخاص طبيعي)، وكذا أي شخص سمح له صاحب
-  // البوت صراحة بأمر .سماح (المخفي). باقي الأوامر (تسجيل/ستيكر/توب...)
-  // تفضل تشتغل بالخاص عادي، هذي البوابة تقفل بس أوامر المسابقة نفسها
-  if (!isGroupChat(chatId) && !isOwner(senderId) && !dmPermissions.isAllowed(senderId)) {
-    if (text === ".ريم اوامر" || isContestCommand(text)) {
-      await sock.sendMessage(
-        chatId,
-        { text: "🚫 المسابقات تشتغل بالقروبات بس، ما تقدر تلعب أو تشوف قائمة الأوامر بالخاص." },
-        { quoted: msg }
-      );
-      return;
-    }
   }
 
   // أمر .ريم اوامر: قائمة كل الأوامر مصنفة
@@ -793,25 +832,21 @@ if (acceptChangeMatch) {
     await sock.sendMessage(chatId, { text: "⛔ هذا الأمر مخصص لصاحب البوت بس." }, { quoted: msg });
     return;
   }
-  const resolved = resolveTarget(msg, acceptChangeMatch[1]);
-  if (!resolved.userId) {
-    await replyTargetError(sock, chatId, msg, resolved, "استخدم الأمر مع منشن أو اسم للشخص: .قبول تغيير @الشخص");
-    return;
-  }
-  const target = resolved.userId;
-  const requestedType = pendingChangeRequests.get(target);
-  if (!requestedType) {
-    await sock.sendMessage(chatId, { text: "ما فيه طلب تغيير معلّق لهذا الشخص." }, { quoted: msg });
-    return;
-  }
-  await registration.register(target, requestedType);
-  pendingChangeRequests.delete(target);
-  const label = requestedType === "mobile" ? "جوال 📱" : "خارجي 💻";
-  await sock.sendMessage(
-    chatId,
-    { text: `✅ تم قبول الطلب، تسجيل @${target.split("@")[0]} صار: ${label}`, mentions: [target] },
-    { quoted: msg }
-  );
+  await resolveTargetOrAsk(sock, chatId, msg, senderId, acceptChangeMatch[1], "استخدم الأمر مع منشن أو اسم للشخص: .قبول تغيير @الشخص", async (target) => {
+    const requestedType = pendingChangeRequests.get(target);
+    if (!requestedType) {
+      await sock.sendMessage(chatId, { text: "ما فيه طلب تغيير معلّق لهذا الشخص." }, { quoted: msg });
+      return;
+    }
+    await registration.register(target, requestedType);
+    pendingChangeRequests.delete(target);
+    const label = requestedType === "mobile" ? "جوال 📱" : "خارجي 💻";
+    await sock.sendMessage(
+      chatId,
+      { text: `✅ تم قبول الطلب، تسجيل @${target.split("@")[0]} صار: ${label}`, mentions: [target] },
+      { quoted: msg }
+    );
+  });
   return;
 }
 
@@ -821,22 +856,18 @@ if (rejectChangeMatch) {
     await sock.sendMessage(chatId, { text: "⛔ هذا الأمر مخصص لصاحب البوت بس." }, { quoted: msg });
     return;
   }
-  const resolved = resolveTarget(msg, rejectChangeMatch[1]);
-  if (!resolved.userId) {
-    await replyTargetError(sock, chatId, msg, resolved, "استخدم الأمر مع منشن أو اسم للشخص: .رفض تغيير @الشخص");
-    return;
-  }
-  const target = resolved.userId;
-  if (!pendingChangeRequests.has(target)) {
-    await sock.sendMessage(chatId, { text: "ما فيه طلب تغيير معلّق لهذا الشخص." }, { quoted: msg });
-    return;
-  }
-  pendingChangeRequests.delete(target);
-  await sock.sendMessage(
-    chatId,
-    { text: `🚫 تم رفض طلب تغيير تسجيل @${target.split("@")[0]}.`, mentions: [target] },
-    { quoted: msg }
-  );
+  await resolveTargetOrAsk(sock, chatId, msg, senderId, rejectChangeMatch[1], "استخدم الأمر مع منشن أو اسم للشخص: .رفض تغيير @الشخص", async (target) => {
+    if (!pendingChangeRequests.has(target)) {
+      await sock.sendMessage(chatId, { text: "ما فيه طلب تغيير معلّق لهذا الشخص." }, { quoted: msg });
+      return;
+    }
+    pendingChangeRequests.delete(target);
+    await sock.sendMessage(
+      chatId,
+      { text: `🚫 تم رفض طلب تغيير تسجيل @${target.split("@")[0]}.`, mentions: [target] },
+      { quoted: msg }
+    );
+  });
   return;
 }
 
@@ -856,17 +887,14 @@ if (rejectChangeMatch) {
       await sock.sendMessage(chatId, { text: "⛔ هذا الأمر مخصص لصاحب البوت بس." }, { quoted: msg });
       return;
     }
-    const resolved = resolveTarget(msg, unsuspendMatch[1]);
-    if (!resolved.userId) {
-      await replyTargetError(sock, chatId, msg, resolved, "استخدم الأمر مع منشن أو اسم للشخص: .الغاء ايقاف @الشخص");
-      return;
-    }
-    moderation.unsuspend(resolved.userId);
-    await sock.sendMessage(
-      chatId,
-      { text: "✅ تم رفع الإيقاف عنه، رجع مؤهل لقوائم الجوالات.", mentions: [resolved.userId] },
-      { quoted: msg }
-    );
+    await resolveTargetOrAsk(sock, chatId, msg, senderId, unsuspendMatch[1], "استخدم الأمر مع منشن أو اسم للشخص: .الغاء ايقاف @الشخص", async (target) => {
+      moderation.unsuspend(target);
+      await sock.sendMessage(
+        chatId,
+        { text: "✅ تم رفع الإيقاف عنه، رجع مؤهل لقوائم الجوالات.", mentions: [target] },
+        { quoted: msg }
+      );
+    });
     return;
   }
 
@@ -876,17 +904,14 @@ if (rejectChangeMatch) {
       await sock.sendMessage(chatId, { text: "⛔ هذا الأمر مخصص لصاحب البوت بس." }, { quoted: msg });
       return;
     }
-    const resolved = resolveTarget(msg, suspendMatch[1]);
-    if (!resolved.userId) {
-      await replyTargetError(sock, chatId, msg, resolved, "استخدم الأمر مع منشن أو اسم للشخص: .ايقاف @الشخص");
-      return;
-    }
-    moderation.suspend(resolved.userId);
-    await sock.sendMessage(
-      chatId,
-      { text: "⏸️ تم إيقافه من قوائم الجوالات (يلعب عادي، نقاطه العامة تُحسب، بس مستبعد من .توب/.سجل جوالات).", mentions: [resolved.userId] },
-      { quoted: msg }
-    );
+    await resolveTargetOrAsk(sock, chatId, msg, senderId, suspendMatch[1], "استخدم الأمر مع منشن أو اسم للشخص: .ايقاف @الشخص", async (target) => {
+      moderation.suspend(target);
+      await sock.sendMessage(
+        chatId,
+        { text: "⏸️ تم إيقافه من قوائم الجوالات (يلعب عادي، نقاطه العامة تُحسب، بس مستبعد من .توب/.سجل جوالات).", mentions: [target] },
+        { quoted: msg }
+      );
+    });
     return;
   }
 
@@ -896,13 +921,10 @@ if (rejectChangeMatch) {
       await sock.sendMessage(chatId, { text: "⛔ هذا الأمر مخصص لصاحب البوت بس." }, { quoted: msg });
       return;
     }
-    const resolved = resolveTarget(msg, unbanMatch[1]);
-    if (!resolved.userId) {
-      await replyTargetError(sock, chatId, msg, resolved, "استخدم الأمر مع منشن أو اسم للشخص: .الغاء حظر @الشخص");
-      return;
-    }
-    moderation.unban(resolved.userId);
-    await sock.sendMessage(chatId, { text: "✅ تم فك الحظر عنه، يقدر يلعب من جديد.", mentions: [resolved.userId] }, { quoted: msg });
+    await resolveTargetOrAsk(sock, chatId, msg, senderId, unbanMatch[1], "استخدم الأمر مع منشن أو اسم للشخص: .الغاء حظر @الشخص", async (target) => {
+      moderation.unban(target);
+      await sock.sendMessage(chatId, { text: "✅ تم فك الحظر عنه، يقدر يلعب من جديد.", mentions: [target] }, { quoted: msg });
+    });
     return;
   }
 
@@ -912,17 +934,14 @@ if (rejectChangeMatch) {
       await sock.sendMessage(chatId, { text: "⛔ هذا الأمر مخصص لصاحب البوت بس." }, { quoted: msg });
       return;
     }
-    const resolved = resolveTarget(msg, banMatch[1]);
-    if (!resolved.userId) {
-      await replyTargetError(sock, chatId, msg, resolved, "استخدم الأمر مع منشن أو اسم للشخص: .حظر @الشخص");
-      return;
-    }
-    moderation.ban(resolved.userId);
-    await sock.sendMessage(
-      chatId,
-      { text: "🚫 تم حظره، رسائله بالمسابقات تُتجاهل تماماً (ما يحصل نقاط ولا يفوز بأي جولة).", mentions: [resolved.userId] },
-      { quoted: msg }
-    );
+    await resolveTargetOrAsk(sock, chatId, msg, senderId, banMatch[1], "استخدم الأمر مع منشن أو اسم للشخص: .حظر @الشخص", async (target) => {
+      moderation.ban(target);
+      await sock.sendMessage(
+        chatId,
+        { text: "🚫 تم حظره، رسائله بالمسابقات تُتجاهل تماماً (ما يحصل نقاط ولا يفوز بأي جولة).", mentions: [target] },
+        { quoted: msg }
+      );
+    });
     return;
   }
 
@@ -935,13 +954,10 @@ if (rejectChangeMatch) {
       await sock.sendMessage(chatId, { text: "⛔ هذا الأمر مخصص لصاحب البوت بس." }, { quoted: msg });
       return;
     }
-    const resolved = resolveTarget(msg, samahMatch[1]);
-    if (!resolved.userId) {
-      await replyTargetError(sock, chatId, msg, resolved, "استخدم الأمر مع منشن أو اسم للشخص: .سماح @الشخص");
-      return;
-    }
-    dmPermissions.allow(resolved.userId);
-    await sock.sendMessage(chatId, { text: "✅ تم السماح له باللعب بالخاص.", mentions: [resolved.userId] }, { quoted: msg });
+    await resolveTargetOrAsk(sock, chatId, msg, senderId, samahMatch[1], "استخدم الأمر مع منشن أو اسم للشخص: .سماح @الشخص", async (target) => {
+      dmPermissions.allow(target);
+      await sock.sendMessage(chatId, { text: "✅ تم السماح له يستخدم البوت بالخاص.", mentions: [target] }, { quoted: msg });
+    });
     return;
   }
 
@@ -951,13 +967,10 @@ if (rejectChangeMatch) {
       await sock.sendMessage(chatId, { text: "⛔ هذا الأمر مخصص لصاحب البوت بس." }, { quoted: msg });
       return;
     }
-    const resolved = resolveTarget(msg, laSamahMatch[1]);
-    if (!resolved.userId) {
-      await replyTargetError(sock, chatId, msg, resolved, "استخدم الأمر مع منشن أو اسم للشخص: .الغاء سماح @الشخص");
-      return;
-    }
-    dmPermissions.disallow(resolved.userId);
-    await sock.sendMessage(chatId, { text: "🚫 تم إلغاء سماحه باللعب بالخاص.", mentions: [resolved.userId] }, { quoted: msg });
+    await resolveTargetOrAsk(sock, chatId, msg, senderId, laSamahMatch[1], "استخدم الأمر مع منشن أو اسم للشخص: .الغاء سماح @الشخص", async (target) => {
+      dmPermissions.disallow(target);
+      await sock.sendMessage(chatId, { text: "🚫 تم إلغاء سماحه باستخدام البوت بالخاص.", mentions: [target] }, { quoted: msg });
+    });
     return;
   }
 
@@ -1026,17 +1039,26 @@ if (rejectChangeMatch) {
     const trailingText = resetTopMatch[2];
     const mentioned = getMentionedJid(msg);
 
-    let target = null;
-    if (mentioned || trailingText) {
-      const resolved = resolveTarget(msg, trailingText);
-      if (!resolved.userId) {
-        await replyTargetError(sock, chatId, msg, resolved, "⚠️ ما لقيت هذا الشخص. استخدم منشن أو اسمه المسجل بالضبط.");
-        return;
+    const resetWholePool = async () => {
+      if (poolType) {
+        leaderboard.reset(poolType);
+        await sock.sendMessage(
+          chatId,
+          { text: `🗑️ تم تصفير لوحة صدارة فقرة ${poolLabels[poolType]}.` },
+          { quoted: msg }
+        );
+      } else {
+        leaderboard.reset();
+        await sock.sendMessage(chatId, { text: "🗑️ تم تصفير لوحة الصدارة بالكامل." }, { quoted: msg });
       }
-      target = resolved.userId;
+    };
+
+    if (!mentioned && !trailingText) {
+      await resetWholePool();
+      return;
     }
 
-    if (target) {
+    await resolveTargetOrAsk(sock, chatId, msg, senderId, trailingText, "⚠️ ما لقيت هذا الشخص. استخدم منشن أو اسمه المسجل بالضبط.", async (target) => {
       if (poolType) {
         leaderboard.removeUserFromPool(poolType, target);
         await sock.sendMessage(
@@ -1052,20 +1074,7 @@ if (rejectChangeMatch) {
           { quoted: msg }
         );
       }
-      return;
-    }
-
-    if (poolType) {
-      leaderboard.reset(poolType);
-      await sock.sendMessage(
-        chatId,
-        { text: `🗑️ تم تصفير لوحة صدارة فقرة ${poolLabels[poolType]}.` },
-        { quoted: msg }
-      );
-    } else {
-      leaderboard.reset();
-      await sock.sendMessage(chatId, { text: "🗑️ تم تصفير لوحة الصدارة بالكامل." }, { quoted: msg });
-    }
+    });
     return;
   }
 
@@ -1148,17 +1157,14 @@ if (rejectChangeMatch) {
     const trailingText = resetStandingsMatch[1];
     const mentioned = getMentionedJid(msg);
     if (mentioned || trailingText) {
-      const resolved = resolveTarget(msg, trailingText);
-      if (!resolved.userId) {
-        await replyTargetError(sock, chatId, msg, resolved, "⚠️ ما لقيت هذا الشخص. استخدم منشن أو اسمه المسجل بالضبط.");
-        return;
-      }
-      standings.removeUser(resolved.userId);
-      await sock.sendMessage(
-        chatId,
-        { text: `🗑️ تم حذف سجل @${resolved.userId.split("@")[0]} من السجل التراكمي.`, mentions: [resolved.userId] },
-        { quoted: msg }
-      );
+      await resolveTargetOrAsk(sock, chatId, msg, senderId, trailingText, "⚠️ ما لقيت هذا الشخص. استخدم منشن أو اسمه المسجل بالضبط.", async (target) => {
+        standings.removeUser(target);
+        await sock.sendMessage(
+          chatId,
+          { text: `🗑️ تم حذف سجل @${target.split("@")[0]} من السجل التراكمي.`, mentions: [target] },
+          { quoted: msg }
+        );
+      });
       return;
     }
     standings.reset();
@@ -1356,20 +1362,16 @@ if (rejectChangeMatch) {
       await sock.sendMessage(chatId, { text: "⛔ هذا الأمر مخصص لصاحب البوت بس." }, { quoted: msg });
       return;
     }
-    const resolved = resolveTarget(msg, removeResetMatch[1]);
-    if (!resolved.userId) {
-      await replyTargetError(sock, chatId, msg, resolved, "استخدم الأمر مع منشن أو اسم للشخص: .ازالة تصفير @الشخص");
-      return;
-    }
-    const target = resolved.userId;
-    await registration.hardDelete(target);
-    leaderboard.removeUser(target);
-    standings.removeUser(target);
-    await sock.sendMessage(
-      chatId,
-      { text: "🗑️ تم إزالة تسجيله وتصفير كل سجلاته من .توب و.سجل.", mentions: [target] },
-      { quoted: msg }
-    );
+    await resolveTargetOrAsk(sock, chatId, msg, senderId, removeResetMatch[1], "استخدم الأمر مع منشن أو اسم للشخص: .ازالة تصفير @الشخص", async (target) => {
+      await registration.hardDelete(target);
+      leaderboard.removeUser(target);
+      standings.removeUser(target);
+      await sock.sendMessage(
+        chatId,
+        { text: "🗑️ تم إزالة تسجيله وتصفير كل سجلاته من .توب و.سجل.", mentions: [target] },
+        { quoted: msg }
+      );
+    });
     return;
   }
 
@@ -1379,18 +1381,14 @@ if (rejectChangeMatch) {
       await sock.sendMessage(chatId, { text: "⛔ هذا الأمر مخصص لصاحب البوت بس." }, { quoted: msg });
       return;
     }
-    const resolved = resolveTarget(msg, removeMatch[1]);
-    if (!resolved.userId) {
-      await replyTargetError(sock, chatId, msg, resolved, "استخدم الأمر مع منشن أو اسم للشخص: .ازالة @الشخص");
-      return;
-    }
-    const target = resolved.userId;
-    await registration.hardDelete(target);
-    await sock.sendMessage(
-      chatId,
-      { text: "✅ تم إزالة تسجيله (بدون تصفير سجلاته من .توب/.سجل).", mentions: [target] },
-      { quoted: msg }
-    );
+    await resolveTargetOrAsk(sock, chatId, msg, senderId, removeMatch[1], "استخدم الأمر مع منشن أو اسم للشخص: .ازالة @الشخص", async (target) => {
+      await registration.hardDelete(target);
+      await sock.sendMessage(
+        chatId,
+        { text: "✅ تم إزالة تسجيله (بدون تصفير سجلاته من .توب/.سجل).", mentions: [target] },
+        { quoted: msg }
+      );
+    });
     return;
   }
 
@@ -1462,6 +1460,10 @@ async function main() {
     roulette.loadFromDb(),
     rasad.loadFromDb(),
   ]);
+  // 🔒 ننتظر لين نتأكد ما فيه نسخة ثانية من البوت شغّالة (تعارض جلسات
+  // يقفل الاتصال بواتساب بخطأ device_removed) — سيرفر الـHTTP فوق شغّال
+  // أصلاً فيرضي فحص Render الصحي، حتى لو انتظرنا هنا شوي
+  await instanceLock.acquireWithRetry();
   await connectSocket();
 }
 setInterval(() => {

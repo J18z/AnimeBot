@@ -5,6 +5,35 @@
 
 const { proto, initAuthCreds, BufferJSON } = require("@whiskeysockets/baileys");
 const { getDb } = require("./db");
+const instanceLock = require("./instanceLock");
+
+// ✅ إصلاح تسرب ذاكرة تراكمي: معالج الإغلاق (SIGTERM/SIGINT) لازم يتسجل
+// مرة وحدة بس على مستوى الملف — مو جوا useMongoAuthState() — لأن هذي
+// الدالة تتنفذ من جديد كل إعادة اتصال، ولو سجّلنا process.on() جواها كل
+// مرة، كل إعادة اتصال تضيف مستمع جديد يفضل للأبد (process كائن واحد ثابت،
+// وNode ما يشيل المستمعين القدامى تلقائيًا)، وكل مستمع يحتفظ بنسخة كاملة
+// من كاش الجلسة القديمة بالذاكرة بلا داعي. بعد كذا إعادة اتصال (شي وارد
+// جدًا على سيرفر مجاني بينقطع كثير)، تتراكم عدة نسخ كاملة من بيانات
+// الجلسة بالذاكرة وتخلي البوت يبطّئ تدريجيًا. هذا المتغير يشاور دايمًا
+// على آخر flushNow نشط، ونحدّثه بس كل ما صار اتصال جديد بدل ما نسجل
+// مستمع جديد من الصفر
+let currentFlushNow = null;
+let shuttingDown = false;
+async function gracefulShutdown(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`🛑 استلمنا ${signal} — نحفظ جلسة واتساب المعلّقة قبل الإغلاق...`);
+  try {
+    if (currentFlushNow) await currentFlushNow();
+    await instanceLock.release();
+    console.log("✅ تم حفظ جلسة واتساب وتحرير القفل، جاهزين للإغلاق.");
+  } catch (e) {
+    console.error("⚠️ خطأ أثناء حفظ الجلسة وقت الإغلاق:", e.message);
+  }
+  process.exit(0);
+}
+process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
+process.on("SIGINT", () => gracefulShutdown("SIGINT"));
 
 async function useMongoAuthState() {
   const db = getDb();
@@ -45,7 +74,8 @@ async function useMongoAuthState() {
 
   // يحفظ كل المفاتيح المعلّقة فورًا (بدون انتظار الـ800ms) — نستخدمها
   // وقت إغلاق البرنامج (SIGTERM/SIGINT) عشان نضمن ما نفقد أي مفتاح جلسة
-  // معلّق بالذاكرة لو صار إعادة تشغيل مفاجئة للسيرفر بنفس لحظة تحديث مفتاح
+  // معلّق بالذاكرة لو صار إعادة تشغيل مفاجئة للسيرفر بنفس لحظة تحديث
+  // مفتاح (هذا بالضبط كان يسبب انفكاك الجلسة المفاجئ بدون سبب واضح)
   async function flushNow() {
     if (flushTimer) {
       clearTimeout(flushTimer);
@@ -88,21 +118,10 @@ async function useMongoAuthState() {
   const creds = readData("creds") || initAuthCreds();
   if (!cache.has("creds")) cache.set("creds", creds);
 
-  let shuttingDown = false;
-  async function gracefulShutdown(signal) {
-    if (shuttingDown) return;
-    shuttingDown = true;
-    console.log(`🛑 استلمنا ${signal} — نحفظ جلسة واتساب المعلّقة قبل الإغلاق...`);
-    try {
-      await flushNow();
-      console.log("✅ تم حفظ جلسة واتساب بالكامل، جاهزين للإغلاق.");
-    } catch (e) {
-      console.error("⚠️ خطأ أثناء حفظ الجلسة وقت الإغلاق:", e.message);
-    }
-    process.exit(0);
-  }
-  process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
-  process.on("SIGINT", () => gracefulShutdown("SIGINT"));
+  // ✅ نحدّث المرجع المشترك بس (مو نسجل مستمع process جديد) — المعالج
+  // المسجل مرة وحدة فوق يستخدم هذا المرجع، فدايمًا يحفظ آخر جلسة نشطة
+  // فعلاً وقت الإغلاق، بدون ما نراكم مستمعين مع كل إعادة اتصال
+  currentFlushNow = flushNow;
 
   return {
     state: {
