@@ -4,6 +4,25 @@
  * تطبيع النص العربي/الإنجليزي عشان المقارنة تكون دقيقة
  * (إزالة التشكيل، توحيد الألف والهمزات، إزالة المسافات الزايدة، تصغير الأحرف الإنجليزية)
  */
+/**
+ * تحذف كل همزة (ء) "ملتصقة" بحرف غير همزة الغرض منها تمويه الكلمة عن
+ * اقتراحات لوحة المفاتيح (مثلاً "ءايزن جين توسينء" تصير "ايزن جين توسين")
+ * — تُحذف بغض النظر عن مكانها بالنص (بداية/وسط/نهاية). الاستثناء الوحيد:
+ * لو آخر همزة بالنص منفصلة عن الكلمة قبلها بمسافة فعلية (مو نقطة أو علامة
+ * ترقيم تحولت لمسافة)، نسيبها زي ما هي بدون حذف — عشان تفشل المطابقة
+ * عمداً (تمنع تمويه زايد على الآخر). أي همزة ثانية غير الأخيرة تُحذف دايمًا
+ * حتى لو انفصلت بمسافة (بسبب نقطة مثلاً)
+ */
+function stripDisguiseHamza(text) {
+  const lastIdx = text.lastIndexOf("ء");
+  if (lastIdx === -1) return text;
+  const precededBySpace = lastIdx > 0 && text[lastIdx - 1] === " ";
+  if (precededBySpace) {
+    return text.slice(0, lastIdx).replace(/ء/g, "") + text.slice(lastIdx);
+  }
+  return text.replace(/ء/g, "");
+}
+
 function normalizeText(text) {
   if (!text) return "";
   let t = String(text).trim();
@@ -20,6 +39,9 @@ function normalizeText(text) {
 
   // إزالة علامات الترقيم الشائعة (وفواصل زي ~ و |)
   t = t.replace(/[.,!?؟،؛:"'`\-_/\\()\[\]{}~|]/g, " ");
+
+  // همزات التمويه الملتصقة (شرحها فوق الدالة)
+  t = stripDisguiseHamza(t);
 
   // تصغير الأحرف الإنجليزية
   t = t.toLowerCase();
@@ -133,6 +155,36 @@ function findAllMatches(message, slots, claimedSet, relaxed = false) {
   return claimedNow;
 }
 
+/**
+ * يحلل رسالة تحديد نمط الهمزات (مثلاً "تءءت" أو "جججءءججج") لمسابقة
+ * وضع الهمزات الإلزامي — يرجع { prefix, suffix } (كل شي قبل أول همزة،
+ * وكل شي بعد آخر همزة)، أو null لو ما فيه همزتين مختلفتين بالنص
+ */
+function parseHamzaPattern(text) {
+  const t = String(text || "").trim();
+  const first = t.indexOf("ء");
+  const last = t.lastIndexOf("ء");
+  if (first === -1 || last === -1 || first === last) return null;
+  return { prefix: t.slice(0, first), suffix: t.slice(last + 1) };
+}
+
+/**
+ * يفك تغليف الهمزات لرسالة إجابة حسب نمط محدد (من parseHamzaPattern) —
+ * لازم النص يبدأ بـprefix وينتهي بـsuffix بالضبط، وبينهم همزة فأول
+ * المحتوى وهمزة آخره. يرجع المحتوى الفعلي (بين الهمزتين) لو طابق، أو
+ * null لو ما طابق الإطار إطلاقاً
+ */
+function unwrapHamza(text, pattern) {
+  if (!pattern) return null;
+  const { prefix, suffix } = pattern;
+  if (!text.startsWith(prefix) || !text.endsWith(suffix)) return null;
+  const middleEnd = text.length - suffix.length;
+  if (middleEnd < prefix.length) return null;
+  const middle = text.slice(prefix.length, middleEnd);
+  if (middle.length < 2 || !middle.startsWith("ء") || !middle.endsWith("ء")) return null;
+  return middle.slice(1, -1);
+}
+
 module.exports = {
   normalizeText,
   normalizeRelaxed,
@@ -142,4 +194,6 @@ module.exports = {
   shuffle,
   formatSeconds,
   findAllMatches,
+  parseHamzaPattern,
+  unwrapHamza,
 };

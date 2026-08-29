@@ -164,6 +164,27 @@ function formatQuestionsList(items) {
   return out;
 }
 
+// رسالة .نقاطي — أفضل 5 نتائج شخصية (تاريخ الشخص نفسه، مو التنافسي العام)
+// لكل فقرة، لنفس الشخص اللي طلب الأمر
+function formatMyPoints(entriesByType, displayName, userId) {
+  let out = `${TOP_HEADER}\n${TOP_DIVIDER}\n◞تــوب الـنـقـاط╎˼‏🔝˹⤹◜\n     ◝${isolate(displayName)}⇆@${userId.split("@")[0]}◟\n`;
+  TOP_ORDER.forEach((poolType) => {
+    const { compact, icon } = topTitles[poolType];
+    out += `${TOP_DIVIDER2}\n*✠ تــوب 5 ${compact} • ${icon}◜*\n\n`;
+    const entries = entriesByType[poolType] || [];
+    if (entries.length === 0) {
+      out += "ما فيه نتائج مسجلة بعد.\n\n";
+    } else {
+      entries.forEach((e, i) => {
+        out += `˼‏${numFor(i)}╎${e.answer} ⋄﹝${(e.elapsed / 1000).toFixed(2)} ثانية﹞◟\n`;
+      });
+      out += "\n";
+    }
+  });
+  out += TOP_DIVIDER;
+  return out;
+}
+
 module.exports = {
   isolate,
   TOP_HEADER,
@@ -184,4 +205,5 @@ module.exports = {
   formatMemberList,
   formatCountsList,
   formatQuestionsList,
+  formatMyPoints,
 };

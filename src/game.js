@@ -1,7 +1,8 @@
 const fs = require("fs");
-const { pickRandom, formatSeconds, findAllMatches } = require("./utils");
+const { pickRandom, formatSeconds, findAllMatches, parseHamzaPattern, unwrapHamza } = require("./utils");
 const store = require("./dataStore");
 const leaderboard = require("./leaderboard");
+const personalHistory = require("./personalHistory");
 const standings = require("./standings");
 const moderation = require("./moderation");
 const registration = require("./registration");
@@ -41,6 +42,13 @@ class Contest {
     this.nextRoundTimer = null; // ✅ حفظ رقم Timer عشان نلغيه لاحقاً
     this.roundWatchdog = null; // مؤقت حراسة: ينبّه لو سؤال "علق" بدون أي رد لفترة طويلة
     this.processedMsgIds = new Set(); // حماية من معالجة نفس الرسالة مرتين (لو بيليز كررها)
+    // 🔤 وضع الهمزات الإلزامي (.فنش 20 همزات وأمثالها): أول محاولة إجابة
+    // من كل شخص بكل جولة لازم تكون بإطار همزات محدد (يحدده اللي بدأ
+    // المسابقة بعد ما نطلبه). تصحيح برسالة ثانية يشتغل عادي بدون همزات
+    this.hamzaMode = !!options.hamzaMode;
+    this.hamzaPattern = null; // { prefix, suffix } بعد ما يتحدد
+    this.awaitingHamzaFrom = null; // senderId اللي المفروض يحدد النمط
+    this.pendingStart = null; // دالة نناديها فور ما يتحدد النمط (تبدأ أول سؤال فعليًا)
   }
 
   pickPoolType() {
@@ -257,6 +265,26 @@ class Contest {
   // text: النص المستخرج من الرسالة
   // senderId: آيدي الشخص المرسل (jid)
   async handleMessage(msg, text, senderId) {
+    // 🔤 لسا ننتظر اللي بدأ المسابقة يحدد نمط الهمزات — أي رسالة من شخص
+    // ثاني نتجاهلها كليًا لين يوصلنا رد من نفس الشخص اللي بدأ
+    if (this.awaitingHamzaFrom) {
+      if (senderId !== this.awaitingHamzaFrom) return;
+      const parsed = parseHamzaPattern(text);
+      if (!parsed) {
+        await this.replyTo(msg, "⚠️ لازم يكون فيه همزتين (ء) مختلفتين بالنص عشان أحدد الإطار. مثال: تءءت");
+        return;
+      }
+      this.hamzaPattern = parsed;
+      this.awaitingHamzaFrom = null;
+      const starter = this.pendingStart;
+      this.pendingStart = null;
+      await this.sendChat(
+        "✅ تم تحديد نمط الهمزات. أول محاولة إجابة من كل شخص بكل سؤال لازم تكون بنفس هذا الإطار — تصحيح برسالة ثانية يشتغل عادي بدون همزات."
+      );
+      if (starter) await starter();
+      return;
+    }
+
     if (!this.active || !this.currentRound || this.currentRound.finished) return;
     if (!text) return;
     if (moderation.isBanned(senderId)) return;
@@ -332,13 +360,22 @@ class Contest {
     // كل الفقرات تستخدم تطبيع مرن (غ/ق/ج كحرف واحد) عدا الكتابة، اللي
     // لازم فيها تطابق حرفي كامل بدون تساهل
     const relaxed = round.poolType !== "writing";
-    const newlyClaimed = findAllMatches(text, round.slots, userSet, relaxed);
+    // 🔤 وضع الهمزات: أول محاولة (userSet فاضي) لهذا الشخص بهذي الجولة
+    // لازم تكون بإطار الهمزات المحدد — لو ما طابقت الإطار، نتجاهل الرسالة
+    // كليًا (كأنها ما كانت إجابة أصلاً). أي محاولة بعدها (تصحيح) تفحص عادي
+    let searchText = text;
+    if (this.hamzaMode && this.hamzaPattern && userSet.size === 0) {
+      const unwrapped = unwrapHamza(text, this.hamzaPattern);
+      if (unwrapped === null) return;
+      searchText = unwrapped;
+    }
+    const newlyClaimed = findAllMatches(searchText, round.slots, userSet, relaxed);
     if (newlyClaimed.length === 0) return;
 
     for (const idx of newlyClaimed) userSet.add(idx);
 
     if (userSet.size >= round.required) {
-      await this.completeRound(msg, senderId);
+      await this.completeRound(msg, senderId, text);
     }
   }
 
@@ -348,7 +385,7 @@ class Contest {
     return this.scores.get(userId);
   }
 
-  async completeRound(msg, senderId) {
+  async completeRound(msg, senderId, winningText) {
     const round = this.currentRound;
     round.finished = true;
     this.roundsCompleted += 1;
@@ -378,13 +415,19 @@ class Contest {
     // فشل التسجيل لأي سبب (مشكلة قاعدة بيانات لحظية)، ما توقف تقدم الجولة
     if (!this.practiceMode) {
       try {
-        leaderboard.record(round.poolType, {
+        // ✅ للتعداد بس: بدل ما نعرض بلوحة الصدارة كل الإجابات المقبولة
+        // مجمّعة (ممكن توصل 9+ عنصر وتشوّه شكل الرسالة)، نعرض نص رسالة
+        // الفائز الفعلية اللي جاوب فيها — أوضح وأقصر، وهو اللي فعلاً جاوبه
+        const displayAnswer = round.poolType === "counts" && winningText ? winningText.trim() : round.label;
+        const entry = {
           userId: senderId,
           displayName: this.displayNameFor(senderId),
           elapsed,
-          answer: round.label,
+          answer: displayAnswer,
           ts: Date.now(),
-        });
+        };
+        leaderboard.record(round.poolType, entry);
+        personalHistory.record(round.poolType, entry);
       } catch (e) {
         console.error("⚠️ خطأ تسجيل النتيجة بلوحة الصدارة (تجاهلناه، الجولة تكمل عادي):", e);
       }

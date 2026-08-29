@@ -6,6 +6,7 @@ const qrcode = require("qrcode-terminal");
 const store = require("./dataStore");
 const { Contest } = require("./game");
 const leaderboard = require("./leaderboard");
+const personalHistory = require("./personalHistory");
 const standings = require("./standings");
 const registration = require("./registration");
 const moderation = require("./moderation");
@@ -73,9 +74,11 @@ const pendingChangeRequests = new Map();
 // بالسجلات بدل ما يفضل لغز صامت
 function isChatAllowed(chatId, senderId) {
   if (isOwner(senderId)) return true;
-  const cfg = store.getConfig();
-  if (!cfg.allowedChats || cfg.allowedChats.length === 0) return true;
-  const allowed = cfg.allowedChats.includes(chatId);
+  // ✅ نستخدم CONFIG المحمّل مرة وحدة بالبداية بدل ما نعيد قراءة الملف
+  // من القرص (fs.readFileSync) مع كل رسالة توصل — قراءة قرص لكل رسالة
+  // بدون داعي، والقيمة أصلاً ما تتغير أثناء التشغيل عادة
+  if (!CONFIG.allowedChats || CONFIG.allowedChats.length === 0) return true;
+  const allowed = CONFIG.allowedChats.includes(chatId);
   if (!allowed) {
     console.log(
       `🚪 رسالة من محادثة غير مدرجة بـallowedChats (${chatId}) — تجاهلناها. لو هذا خطأ، أضف آيديها بconfig.json.`
@@ -187,6 +190,30 @@ async function safeStartFirstRound(chatId, sock, contest) {
   }
 }
 
+// يزيل لاحقة " همزات" من نهاية أمر بدء مسابقة (لو موجودة) — يرجع النص
+// بدونها + علامة إذا كان وضع الهمزات الإلزامي مطلوب. مثال: ".فنش 20 همزات"
+function stripHamzaSuffix(text) {
+  const m = text.match(/^(.*?)\s+همزات$/);
+  if (m) return { text: m[1], hamzaMode: true };
+  return { text, hamzaMode: false };
+}
+
+// يبدأ المسابقة فعليًا — لو وضع الهمزات مفعّل، يطلب أول من اللي بدأ
+// المسابقة يحدد نمط الهمزات قبل ما يرسل أول سؤال
+async function beginContest(chatId, sock, contest, senderId) {
+  if (contest.hamzaMode) {
+    contest.awaitingHamzaFrom = senderId;
+    contest.pendingStart = () => safeStartFirstRound(chatId, sock, contest);
+    await sock.sendMessage(chatId, {
+      text:
+        "🔤 حدد نمط الهمزات الإلزامي (رد بنص فيه همزتين ء — أي إطار تحبه، مثال: تءءت أو جججءءججج).\n" +
+        "كل شخص أول محاولة إجابة له بكل سؤال لازم تكون بنفس هذا الإطار (تصحيح برسالة ثانية يشتغل عادي بدون همزات).",
+    });
+    return;
+  }
+  await safeStartFirstRound(chatId, sock, contest);
+}
+
 // ✅ "التقديم البسيط" (أمر .كت وأمثاله) تجربة خفيفة بس، ما لازم تقفل
 // ولا تأثر على أي مسابقة حقيقية بعدها — بس كانت تحسب "مسابقة شغالة"
 // بنفس معاملة المسابقة الحقيقية، فتقفل أوامر البدء الحقيقية غلط. هذي
@@ -226,7 +253,7 @@ async function startPractice(chatId, sock, msg, poolType, extraOpts = {}) {
 const endlessTypeLabels = { images: "صور", writing: "كتابة", counts: "تعداد", questions: "أسئلة" };
 
 // يبدأ مسابقة مستمرة (ما تتوقف تلقائياً، بس بأمر إيقاف مخصص)
-async function startEndless(chatId, sock, msg, poolType, extraOpts = {}) {
+async function startEndless(chatId, sock, msg, senderId, poolType, extraOpts = {}) {
   if (hasBlockingContest(chatId)) {
     await sock.sendMessage(chatId, { text: "⚠️ فيه مسابقة شغالة بالفعل بهذي المحادثة." }, { quoted: msg });
     return;
@@ -237,7 +264,7 @@ async function startEndless(chatId, sock, msg, poolType, extraOpts = {}) {
   await sock.sendMessage(chatId, {
     text: `🎬 بدأت مسابقة *${endlessTypeLabels[poolType]}* مستمرة! ما تتوقف إلا بأمر الإيقاف المخصص لها.`,
   });
-  await safeStartFirstRound(chatId, sock, contest);
+  await beginContest(chatId, sock, contest, senderId);
 }
 
 // يوقف مسابقة مستمرة ويعرض النتيجة النهائية
@@ -507,7 +534,21 @@ async function connectSocket() {
           // ✅ خط دفاع ثاني: لو نفس الرسالة (بنفس آيدي واتساب) سبق
           // اتعالجت (من هذا السوكت أو سوكت ثاني)، نتجاهلها هنا نهائياً
           if (alreadyProcessed(msg.key?.id)) return;
+          // 🔍 تشخيص بطء: نقيس كم استغرقت معالجتنا الداخلية كاملة (من
+          // استلام الرسالة لين آخر سطر بـhandleIncoming، شامل أي إرسال
+          // رد فعلي جواها). لو الرقم صغير باستمرار رغم إحساسك بتأخير
+          // فعلي، معناها التأخير مو من كودنا — من واتساب نفسه أو من
+          // ضغط/خنق المعالج بالسيرفر
+          const t0 = Date.now();
           await handleIncoming(sock, msg);
+          const elapsed = Date.now() - t0;
+          const deliveryLag = tsMs ? now - tsMs : null; // فرق بين وقت إرسال الرسالة (حسب واتساب) ووصولها لنا
+          if (elapsed > 500 || (deliveryLag !== null && deliveryLag > 1000)) {
+            console.log(
+              `🔍 [بطء] معالجتنا=${elapsed}ms، تأخير وصول الرسالة لنا=${deliveryLag}ms ` +
+                `(نص: "${(msg.message?.conversation || msg.message?.extendedTextMessage?.text || "").slice(0, 30)}")`
+            );
+          }
         } catch (err) {
           console.error("خطأ بمعالجة الرسالة:", err);
         }
@@ -606,6 +647,8 @@ async function handleIncoming(sock, msg) {
 ◞◈ .مستع •— إيقاف: .ستع◜ 
 ◞◈ .مسس •— إيقاف: .سس◜ 
 
+*˼‏أضف "همزات" بآخر أي أمر بدء (زي .فنش 20 همزات) عشان تفعّل وضع الهمزات الإلزامي — البوت يطلب منك تحدد نمط الهمزات أول⋄◟*
+
 *◈ فـقـرات عـاديـة• 🎗️◜*
 ◞◈ .ص •— صور◜
 ◞◈ .كت •— كتابة◜ 
@@ -626,6 +669,7 @@ async function handleIncoming(sock, msg) {
 *◈ عـــام • 🔰◜*
 
 ◞◈ .توب •— توب 3 لكل الفقرات◜
+◞◈ .نقاطي •— أفضل 5 نتائج شخصية لك بكل فقرة◜
 ◞◈ .توب ص • كت • س • تع •— لكل فقرة◜ 
 
 *◈ لـلـجـوالات • 📱◜*
@@ -875,6 +919,7 @@ if (rejectChangeMatch) {
   if (text === ".الغاء تسجيل" || text === ".إلغاء تسجيل") {
     await registration.unregister(senderId);
     leaderboard.removeUser(senderId);
+    personalHistory.removeUser(senderId);
     standings.removeUser(senderId);
     await sock.sendMessage(chatId, { text: "🗑️ تم إلغاء تسجيلك، وحذف كل سجلاتك من .توب و.سجل." }, { quoted: msg });
     return;
@@ -1000,6 +1045,20 @@ if (rejectChangeMatch) {
     return;
   }
 
+  // أمر .نقاطي: يعرض للشخص نفسه أفضل 5 نتائج شخصية (تاريخه هو، مو
+  // التنافسي العام زي .توب) بكل فقرة
+  if (text === ".نقاطي") {
+    const entriesByType = {};
+    for (const poolType of templates.TOP_ORDER) {
+      entriesByType[poolType] = personalHistory.getTop(senderId, poolType, 5);
+    }
+    const anyEntry = Object.values(entriesByType).flat()[0];
+    const displayName = anyEntry ? anyEntry.displayName : senderId.split("@")[0];
+    const out = templates.formatMyPoints(entriesByType, displayName, senderId);
+    await sock.sendMessage(chatId, { text: out, mentions: [senderId] }, { quoted: msg });
+    return;
+  }
+
   // أمر .توب جوالات: زي .توب بس بس الأشخاص المسجلين كجوال
   if (text === ".توب جوالات") {
     const entriesByType = {};
@@ -1042,6 +1101,7 @@ if (rejectChangeMatch) {
     const resetWholePool = async () => {
       if (poolType) {
         leaderboard.reset(poolType);
+        personalHistory.resetAll(poolType);
         await sock.sendMessage(
           chatId,
           { text: `🗑️ تم تصفير لوحة صدارة فقرة ${poolLabels[poolType]}.` },
@@ -1049,6 +1109,7 @@ if (rejectChangeMatch) {
         );
       } else {
         leaderboard.reset();
+        personalHistory.resetAll();
         await sock.sendMessage(chatId, { text: "🗑️ تم تصفير لوحة الصدارة بالكامل." }, { quoted: msg });
       }
     };
@@ -1061,6 +1122,7 @@ if (rejectChangeMatch) {
     await resolveTargetOrAsk(sock, chatId, msg, senderId, trailingText, "⚠️ ما لقيت هذا الشخص. استخدم منشن أو اسمه المسجل بالضبط.", async (target) => {
       if (poolType) {
         leaderboard.removeUserFromPool(poolType, target);
+        personalHistory.removeUserFromPool(poolType, target);
         await sock.sendMessage(
           chatId,
           { text: `🗑️ تم حذف سجل @${target.split("@")[0]} من توب فقرة ${poolLabels[poolType]}.`, mentions: [target] },
@@ -1068,6 +1130,7 @@ if (rejectChangeMatch) {
         );
       } else {
         leaderboard.removeUser(target);
+        personalHistory.removeUser(target);
         await sock.sendMessage(
           chatId,
           { text: `🗑️ تم حذف كل سجلات @${target.split("@")[0]} من التوب (كل الفقرات).`, mentions: [target] },
@@ -1210,7 +1273,8 @@ if (rejectChangeMatch) {
   }
 
   // أمر بدء مسابقة
-  const startCmd = parseStartCommand(text);
+  const hamzaCheckMain = stripHamzaSuffix(text);
+  const startCmd = parseStartCommand(hamzaCheckMain.text);
   if (startCmd) {
     if (hasBlockingContest(chatId)) {
       await sock.sendMessage(
@@ -1223,6 +1287,7 @@ if (rejectChangeMatch) {
     clearStalePracticeContest(chatId);
     const contest = new Contest(chatId, sock, startCmd.contestType, startCmd.target, {
       mobileOnly: startCmd.mobileOnly,
+      hamzaMode: hamzaCheckMain.hamzaMode,
     });
     activeContests.set(chatId, contest);
 
@@ -1244,14 +1309,15 @@ if (rejectChangeMatch) {
     } catch (e) {
       console.error("⚠️ فشل إرسال رسالة بدء المسابقة (تجاهلناه، نكمل لبدء السؤال الأول):", e);
     }
-    await safeStartFirstRound(chatId, sock, contest);
+    await beginContest(chatId, sock, contest, senderId);
     return;
   }
 
   // أمر .مسابقة <رقم> أو .مسابقة ج <رقم>: فقرات منوعة (زي .فنش) بس تنتهي
   // لما مجموع عدد الأسئلة الكلي (بغض النظر مين جاوب) يوصل الرقم — مو
   // أول شخص يوصل هدف
-  const mixedMatch = text.match(/^\.مسابقة(?:\s+(ج))?\s+(\d+)$/);
+  const hamzaCheckMixed = stripHamzaSuffix(text);
+  const mixedMatch = hamzaCheckMixed.text.match(/^\.مسابقة(?:\s+(ج))?\s+(\d+)$/);
   if (mixedMatch) {
     if (hasBlockingContest(chatId)) {
       await sock.sendMessage(
@@ -1264,7 +1330,11 @@ if (rejectChangeMatch) {
     clearStalePracticeContest(chatId);
     const mobileOnly = mixedMatch[1] === "ج";
     const roundsTarget = parseInt(mixedMatch[2], 10);
-    const contest = new Contest(chatId, sock, "general", Infinity, { roundsTarget, mobileOnly });
+    const contest = new Contest(chatId, sock, "general", Infinity, {
+      roundsTarget,
+      mobileOnly,
+      hamzaMode: hamzaCheckMixed.hamzaMode,
+    });
     activeContests.set(chatId, contest);
     const mobileNote = mobileOnly ? " 📱 (جوالات بس)" : "";
     // ✅ نفس الحماية: فشل رسالة البدء ما لازم يمنع بدء السؤال الأول
@@ -1275,7 +1345,7 @@ if (rejectChangeMatch) {
     } catch (e) {
       console.error("⚠️ فشل إرسال رسالة بدء المسابقة المنوعة (تجاهلناه، نكمل لبدء السؤال الأول):", e);
     }
-    await safeStartFirstRound(chatId, sock, contest);
+    await beginContest(chatId, sock, contest, senderId);
     return;
   }
 
@@ -1310,31 +1380,34 @@ if (rejectChangeMatch) {
 
   // ═══ مسابقات مستمرة (تفتح بأمر، تتوقف بأمر مخصص لها) ═══
 
-  if (text === ".مسص") {
-    await startEndless(chatId, sock, msg, "images");
-    return;
-  }
-  if (text === ".مسس") {
-    await startEndless(chatId, sock, msg, "questions");
-    return;
-  }
-  if (text === ".مستع") {
-    await startEndless(chatId, sock, msg, "counts");
-    return;
-  }
-  const msKtMatch = text.match(/^\.مسكت\s+(\d+)$/);
-  if (msKtMatch) {
-    const n = parseInt(msKtMatch[1], 10);
-    if (n < 1) {
-      await sock.sendMessage(chatId, { text: "لازم رقم 1 أو أكثر." }, { quoted: msg });
+  {
+    const h = stripHamzaSuffix(text);
+    if (h.text === ".مسص") {
+      await startEndless(chatId, sock, msg, senderId, "images", { hamzaMode: h.hamzaMode });
       return;
     }
-    if (n > 50) {
-      await sock.sendMessage(chatId, { text: "🚫 وصلت للحد الأقصى (50 كلمة بالرسالة الوحدة)." }, { quoted: msg });
+    if (h.text === ".مسس") {
+      await startEndless(chatId, sock, msg, senderId, "questions", { hamzaMode: h.hamzaMode });
       return;
     }
-    await startEndless(chatId, sock, msg, "writing", { fixedWordCount: n });
-    return;
+    if (h.text === ".مستع") {
+      await startEndless(chatId, sock, msg, senderId, "counts", { hamzaMode: h.hamzaMode });
+      return;
+    }
+    const msKtMatch = h.text.match(/^\.مسكت\s+(\d+)$/);
+    if (msKtMatch) {
+      const n = parseInt(msKtMatch[1], 10);
+      if (n < 1) {
+        await sock.sendMessage(chatId, { text: "لازم رقم 1 أو أكثر." }, { quoted: msg });
+        return;
+      }
+      if (n > 50) {
+        await sock.sendMessage(chatId, { text: "🚫 وصلت للحد الأقصى (50 كلمة بالرسالة الوحدة)." }, { quoted: msg });
+        return;
+      }
+      await startEndless(chatId, sock, msg, senderId, "writing", { fixedWordCount: n, hamzaMode: h.hamzaMode });
+      return;
+    }
   }
 
   if (text === ".سص") {
@@ -1365,6 +1438,7 @@ if (rejectChangeMatch) {
     await resolveTargetOrAsk(sock, chatId, msg, senderId, removeResetMatch[1], "استخدم الأمر مع منشن أو اسم للشخص: .ازالة تصفير @الشخص", async (target) => {
       await registration.hardDelete(target);
       leaderboard.removeUser(target);
+      personalHistory.removeUser(target);
       standings.removeUser(target);
       await sock.sendMessage(
         chatId,
@@ -1453,6 +1527,7 @@ async function main() {
   await db.connect(store.getConfig().mongoUri);
   await Promise.all([
     leaderboard.loadFromDb(),
+    personalHistory.loadFromDb(),
     standings.loadFromDb(),
     registration.loadFromDb(),
     moderation.loadFromDb(),
@@ -1460,6 +1535,12 @@ async function main() {
     roulette.loadFromDb(),
     rasad.loadFromDb(),
   ]);
+  // 🌱 نبذر تاريخ .نقاطي الشخصي بأفضل نتيجة موجودة أصلاً بلوحة الصدارة
+  // العامة — عشان اللي عنده نتائج من قبل إضافة هذي الميزة يشوفها فورًا
+  // بدون ما يحتاج يلعب من جديد. آمنة تتكرر كل تشغيل (idempotent)
+  for (const poolType of leaderboard.getAllTypes()) {
+    personalHistory.seedFromLeaderboard(leaderboard.getTop(poolType, 999), poolType);
+  }
   // 🔒 ننتظر لين نتأكد ما فيه نسخة ثانية من البوت شغّالة (تعارض جلسات
   // يقفل الاتصال بواتساب بخطأ device_removed) — سيرفر الـHTTP فوق شغّال
   // أصلاً فيرضي فحص Render الصحي، حتى لو انتظرنا هنا شوي
