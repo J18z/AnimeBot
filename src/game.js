@@ -161,7 +161,9 @@ class Contest {
         questionText = rawWord;
         label = [...rawWord].reverse().join("");
       } else {
-        // ترتيب: نبعثر الحروف بترتيب عشوائي مختلف عن الأصل (لو أمكن)
+        // ترتيب: نبعثر الحروف بترتيب عشوائي مختلف عن الأصل (لو أمكن)،
+        // ونعرضها مفصولة بمسافات (زي "ا ج ن") — الإجابة تبقى الكلمة
+        // متلاصقة عادي ("جان")
         let scrambled = rawWord;
         if (rawWord.length > 1) {
           let attempts = 0;
@@ -170,7 +172,7 @@ class Contest {
             attempts++;
           } while (scrambled === rawWord && attempts < 10);
         }
-        questionText = scrambled;
+        questionText = scrambled.split("").join(" ");
         label = rawWord;
       }
       slots = [[label]];
@@ -265,11 +267,11 @@ class Contest {
     } else if (poolType === "counts") {
       sentMsg = await this.sendChat(`*تع/ ${questionText}*`);
     } else if (poolType === "dismantle") {
-      sentMsg = await this.sendChat(`*فك/ ${questionText}*`);
+      sentMsg = await this.sendChat(questionText);
     } else if (poolType === "reverse") {
-      sentMsg = await this.sendChat(`*عكس/ ${questionText}*`);
+      sentMsg = await this.sendChat(questionText);
     } else if (poolType === "scramble") {
-      sentMsg = await this.sendChat(`*رتب/ ${questionText}*`);
+      sentMsg = await this.sendChat(questionText);
     }
 
     // وقت البداية = لحظة تأكد إرسال السؤال فعلياً (بعد ما ينتهي الـ await)،
