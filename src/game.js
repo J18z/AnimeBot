@@ -267,9 +267,9 @@ class Contest {
     } else if (poolType === "counts") {
       sentMsg = await this.sendChat(`*تع/ ${questionText}*`);
     } else if (poolType === "dismantle") {
-      sentMsg = await this.sendChat(questionText);
+      sentMsg = await this.sendChat(`*${questionText}*`);
     } else if (poolType === "reverse") {
-      sentMsg = await this.sendChat(questionText);
+      sentMsg = await this.sendChat(`*${questionText}*`);
     } else if (poolType === "scramble") {
       sentMsg = await this.sendChat(`*${questionText}*`);
     }
