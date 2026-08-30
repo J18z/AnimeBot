@@ -30,8 +30,11 @@ const topTitles = {
   counts: { title: "تــوب الـتـعـداد", icon: "🔢", compact: "تـعـداد" },
   writing: { title: "تـوب الـكـتـابـة", icon: "✒️", compact: "كـتـابـة" },
   questions: { title: "تــوب الأسـئـلـة", icon: "❓", compact: "اسـئـلـة" },
+  dismantle: { title: "تــوب الـتـفـكـيـك", icon: "🧩", compact: "تـفـكـيـك" },
+  reverse: { title: "تــوب الـعـكـس", icon: "🔄", compact: "عـكـس" },
+  scramble: { title: "تــوب الـتـرتـيـب", icon: "🔀", compact: "تـرتـيـب" },
 };
-const TOP_ORDER = ["writing", "images", "questions", "counts"];
+const TOP_ORDER = ["writing", "images", "questions", "counts", "dismantle", "reverse", "scramble"];
 
 // سطرين لعنصر ترتيب وحد بلوحة صدارة الأوقات (اسم+منشن ثم إجابة+وقت)
 function formatEntryLines(numOrMedal, e) {

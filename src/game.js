@@ -1,5 +1,5 @@
 const fs = require("fs");
-const { pickRandom, formatSeconds, findAllMatches, parseHamzaPattern, unwrapHamza } = require("./utils");
+const { pickRandom, shuffle, formatSeconds, findAllMatches, parseHamzaPattern, unwrapHamza } = require("./utils");
 const store = require("./dataStore");
 const leaderboard = require("./leaderboard");
 const personalHistory = require("./personalHistory");
@@ -49,11 +49,15 @@ class Contest {
     this.hamzaPattern = null; // { prefix, suffix } بعد ما يتحدد
     this.awaitingHamzaFrom = null; // senderId اللي المفروض يحدد النمط
     this.pendingStart = null; // دالة نناديها فور ما يتحدد النمط (تبدأ أول سؤال فعليًا)
+    // ✅ لمسابقة "عامة" بفقرات مختارة يدويًا (مو بالضرورة الأربعة
+    // التقليدية) — لو موجودة، pickPoolType يختار عشوائي من هذي القائمة
+    // بس بدل POOL_TYPES الافتراضية
+    this.allowedPoolTypes = options.allowedPoolTypes || null;
   }
 
   pickPoolType() {
     if (this.contestType === "general") {
-      return pickRandom(POOL_TYPES);
+      return pickRandom(this.allowedPoolTypes || POOL_TYPES);
     }
     return this.contestType;
   }
@@ -137,6 +141,39 @@ class Contest {
       required = slots.length;
       points = 1;
       label = slots.map((s) => s[0]).join("، ");
+    } else if (poolType === "dismantle" || poolType === "reverse" || poolType === "scramble") {
+      // ✅ ثلاث فقرات مبنية على نفس بنك كلمات فقرة الكتابة (data/words.json)
+      // — تفكيك (اكتب الحروف مفصولة)، عكس (اعكس الكلمة)، ترتيب (رتّب حروف
+      // مبعثرة). كل جولة تسحب كلمة بنظام الوزن المتناقص العالمي نفسه
+      const wordPool = store.getWords();
+      if (!wordPool || wordPool.length === 0) {
+        await this.sendChat(`⚠️ ما فيه كلمات بملف data/words.json. أضف كلمات أول.`);
+        return;
+      }
+      const wordItem = weightedPicker.pickWeighted(poolType, wordPool, (it) => it.word[0]);
+      const rawWord = wordItem.word[0].replace(/\s+/g, ""); // نشيل المسافات (لو الاسم أكثر من كلمة) عشان الفقرات الثلاث تشتغل على كلمة مصمتة
+      points = 1;
+      required = 1;
+      if (poolType === "dismantle") {
+        questionText = rawWord;
+        label = rawWord.split("").join(" "); // "س ا س ك ي"
+      } else if (poolType === "reverse") {
+        questionText = rawWord;
+        label = [...rawWord].reverse().join("");
+      } else {
+        // ترتيب: نبعثر الحروف بترتيب عشوائي مختلف عن الأصل (لو أمكن)
+        let scrambled = rawWord;
+        if (rawWord.length > 1) {
+          let attempts = 0;
+          do {
+            scrambled = shuffle(rawWord.split("")).join("");
+            attempts++;
+          } while (scrambled === rawWord && attempts < 10);
+        }
+        questionText = scrambled;
+        label = rawWord;
+      }
+      slots = [[label]];
     } else {
       const item = this.pickItem(poolType);
       if (!item) {
@@ -227,6 +264,12 @@ class Contest {
       sentMsg = await this.sendChat(`*س/ ${questionText}*`);
     } else if (poolType === "counts") {
       sentMsg = await this.sendChat(`*تع/ ${questionText}*`);
+    } else if (poolType === "dismantle") {
+      sentMsg = await this.sendChat(`*فك/ ${questionText}*`);
+    } else if (poolType === "reverse") {
+      sentMsg = await this.sendChat(`*عكس/ ${questionText}*`);
+    } else if (poolType === "scramble") {
+      sentMsg = await this.sendChat(`*رتب/ ${questionText}*`);
     }
 
     // وقت البداية = لحظة تأكد إرسال السؤال فعلياً (بعد ما ينتهي الـ await)،
@@ -359,7 +402,10 @@ class Contest {
     // حتى لو وسط كلام زيادة أو حروف ملتصقة أو أكثر من عنصر بنفس الرسالة.
     // كل الفقرات تستخدم تطبيع مرن (غ/ق/ج كحرف واحد) عدا الكتابة، اللي
     // لازم فيها تطابق حرفي كامل بدون تساهل
-    const relaxed = round.poolType !== "writing";
+    // ✅ الكتابة و"عكس"/"ترتيب" تحتاج تطابق حرفي دقيق (بدون توحيد غ/ق/ج) —
+    // عكس وترتيب نتائج محسوبة بالضبط (مو بنك إجابات متنوعة)، فلازم الدقة.
+    // باقي الفقرات (صور/أسئلة/تعداد/تفكيك) تستخدم التطبيع المرن العادي
+    const relaxed = !["writing", "reverse", "scramble"].includes(round.poolType);
     // 🔤 وضع الهمزات: أول محاولة (userSet فاضي) لهذا الشخص بهذي الجولة
     // لازم تكون بإطار الهمزات المحدد — لو ما طابقت الإطار، نتجاهل الرسالة
     // كليًا (كأنها ما كانت إجابة أصلاً). أي محاولة بعدها (تصحيح) تفحص عادي

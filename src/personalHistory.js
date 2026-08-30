@@ -6,7 +6,7 @@
 
 const { getDb } = require("./db");
 
-const POOL_TYPES = ["writing", "images", "questions", "counts"];
+const POOL_TYPES = ["writing", "images", "questions", "counts", "dismantle", "reverse", "scramble"];
 const STORE_CAP = 10; // نحتفظ بأكثر من 5 داخلياً (هامش، مو ضروري فعلياً)
 const DISPLAY_CAP = 5;
 
@@ -15,7 +15,7 @@ const history = new Map();
 
 function getUserBucket(userId) {
   if (!history.has(userId)) {
-    history.set(userId, { writing: [], images: [], questions: [], counts: [] });
+    history.set(userId, { writing: [], images: [], questions: [], counts: [], dismantle: [], reverse: [], scramble: [] });
   }
   return history.get(userId);
 }

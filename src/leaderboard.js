@@ -3,13 +3,13 @@
 
 const { getDb } = require("./db");
 
-const POOL_TYPES = ["writing", "images", "questions", "counts"];
+const POOL_TYPES = ["writing", "images", "questions", "counts", "dismantle", "reverse", "scramble"];
 // نخزن أكثر من 5 داخلياً (30) عشان لما نفلتر لجوالات بس، يبقى فيه عمق
 // كافي نطلع منه أفضل 5 جوالات حتى لو ما كانوا بأعلى 5 عام
 const STORE_CAP = 30;
 const DISPLAY_CAP = 5;
 
-const board = { writing: [], images: [], questions: [], counts: [] };
+const board = { writing: [], images: [], questions: [], counts: [], dismantle: [], reverse: [], scramble: [] };
 
 // يحفظ كامل قائمة فقرة معينة بقاعدة البيانات (استبدال كامل، القائمة صغيرة أصلاً)
 async function persistPool(poolType) {

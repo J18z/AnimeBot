@@ -250,7 +250,7 @@ async function startPractice(chatId, sock, msg, poolType, extraOpts = {}) {
   await safeStartFirstRound(chatId, sock, contest);
 }
 
-const endlessTypeLabels = { images: "صور", writing: "كتابة", counts: "تعداد", questions: "أسئلة" };
+const endlessTypeLabels = { images: "صور", writing: "كتابة", counts: "تعداد", questions: "أسئلة", dismantle: "تفكيك", reverse: "عكس", scramble: "ترتيب" };
 
 // يبدأ مسابقة مستمرة (ما تتوقف تلقائياً، بس بأمر إيقاف مخصص)
 async function startEndless(chatId, sock, msg, senderId, poolType, extraOpts = {}) {
@@ -289,26 +289,62 @@ async function stopEndless(chatId, sock, msg, poolType) {
 // يحلل أوامر بدء المسابقة من نص الرسالة
 // أمثلة: ".فنش 50" | ".فص 15" | ".فتع 20" | ".فسس 10" | ".فكت 15"
 // أو نسخة الجوالات بس: ".فنش ج 50" | ".فص ج 15" ...
+// ✅ صار .فنش (وحده) هو أمر البدء — يفتح قائمة اختيار الفقرات التفاعلية
+// بدل ما يكون لكل فقرة أمر منفصل (.فص/.فكت/.فتع/.فسس/.فتف/.فعك/.فتر)
 function parseStartCommand(text) {
   const t = text.trim().replace(/\s+/g, " ");
-  const typeMap = {
-    فنش: "general",
-    فص: "images",
-    فكت: "writing",
-    فتع: "counts",
-    فسس: "questions",
-  };
-
-  const match = t.match(/^\.(فنش|فص|فكت|فتع|فسس)(?:\s+(ج))?\s*(\d+)$/);
+  const match = t.match(/^\.فنش(?:\s+(ج))?\s*(\d+)$/);
   if (!match) return null;
-
-  const cmdWord = match[1];
-  const mobileOnly = match[2] === "ج";
-  const target = parseInt(match[3], 10);
-  const contestType = typeMap[cmdWord];
-
-  return { contestType, target, mobileOnly };
+  return { mobileOnly: match[1] === "ج", target: parseInt(match[2], 10) };
 }
+
+// خريطة قائمة اختيار الفقرات التفاعلية (لـ.فنش و.مسابقة)
+const POOL_MENU_LABELS = {
+  1: "كتابة",
+  2: "صور",
+  3: "أسئلة",
+  4: "تعداد",
+  5: "تفكيك",
+  6: "ترتيب",
+  7: "عكس",
+};
+const POOL_MENU_TYPES = { 1: "writing", 2: "images", 3: "questions", 4: "counts", 5: "dismantle", 6: "scramble", 7: "reverse" };
+const CLASSIC_FOUR = ["writing", "images", "questions", "counts"];
+const ALL_SEVEN = ["writing", "images", "questions", "counts", "dismantle", "scramble", "reverse"];
+
+function poolSelectionMenuText() {
+  let out = "🎯 اختر الفقرات (رد برقم أو أكثر مفصولين بمسافة، أو اكتب \"الكل\"):\n\n";
+  out += "0. فنش عادي (كتابة، صور، أسئلة، تعداد)\n";
+  for (const n of [1, 2, 3, 4, 5, 6, 7]) out += `${n}. ${POOL_MENU_LABELS[n]}\n`;
+  out += `\n*˼‏مثال: 1 2 3 (كتابة+صور+أسئلة) — أو اكتب "الكل" لكل الفقرات السبعة⋄◟*`;
+  return out;
+}
+
+// يحلل رد المستخدم على قائمة اختيار الفقرات. يرجع مصفوفة أنواع فقرات، أو
+// null لو الرد مو صالح (رقم غير موجود بالقائمة، أو نص فاضي)
+function parsePoolSelection(text) {
+  const t = text.trim();
+  if (t === "الكل") return [...ALL_SEVEN];
+  const parts = t.split(/\s+/);
+  if (parts.length === 0) return null;
+  const chosen = new Set();
+  for (const p of parts) {
+    const n = parseInt(p, 10);
+    if (!Number.isInteger(n) || String(n) !== p) return null;
+    if (n === 0) {
+      CLASSIC_FOUR.forEach((t) => chosen.add(t));
+    } else if (POOL_MENU_TYPES[n]) {
+      chosen.add(POOL_MENU_TYPES[n]);
+    } else {
+      return null; // رقم غير موجود بالقائمة
+    }
+  }
+  return chosen.size > 0 ? [...chosen] : null;
+}
+
+// حالات معلّقة بانتظار اختيار فقرات (بعد .فنش أو .مسابقة) — key = chatId
+const pendingPoolSelection = new Map(); // chatId -> { starterId, mode, target/roundsTarget, mobileOnly, hamzaMode, expiresAt }
+const POOL_SELECTION_TIMEOUT_MS = 3 * 60 * 1000; // 3 دقايق
 
 // يستخرج النص من رسالة Baileys بمختلف أنواعها (نص عادي، رد، كابشن صورة...)
 function extractText(msg) {
@@ -334,8 +370,8 @@ function isMobileEligible(userId) {
 }
 
 // أسماء عرض الفقرات + اختصاراتها (نفس اختصارات أوامر البدء بدون نقطة/ف)
-const poolLabels = { writing: "كتابة", images: "صور", questions: "أسئلة", counts: "تعداد" };
-const topTypeMap = { ص: "images", كت: "writing", تع: "counts", سس: "questions" };
+const poolLabels = { writing: "كتابة", images: "صور", questions: "أسئلة", counts: "تعداد", dismantle: "تفكيك", reverse: "عكس", scramble: "ترتيب" };
+const topTypeMap = { ص: "images", كت: "writing", تع: "counts", سس: "questions", فك: "dismantle", عك: "reverse", تر: "scramble" };
 
 // يرسل قائمة سجل تراكمي مزخرفة (يستخدمها .سجل و.سجل جوالات)
 async function sendStandingsList(sock, chatId, msg, list, subtitle) {
@@ -579,6 +615,72 @@ async function handleIncoming(sock, msg) {
     return;
   }
 
+  // 🎯 رد على قائمة اختيار الفقرات المعلّقة (بعد .فنش أو .مسابقة) — لازم
+  // يكون نفس الشخص اللي كتب أمر البدء
+  if (pendingPoolSelection.has(chatId)) {
+    const pending = pendingPoolSelection.get(chatId);
+    if (Date.now() > pending.expiresAt) {
+      pendingPoolSelection.delete(chatId);
+    } else if (senderId === pending.starterId) {
+      const selected = parsePoolSelection(text);
+      if (!selected) {
+        await sock.sendMessage(
+          chatId,
+          { text: "⚠️ رد غير مفهوم. اكتب رقم أو أكثر من القائمة (مثلاً: 1 2 3) أو اكتب \"الكل\"." },
+          { quoted: msg }
+        );
+        return;
+      }
+      pendingPoolSelection.delete(chatId);
+
+      const isClassicFour = selected.length === 4 && CLASSIC_FOUR.every((t) => selected.includes(t));
+      const isAllSeven = selected.length === 7;
+      const selectionLabel = isAllSeven
+        ? "كل الفقرات"
+        : isClassicFour
+        ? "عامة (كل الفقرات التقليدية)"
+        : selected.map((t) => poolLabels[t]).join("، ");
+
+      if (pending.mode === "fnish") {
+        const contest = new Contest(chatId, sock, "general", pending.target, {
+          mobileOnly: pending.mobileOnly,
+          hamzaMode: pending.hamzaMode,
+          allowedPoolTypes: selected,
+        });
+        activeContests.set(chatId, contest);
+        const mobileNote = pending.mobileOnly ? " 📱 (جوالات بس)" : "";
+        try {
+          await sock.sendMessage(chatId, {
+            text: `🎬 بدأت مسابقة *${selectionLabel}*${mobileNote}!\nالنقاط المطلوبة للفوز: ${pending.target}\nبالتوفيق للجميع 🍀`,
+          });
+        } catch (e) {
+          console.error("⚠️ فشل إرسال رسالة بدء المسابقة (تجاهلناه، نكمل لبدء السؤال الأول):", e);
+        }
+        await beginContest(chatId, sock, contest, senderId);
+      } else {
+        const contest = new Contest(chatId, sock, "general", Infinity, {
+          roundsTarget: pending.roundsTarget,
+          mobileOnly: pending.mobileOnly,
+          hamzaMode: pending.hamzaMode,
+          allowedPoolTypes: selected,
+        });
+        activeContests.set(chatId, contest);
+        const mobileNote = pending.mobileOnly ? " 📱 (جوالات بس)" : "";
+        try {
+          await sock.sendMessage(chatId, {
+            text: `🎬 بدأت مسابقة *${selectionLabel}*${mobileNote} (منوعة)!\nعدد الأسئلة الكلي: ${pending.roundsTarget}\nبالتوفيق للجميع 🍀`,
+          });
+        } catch (e) {
+          console.error("⚠️ فشل إرسال رسالة بدء المسابقة المنوعة (تجاهلناه، نكمل لبدء السؤال الأول):", e);
+        }
+        await beginContest(chatId, sock, contest, senderId);
+      }
+      return;
+    }
+    // شخص ثاني غير اللي بدأ الأمر — نتجاهل رده بصمت (نسيبه يكمل مساره
+    // الطبيعي لو صادف كان شي ثاني، القائمة تفضل معلّقة لصاحبها الأصلي)
+  }
+
   // 🔢 رد برقم بس لحل تشابه أسماء بأمر إداري معلّق (زي .ريسيت توب J18
   // لما فيه أكثر من J18 مسجلين) — لازم يكون صاحب البوت، وفيه أمر معلّق
   // له، والرسالة رقم صريح بس (عشان ما نتعارض مع إجابة عادية بمسابقة)
@@ -622,23 +724,18 @@ async function handleIncoming(sock, msg) {
 > *✠ الـمـسـابـقـات • 🎮◜*
  *◈ عـــام • 🔰◜*
 
-◞◈ .مسابقة <رقم> •— مسابقة عامه◜
-◞◈ .فنش <رقم> •— فنش عام◜
-◞◈ .فص <رقم> •— فنش صور◜
-◞◈ .فكت <رقم> •— فنش كت◜ 
-◞◈ .فتع <رقم> •— فنش تعداد◜ 
-◞◈ .فسس <رقم> •— فنش سس◜ 
+◞◈ .مسابقة <رقم> •— مسابقة عامه (تفتح قائمة اختيار الفقرات)◜
+◞◈ .فنش <رقم> •— فنش (تفتح قائمة اختيار الفقرات)◜
 ◞◈ .انهاء •— ايقاف المسابقة◜ 
 ◞◈ .سكب •— لتخطي اي سؤال◜
 ◞◈ النقاط •— عرض النقاط اثناء المسابقة◜ 
-*˼‏مثال: .فنش 15⋄◟*
+*˼‏مثال: اكتب .فنش 15، وبعدها رد بأرقام الفقرات اللي تبيها (زي: 1 2 3)، أو "الكل"⋄◟*
 
  *◈ لـلـجـوالات • 📱◜*
 
-◞◈ كل الاوامر السابقة بإضافة ج •— .فكت ج◜ 
 ◞◈ .مسابقة ج <رقم> •— مسابقة جوالات◜
 ◞◈ .فنش ج <رقم> •— فنش جوالات◜
-*˼‏مثال: .فنش ج 15⋄◟*
+*˼‏نفس الفكرة: بعد الأمر بترد بأرقام الفقرات⋄◟*
 
 
 *◈ الـمـسـابـقـات الـمـسـتـمـرة• ♾️◜*
@@ -648,6 +745,12 @@ async function handleIncoming(sock, msg) {
 ◞◈ .مسس •— إيقاف: .سس◜ 
 
 *˼‏أضف "همزات" بآخر أي أمر بدء (زي .فنش 20 همزات) عشان تفعّل وضع الهمزات الإلزامي — البوت يطلب منك تحدد نمط الهمزات أول⋄◟*
+
+*◈ فـقـرات إضـافـيـة (تختارها من قائمة .فنش، أو أوامرها الخاصة)• 🧩◜*
+◞◈ .تف / .مستف •— تفكيك: اكتب الحروف مفصولة◜
+◞◈ .عك / .مسعك •— عكس: اعكس الكلمة◜
+◞◈ .تر / .مستر •— ترتيب: رتّب الحروف المبعثرة◜
+*˼‏إيقاف المستمرة: .ستف • .سعك • .ستر⋄◟*
 
 *◈ فـقـرات عـاديـة• 🎗️◜*
 ◞◈ .ص •— صور◜
@@ -1020,7 +1123,7 @@ if (rejectChangeMatch) {
   }
 
   // أمر .توب أو .توب <نوع>: يعرض أفضل الأوقات (3 لكل الفقرات، أو 5 لفقرة محددة)
-  const topMatch = text.match(/^\.توب(?:\s+(ص|كت|تع|سس))?$/);
+  const topMatch = text.match(/^\.توب(?:\s+(ص|كت|تع|سس|فك|عك|تر))?$/);
   if (topMatch) {
     const shortType = topMatch[1];
     let out, mentions;
@@ -1074,7 +1177,7 @@ if (rejectChangeMatch) {
   }
 
   // أمر .توب <نوع> جوال: زي .توب <نوع> بس بس الأشخاص المسجلين كجوال
-  const topMobileMatch = text.match(/^\.توب (ص|كت|تع|سس) جوال$/);
+  const topMobileMatch = text.match(/^\.توب (ص|كت|تع|سس|فك|عك|تر) جوال$/);
   if (topMobileMatch) {
     const poolType = topTypeMap[topMobileMatch[1]];
     const entries = leaderboard.getTopFiltered(poolType, 5, (e) => isMobileEligible(e.userId));
@@ -1087,7 +1190,7 @@ if (rejectChangeMatch) {
   // أمر .ريسيت توب أو .ريسيت توب <نوع> [@شخص/اسم]: يصفّر لوحة الصدارة
   // (كلها، أو فقرة وحدة، أو سجل شخص معين بس لو فيه منشن/اسم) — مخصص
   // لصاحب البوت بس
-  const resetTopMatch = text.match(/^\.ريسيت توب(?:\s+(ص|كت|تع|سس))?(?:\s+(.+))?$/);
+  const resetTopMatch = text.match(/^\.ريسيت توب(?:\s+(ص|كت|تع|سس|فك|عك|تر))?(?:\s+(.+))?$/);
   if (resetTopMatch) {
     if (!isOwner(senderId)) {
       await sock.sendMessage(chatId, { text: "⛔ هذا الأمر مخصص لصاحب البوت بس." }, { quoted: msg });
@@ -1272,7 +1375,8 @@ if (rejectChangeMatch) {
     return;
   }
 
-  // أمر بدء مسابقة
+  // أمر بدء مسابقة (.فنش <رقم> أو .فنش ج <رقم>) — يفتح قائمة اختيار
+  // الفقرات التفاعلية بدل ما يبدأ فورًا
   const hamzaCheckMain = stripHamzaSuffix(text);
   const startCmd = parseStartCommand(hamzaCheckMain.text);
   if (startCmd) {
@@ -1285,37 +1389,21 @@ if (rejectChangeMatch) {
       return;
     }
     clearStalePracticeContest(chatId);
-    const contest = new Contest(chatId, sock, startCmd.contestType, startCmd.target, {
+    pendingPoolSelection.set(chatId, {
+      starterId: senderId,
+      mode: "fnish",
+      target: startCmd.target,
       mobileOnly: startCmd.mobileOnly,
       hamzaMode: hamzaCheckMain.hamzaMode,
+      expiresAt: Date.now() + POOL_SELECTION_TIMEOUT_MS,
     });
-    activeContests.set(chatId, contest);
-
-    const typeLabels = {
-      general: "عامة (كل الفقرات)",
-      images: "صور",
-      counts: "تعداد",
-      writing: "كتابة",
-      questions: "أسئلة",
-    };
-    const mobileNote = startCmd.mobileOnly ? " 📱 (جوالات بس)" : "";
-    // ✅ محمية بـ try/catch: لو فشلت رسالة "بدأت مسابقة" (انقطاع لحظي
-    // بالاتصال)، لازم نكمل ونبدأ السؤال الأول برضو — قبل كذا، فشل هذي
-    // الرسالة وحدها كان يوقف كل شي (ما يوصل السؤال الأول أبدًا) بصمت
-    try {
-      await sock.sendMessage(chatId, {
-        text: `🎬 بدأت مسابقة *${typeLabels[startCmd.contestType]}*${mobileNote}!\nالنقاط المطلوبة للفوز: ${startCmd.target}\nبالتوفيق للجميع 🍀`,
-      });
-    } catch (e) {
-      console.error("⚠️ فشل إرسال رسالة بدء المسابقة (تجاهلناه، نكمل لبدء السؤال الأول):", e);
-    }
-    await beginContest(chatId, sock, contest, senderId);
+    await sock.sendMessage(chatId, { text: poolSelectionMenuText() }, { quoted: msg });
     return;
   }
 
-  // أمر .مسابقة <رقم> أو .مسابقة ج <رقم>: فقرات منوعة (زي .فنش) بس تنتهي
-  // لما مجموع عدد الأسئلة الكلي (بغض النظر مين جاوب) يوصل الرقم — مو
-  // أول شخص يوصل هدف
+  // أمر .مسابقة <رقم> أو .مسابقة ج <رقم>: فقرات منوعة، تنتهي لما مجموع
+  // عدد الأسئلة الكلي (بغض النظر مين جاوب) يوصل الرقم — مو أول شخص يوصل
+  // هدف. نفس قائمة اختيار الفقرات
   const hamzaCheckMixed = stripHamzaSuffix(text);
   const mixedMatch = hamzaCheckMixed.text.match(/^\.مسابقة(?:\s+(ج))?\s+(\d+)$/);
   if (mixedMatch) {
@@ -1328,24 +1416,15 @@ if (rejectChangeMatch) {
       return;
     }
     clearStalePracticeContest(chatId);
-    const mobileOnly = mixedMatch[1] === "ج";
-    const roundsTarget = parseInt(mixedMatch[2], 10);
-    const contest = new Contest(chatId, sock, "general", Infinity, {
-      roundsTarget,
-      mobileOnly,
+    pendingPoolSelection.set(chatId, {
+      starterId: senderId,
+      mode: "mixed",
+      roundsTarget: parseInt(mixedMatch[2], 10),
+      mobileOnly: mixedMatch[1] === "ج",
       hamzaMode: hamzaCheckMixed.hamzaMode,
+      expiresAt: Date.now() + POOL_SELECTION_TIMEOUT_MS,
     });
-    activeContests.set(chatId, contest);
-    const mobileNote = mobileOnly ? " 📱 (جوالات بس)" : "";
-    // ✅ نفس الحماية: فشل رسالة البدء ما لازم يمنع بدء السؤال الأول
-    try {
-      await sock.sendMessage(chatId, {
-        text: `🎬 بدأت مسابقة *منوعة*${mobileNote} (فقرات مختلفة)!\nعدد الأسئلة الكلي: ${roundsTarget}\nبالتوفيق للجميع 🍀`,
-      });
-    } catch (e) {
-      console.error("⚠️ فشل إرسال رسالة بدء المسابقة المنوعة (تجاهلناه، نكمل لبدء السؤال الأول):", e);
-    }
-    await beginContest(chatId, sock, contest, senderId);
+    await sock.sendMessage(chatId, { text: poolSelectionMenuText() }, { quoted: msg });
     return;
   }
 
@@ -1361,6 +1440,18 @@ if (rejectChangeMatch) {
   }
   if (text === ".س") {
     await startPractice(chatId, sock, msg, "questions");
+    return;
+  }
+  if (text === ".تف") {
+    await startPractice(chatId, sock, msg, "dismantle");
+    return;
+  }
+  if (text === ".عك") {
+    await startPractice(chatId, sock, msg, "reverse");
+    return;
+  }
+  if (text === ".تر") {
+    await startPractice(chatId, sock, msg, "scramble");
     return;
   }
 
@@ -1408,6 +1499,18 @@ if (rejectChangeMatch) {
       await startEndless(chatId, sock, msg, senderId, "writing", { fixedWordCount: n, hamzaMode: h.hamzaMode });
       return;
     }
+    if (h.text === ".مستف") {
+      await startEndless(chatId, sock, msg, senderId, "dismantle", { hamzaMode: h.hamzaMode });
+      return;
+    }
+    if (h.text === ".مسعك") {
+      await startEndless(chatId, sock, msg, senderId, "reverse", { hamzaMode: h.hamzaMode });
+      return;
+    }
+    if (h.text === ".مستر") {
+      await startEndless(chatId, sock, msg, senderId, "scramble", { hamzaMode: h.hamzaMode });
+      return;
+    }
   }
 
   if (text === ".سص") {
@@ -1424,6 +1527,18 @@ if (rejectChangeMatch) {
   }
   if (text === ".سكت") {
     await stopEndless(chatId, sock, msg, "writing");
+    return;
+  }
+  if (text === ".ستف") {
+    await stopEndless(chatId, sock, msg, "dismantle");
+    return;
+  }
+  if (text === ".سعك") {
+    await stopEndless(chatId, sock, msg, "reverse");
+    return;
+  }
+  if (text === ".ستر") {
+    await stopEndless(chatId, sock, msg, "scramble");
     return;
   }
 
@@ -1474,7 +1589,7 @@ if (rejectChangeMatch) {
       return;
     }
     if (contest.endless) {
-      const stopCmdFor = { writing: ".سكت", images: ".سص", questions: ".سس", counts: ".ستع" };
+      const stopCmdFor = { writing: ".سكت", images: ".سص", questions: ".سس", counts: ".ستع", dismantle: ".ستف", reverse: ".سعك", scramble: ".ستر" };
       await sock.sendMessage(
         chatId,
         { text: `⚠️ هذي مسابقة مستمرة، ما توقف بـ .انهاء. استخدم: ${stopCmdFor[contest.contestType]}` },
