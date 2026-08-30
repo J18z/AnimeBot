@@ -115,7 +115,8 @@
     "file": "aokiji.jpg",
     "question": "من هذه الشخصية؟",
     "answers": [
-      "اوكيجي"
+      "اوكيجي",
+      "كوزان"
     ],
     "points": 1
   },
@@ -400,7 +401,7 @@
   },
   {
     "id": "img44",
-    "file": "erza.jpg",
+    "file": "Erza.jpg",
     "question": "من هذه الشخصية؟",
     "answers": [
       "ايرزا"
@@ -723,7 +724,9 @@
     "file": "hashwald.jpg",
     "question": "من هذه الشخصية؟",
     "answers": [
-      "هاسهوالد"
+      "هاشفلد",
+      "هاشفالد",
+      "جوغرام"
     ],
     "points": 1
   },
