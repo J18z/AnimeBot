@@ -616,20 +616,21 @@ async function handleIncoming(sock, msg) {
   }
 
   // 🎯 رد على قائمة اختيار الفقرات المعلّقة (بعد .فنش أو .مسابقة) — لازم
-  // يكون نفس الشخص اللي كتب أمر البدء
+  // يكون نفس الشخص اللي كتب أمر البدء. لو رد بشي مو رقم صالح، نتجاهله
+  // بصمت تام (بدون رسالة تنبيه) وننتظر رد صحيح. أي حد (مو بس اللي بدأ)
+  // يقدر يلغي الطلب المعلّق بـ.الغاء لو صاحبه اختفى
   if (pendingPoolSelection.has(chatId)) {
     const pending = pendingPoolSelection.get(chatId);
     if (Date.now() > pending.expiresAt) {
       pendingPoolSelection.delete(chatId);
+    } else if (text === ".الغاء") {
+      pendingPoolSelection.delete(chatId);
+      await sock.sendMessage(chatId, { text: "✅ تم إلغاء طلب اختيار الفقرات المعلّق." }, { quoted: msg });
+      return;
     } else if (senderId === pending.starterId) {
       const selected = parsePoolSelection(text);
       if (!selected) {
-        await sock.sendMessage(
-          chatId,
-          { text: "⚠️ رد غير مفهوم. اكتب رقم أو أكثر من القائمة (مثلاً: 1 2 3) أو اكتب \"الكل\"." },
-          { quoted: msg }
-        );
-        return;
+        return; // رد مو صالح — نتجاهله بصمت، ننتظر رد صحيح بدون ما نرسل تنبيهات متكررة
       }
       pendingPoolSelection.delete(chatId);
 
@@ -1388,6 +1389,14 @@ if (rejectChangeMatch) {
       );
       return;
     }
+    if (pendingPoolSelection.has(chatId)) {
+      await sock.sendMessage(
+        chatId,
+        { text: "⚠️ فيه طلب اختيار فقرات معلّق أصلاً بهذي المحادثة. انتظر صاحبه يختار، أو اكتب .الغاء عشان تلغيه وتقدر تبدأ من جديد." },
+        { quoted: msg }
+      );
+      return;
+    }
     clearStalePracticeContest(chatId);
     pendingPoolSelection.set(chatId, {
       starterId: senderId,
@@ -1411,6 +1420,14 @@ if (rejectChangeMatch) {
       await sock.sendMessage(
         chatId,
         { text: "⚠️ فيه مسابقة شغالة بالفعل بهذي المحادثة. اكتب: .انهاء عشان تنهيها." },
+        { quoted: msg }
+      );
+      return;
+    }
+    if (pendingPoolSelection.has(chatId)) {
+      await sock.sendMessage(
+        chatId,
+        { text: "⚠️ فيه طلب اختيار فقرات معلّق أصلاً بهذي المحادثة. انتظر صاحبه يختار، أو اكتب .الغاء عشان تلغيه وتقدر تبدأ من جديد." },
         { quoted: msg }
       );
       return;

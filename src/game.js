@@ -271,7 +271,7 @@ class Contest {
     } else if (poolType === "reverse") {
       sentMsg = await this.sendChat(questionText);
     } else if (poolType === "scramble") {
-      sentMsg = await this.sendChat(questionText);
+      sentMsg = await this.sendChat(`*${questionText}*`);
     }
 
     // وقت البداية = لحظة تأكد إرسال السؤال فعلياً (بعد ما ينتهي الـ await)،
