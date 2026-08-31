@@ -481,6 +481,22 @@ async function connectSocket() {
   currentSock = sock;
   connecting = false;
 
+  // 🔍 تشخيص دقيق: نلف sock.sendMessage عشان نقيس وقت الإرسال الفعلي
+  // (الشبكة/واتساب) لوحده، منفصل عن وقت تجهيز الرد بكودنا — هذا يفرق
+  // بالضبط بين "كودنا بطيء" و"الإرسال الفعلي بطيء" بدل ما نخمّن
+  const rawSendMessage = sock.sendMessage.bind(sock);
+  sock.sendMessage = async (...args) => {
+    const t0 = Date.now();
+    try {
+      return await rawSendMessage(...args);
+    } finally {
+      const dt = Date.now() - t0;
+      if (dt > 500) {
+        console.log(`🔍 [بطء إرسال شبكة] sendMessage استغرق ${dt}ms فعليًا (منفصل عن تجهيز الرد).`);
+      }
+    }
+  };
+
   sock.ev.on("creds.update", saveCreds);
 
   sock.ev.on("connection.update", async (update) => {
