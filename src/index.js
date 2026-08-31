@@ -1546,6 +1546,11 @@ setInterval(() => {
 async function shutdown(signal) {
   console.log(`🛑 استلمنا ${signal} — نحرر قفل النسخة ونطفي بأمان...`);
   try {
+    await personalHistory.flushPending();
+  } catch (e) {
+    console.error("⚠️ خطأ أثناء تفريغ السجل الشخصي المؤجل وقت الإغلاق:", e.message);
+  }
+  try {
     await instanceLock.release();
   } catch (e) {
     console.error("⚠️ خطأ أثناء تحرير القفل وقت الإغلاق:", e.message);

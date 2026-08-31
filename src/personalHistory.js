@@ -20,6 +20,26 @@ function getUserBucket(userId) {
   return history.get(userId);
 }
 
+// ✅ تجميع الكتابة لقاعدة البيانات (debounce): بدل ما نكتب لـMongoDB فورًا
+// كل إجابة صحيحة (حذف+إدخال كامل، طلب شبكة حقيقي بنفس لحظة إرسال رد
+// واتساب — يزاحمه على موارد السيرفر المحدودة وشكّل جزء من بطء عام لاحظه
+// المستخدم بعد كذا أيام تشغيل)، ننتظر شوي من الهدوء (ما فيه إجابة جديدة
+// لنفس الشخص/الفقرة) وبعدين نكتب مرة وحدة. البيانات بالذاكرة (history)
+// تتحدث فورًا زي العادة — بس الكتابة الفعلية لقاعدة البيانات تتأجل وتتجمع
+const PERSIST_DEBOUNCE_MS = 4000;
+const pendingPersistTimers = new Map(); // "userId|poolType" -> timeout handle
+
+function schedulePersist(userId, poolType) {
+  const key = `${userId}|${poolType}`;
+  const existing = pendingPersistTimers.get(key);
+  if (existing) clearTimeout(existing);
+  const timer = setTimeout(() => {
+    pendingPersistTimers.delete(key);
+    persistUserPool(userId, poolType);
+  }, PERSIST_DEBOUNCE_MS);
+  pendingPersistTimers.set(key, timer);
+}
+
 // يحفظ سجل شخص واحد بفقرة معينة بقاعدة البيانات (استبدال كامل، القائمة صغيرة أصلاً)
 async function persistUserPool(userId, poolType) {
   const db = getDb();
@@ -46,8 +66,10 @@ function record(poolType, entry) {
   if (bucket[poolType].length > STORE_CAP) {
     bucket[poolType].length = STORE_CAP;
   }
-  persistUserPool(entry.userId, poolType);
+  // ✅ مؤجلة ومجمّعة الحين (مو فورية) — راجع schedulePersist فوق
+  schedulePersist(entry.userId, poolType);
 }
+
 
 function getTop(userId, poolType, n = DISPLAY_CAP) {
   const bucket = history.get(userId);
@@ -141,4 +163,16 @@ async function loadFromDb() {
   }
 }
 
-module.exports = { record, getTop, removeUser, removeUserFromPool, resetAll, seedFromLeaderboard, loadFromDb };
+// يفرّغ كل الكتابات المؤجلة فورًا (يُستخدم وقت إغلاق البرنامج بأمان،
+// عشان ما نخسر آخر بضع ثواني من النتائج لو انطفى السيرفر بالمنتصف)
+async function flushPending() {
+  const entries = [...pendingPersistTimers.entries()];
+  pendingPersistTimers.clear();
+  for (const [key, timer] of entries) {
+    clearTimeout(timer);
+    const [userId, poolType] = key.split("|");
+    await persistUserPool(userId, poolType);
+  }
+}
+
+module.exports = { record, getTop, removeUser, removeUserFromPool, resetAll, seedFromLeaderboard, loadFromDb, flushPending };
