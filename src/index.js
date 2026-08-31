@@ -14,14 +14,14 @@ const templates = require("./templates");
 const db = require("./db");
 const { useMongoAuthState } = require("./mongoAuthState");
 const { startHealthServer, setQr, clearQr } = require("./healthServer");
-const { createSticker, createAnimatedSticker } = require("./stickerMaker");
 const dmPermissions = require("./dmPermissions");
 const instanceLock = require("./instanceLock");
-const { downloadContentFromMessage } = require("@whiskeysockets/baileys");
 const CONFIG = store.getConfig(); // ✅ نقرأ config مرة وحدة عند التشغيل
 const { handleMatsuriMessage } = require("../matsuri/matsuri");
 const roulette = require("../matsuri/roulette");
 const rasad = require("../matsuri/rasad");
+const helpText = require("./helpText");
+const { handleStickerCommand } = require("./commands/sticker");
 
 // حماية كاملة من انهيار البرنامج: Baileys أحياناً يرمي أخطاء غير متوقعة
 // من داخل عمليات خلفية (مثلاً محاولة إعادة إرسال رسالة بعد ما ينقطع
@@ -594,7 +594,10 @@ async function connectSocket() {
           const t0 = Date.now();
           await handleIncoming(sock, msg);
           const elapsed = Date.now() - t0;
-          const deliveryLag = tsMs ? now - tsMs : null; // فرق بين وقت إرسال الرسالة (حسب واتساب) ووصولها لنا
+          // ✅ نتجاهل حساب "تأخير الوصول" لرسائل البوت نفسه (fromMe) —
+          // هذي مجرد "صدى" لرسائل أرسلها البوت، وحساب تأخير عليها رقم
+          // مضلل (مو تأخير وصول حقيقي من مستخدم)، كان يسبب ضوضاء بالسجل
+          const deliveryLag = tsMs && !msg.key?.fromMe ? now - tsMs : null; // فرق بين وقت إرسال الرسالة (حسب واتساب) ووصولها لنا
           if (elapsed > 500 || (deliveryLag !== null && deliveryLag > 1000)) {
             console.log(
               `🔍 [بطء] معالجتنا=${elapsed}ms، تأخير وصول الرسالة لنا=${deliveryLag}ms ` +
@@ -732,180 +735,15 @@ async function handleIncoming(sock, msg) {
   }
 
   // أمر .ريم اوامر: قائمة كل الأوامر مصنفة
+  // أمر .ريم اوامر: قائمة كل الأوامر مصنفة (النص نفسه بملف مستقل: helpText.js)
   if (text === ".ريم اوامر") {
-    const helpText = `˼‏⬩بــوت ريــم • レム┊🤖˹
-❆ ⋅ ┈── ─━ •⊰✣⊱ • ━─ ──┈ ⋅ ❆
-◞الـقـائـمـة الأسـاسـيـة╎˼‏📋˹⤹◜
-     ◝الاوامــر⇆🕹️◟
-      ❊ ┉ ٠ ┈─ • ⊰ 倖 ⊱ • ─┈ ٠ ┉ ❊
-> *✠ الـمـسـابـقـات • 🎮◜*
- *◈ عـــام • 🔰◜*
-
-◞◈ .مسابقة <رقم> •— مسابقة عامه (تفتح قائمة اختيار الفقرات)◜
-◞◈ .فنش <رقم> •— فنش (تفتح قائمة اختيار الفقرات)◜
-◞◈ .انهاء •— ايقاف المسابقة◜ 
-◞◈ .سكب •— لتخطي اي سؤال◜
-◞◈ النقاط •— عرض النقاط اثناء المسابقة◜ 
-*˼‏مثال: اكتب .فنش 15، وبعدها رد بأرقام الفقرات اللي تبيها (زي: 1 2 3)، أو "الكل"⋄◟*
-
- *◈ لـلـجـوالات • 📱◜*
-
-◞◈ .مسابقة ج <رقم> •— مسابقة جوالات◜
-◞◈ .فنش ج <رقم> •— فنش جوالات◜
-*˼‏نفس الفكرة: بعد الأمر بترد بأرقام الفقرات⋄◟*
-
-
-*◈ الـمـسـابـقـات الـمـسـتـمـرة• ♾️◜*
-◞◈ .مسص •— إيقاف: .سص◜
-◞◈ .مسكت •— إيقاف: .سكت◜ 
-◞◈ .مستع •— إيقاف: .ستع◜ 
-◞◈ .مسس •— إيقاف: .سس◜ 
-
-*˼‏أضف "همزات" بآخر أي أمر بدء (زي .فنش 20 همزات) عشان تفعّل وضع الهمزات الإلزامي — البوت يطلب منك تحدد نمط الهمزات أول⋄◟*
-
-*◈ فـقـرات إضـافـيـة (تختارها من قائمة .فنش، أو أوامرها الخاصة)• 🧩◜*
-◞◈ .تف / .مستف •— تفكيك: اكتب الحروف مفصولة◜
-◞◈ .عك / .مسعك •— عكس: اعكس الكلمة◜
-◞◈ .تر / .مستر •— ترتيب: رتّب الحروف المبعثرة◜
-*˼‏إيقاف المستمرة: .ستف • .سعك • .ستر⋄◟*
-
-*◈ فـقـرات عـاديـة• 🎗️◜*
-◞◈ .ص •— صور◜
-◞◈ .كت •— كتابة◜ 
-◞◈ .تع •— تعداد◜ 
-◞◈ .س •— اسئلة◜
-      ❊ ┉ ٠ ┈─ • ⊰ 倖 ⊱ • ─┈ ٠ ┉ ❊
-> *✠ الـتـسـجـيـل • 📍◜*
-
-◞◈ .تسجيل جوال •— لاعب جوال◜
-◞◈ .تسجيل خارجي •— لاعب كيبورد/لاب/بي سي◜
-◞◈ .تغيير تسجيل جوال/خارجي •— طلب تغيير النوع◜ 
-◞◈ .الغاء التسجيل •— يمسح تسجيلك مع سجلاتك◜ 
-◞◈ .قائمة_تع •— كل عناصر التعداد مع إجاباتها◜
-◞◈ .قائمة_سس •— كل الأسئلة مع إجاباتها◜
-*˼‏مهم جدا: سجل بأمانة او يتم حظرك⋄◟*
-      ❊ ┉ ٠ ┈─ • ⊰ 倖 ⊱ • ─┈ ٠ ┉ ❊
-> *✠ الـتـرتـيـب والصدارة • 🏆◜*
-*◈ عـــام • 🔰◜*
-
-◞◈ .توب •— توب 3 لكل الفقرات◜
-◞◈ .نقاطي •— أفضل 5 نتائج شخصية لك بكل فقرة◜
-◞◈ .توب ص • كت • س • تع •— لكل فقرة◜ 
-
-*◈ لـلـجـوالات • 📱◜*
-
-◞◈ .توب جوالات •— توب 3 لكل الفقرات◜
-◞◈ .توب ص • كت • س • تع • جوال ◜ 
-*˼‏مثال: .توب ص جوال⋄◟*
-❊ ┉ ٠ ┈─ • ⊰ 倖 ⊱ • ─┈ ٠ ┉ ❊
-> *✠ اوامـر الـ Owner • 👑◜*
-
-◞◈ .تسجيلات •— يعرض المسجلين جوال/خارجي◜
-◞◈ .سجل / .سجل جوالات •— ترتيب الفنش والنقاط◜
-◞◈ .ايقاف @ •— استبعاد من قوائم الجوالات◜ 
-◞◈ .حظر @ •— حظر من اللعب◜
-◞◈ .الغاء ايقاف/حظر @ •— الغاء الامرين◜ 
-◞◈ .ازالة @ •— تزيل اللاعب من التسجيلات◜ 
-◞◈ .ازالة تصفير @ •— ازالة اللاعب مع حذف السجلات◜
-◞◈ .قبول/.رفض تغيير @ •— الرد على طلب تغيير تسجيل◜
-◞◈ .ريسيت توب/سجل @/اسم •— تصفير لشخص معين◜
-◞◈ .حذف سجل <أرقام> •— حذف سجلات معينة من .سجل◜
-◞◈ .ريسيت تسجيلات •— تصفير كل التسجيلات (الكل يسجل من جديد)◜
-*˼‏بكل أوامر @: تقدر تكتب الاسم المسجل بدل المنشن⋄◟*
-❆ ⋅ ┈── ─━ •⊰✣⊱ • ━─ ──┈ ⋅ ❆`;
     await sock.sendMessage(chatId, { text: helpText }, { quoted: msg });
     return;
   }
 
-// ═══ أمر .ستيكر — ميزة خاصة (ما موجودة بقائمة الأوامر) ═══
-  const stickerMatch = text.match(/^\.ستيكر\s+(.+)$/);
-  if (stickerMatch) {
-    const raw = stickerMatch[1].trim();
-    if (!raw) {
-      await sock.sendMessage(
-        chatId,
-        { text: "⚠️ اكتب الحقوق بعد الأمر، مثال:\n.ستيكر J18\n.ستيكر J18/فداك الستيكر" },
-        { quoted: msg }
-      );
-      return;
-    }
+  // أمر .ستيكر — منطقه الكامل بملف مستقل: commands/sticker.js
+  if (await handleStickerCommand(sock, msg, text, chatId)) return;
 
-    // تفكيك: pack/author
-    // النص الأبيض (pack) = قبل /
-    // النص الرمادي (author) = بعد /
-    let pack, author;
-    if (raw.includes("/")) {
-      const parts = raw.split("/");
-      pack = parts[0].trim();
-      author = parts.slice(1).join("/").trim();
-    } else {
-      pack = raw;
-      author = "";
-    }
-
-    const contextInfo = msg.message?.extendedTextMessage?.contextInfo;
-    const quoted = contextInfo?.quotedMessage;
-
-    if (!quoted) {
-      await sock.sendMessage(
-        chatId,
-        { text: "⚠️ رد على *صورة* أو *ستيكر* أولاً، ثم اكتب الأمر." },
-        { quoted: msg }
-      );
-      return;
-    }
-
-    try {
-      let buffer = null;
-      let isVideo = false;
-
-      if (quoted.imageMessage) {
-        const stream = await downloadContentFromMessage(quoted.imageMessage, "image");
-        buffer = Buffer.from([]);
-        for await (const chunk of stream) buffer = Buffer.concat([buffer, chunk]);
-      } else if (quoted.stickerMessage) {
-        const stream = await downloadContentFromMessage(quoted.stickerMessage, "image");
-        buffer = Buffer.from([]);
-        for await (const chunk of stream) buffer = Buffer.concat([buffer, chunk]);
-      } else if (quoted.videoMessage) {
-        const stream = await downloadContentFromMessage(quoted.videoMessage, "video");
-        buffer = Buffer.from([]);
-        for await (const chunk of stream) buffer = Buffer.concat([buffer, chunk]);
-        isVideo = true;
-      }
-
-      if (!buffer || buffer.length === 0) {
-        await sock.sendMessage(
-          chatId,
-          { text: "⚠️ ما قدرت أحمل الملف. جرب صورة/فيديو/ستيكر ثاني." },
-          { quoted: msg }
-        );
-        return;
-      }
-
-      const stickerBuffer = isVideo
-        ? await createAnimatedSticker(buffer, pack, author)
-        : await createSticker(buffer, pack, author);
-
-     await sock.sendMessage(
-        chatId,
-        {
-          sticker: stickerBuffer,
-          pack: pack,
-          author: author,
-        },
-        { quoted: msg }
-      );
-    } catch (err) {
-      console.error("⚠️ خطأ بإنشاء الستيكر:", err.message);
-      await sock.sendMessage(
-        chatId,
-        { text: `⚠️ صار خطأ: ${err.message}` },
-        { quoted: msg }
-      );
-    }
-    return;
-  }
 // أمر .تسجيل جوال / .تسجيل خارجي: يحدد نوع جهاز الشخص (بالثقة، بدون تحقق تقني)
 // — مقفول بمجرد ما يسجل الشخص أول مرة، ما يقدر يغيّر نوعه مباشرة بعدها
 // (حتى لو ألغى تسجيله)، لازم يمر بأمر .تغيير تسجيل (يحتاج موافقة المالك)
@@ -1699,5 +1537,22 @@ setInterval(() => {
   const mem = process.memoryUsage();
   console.log(`📊 الذاكرة: RSS=${(mem.rss / 1024 / 1024).toFixed(1)}MB | Heap=${(mem.heapUsed / 1024 / 1024).toFixed(1)}MB`);
 }, 5 * 60 * 1000); // كل 5 دقايق
+
+// ✅ نحرر قفل النسخة الوحيدة صراحة وقت إغلاق البرنامج (Render يبعث SIGTERM
+// وقت أي Redeploy/Restart) — بدون هذا، القفل يفضل "محجوز" باسم نسخة ميتة
+// لين تنتهي مهلة الدقيقة (STALE_AFTER_MS)، وبهالفترة ممكن يصير تداخل بين
+// النسخة القديمة (تحتضر) والجديدة (تنتظر/تحاول). التحرير الصريح هنا يخلي
+// النسخة الجديدة تاخذ القفل فورًا تقريبًا بدون أي انتظار
+async function shutdown(signal) {
+  console.log(`🛑 استلمنا ${signal} — نحرر قفل النسخة ونطفي بأمان...`);
+  try {
+    await instanceLock.release();
+  } catch (e) {
+    console.error("⚠️ خطأ أثناء تحرير القفل وقت الإغلاق:", e.message);
+  }
+  process.exit(0);
+}
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("SIGINT", () => shutdown("SIGINT"));
 
 main();
