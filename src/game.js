@@ -7,7 +7,6 @@ const standings = require("./standings");
 const moderation = require("./moderation");
 const registration = require("./registration");
 const templates = require("./templates");
-const weightedPicker = require("./weightedPicker");
 let sharp;
 try { sharp = require("sharp"); } catch (e) { sharp = null; }
 // هامش زمني ثابت وصغير (مو متغيّر أو متوقّع) نطرحه من وقت أي إجابة، تعويض
@@ -16,6 +15,16 @@ try { sharp = require("sharp"); } catch (e) { sharp = null; }
 // ويعتمد على، بدل ما يتقلب حسب سرعة السيرفر اللحظية (خصوصاً بسيرفرات
 // مجانية زي Render ممكن تتأخر لحظياً وتشوّه أي تخمين ديناميكي)
 const NETWORK_OVERHEAD_MS = 400;
+
+// اختيار عشوائي بسيط (كل عنصر بنفس الاحتمالية بالضبط) من بين عناصر مو
+// مستبعدة. نستخدمها بدل نظام الوزن المتناقص القديم (اتشال بناءً على طلب
+// صريح) — الاستبعاد الصارم لكل مسابقة (usedIds/usedSingleWords بكل
+// Contest) هو الميكانيزم الوحيد المتبقي لمنع التكرار
+function pickRandomExcluding(pool, keyFn, excludeSet) {
+  const candidates = excludeSet ? pool.filter((it) => !excludeSet.has(keyFn(it))) : pool;
+  if (candidates.length === 0) return null;
+  return pickRandom(candidates);
+}
 
 // أنواع الفقرات المدعومة
 const POOL_TYPES = ["writing", "images", "questions", "counts"];
@@ -61,10 +70,12 @@ class Contest {
     return this.contestType;
   }
 
-  // يجيب عنصر من مجموعة بيانات (صور/أسئلة/تعداد) بنظام وزن متناقص عالمي
-  // (يشمل كل المسابقات الشغالة بكل القروبات) — مو استبعاد صارم لحالنا،
-  // عشان البنك الكبير (مئات العناصر) يتوزع ويتغطى كامل مع الوقت، مع بقاء
-  // احتمال ضئيل لتكرار عنصر قريب. التفاصيل بملف weightedPicker.js
+  // يجيب عنصر من مجموعة بيانات (صور/أسئلة/تعداد). فيه طبقتين:
+  // 1) استبعاد صارم على مستوى هذي المسابقة بالذات (usedIds) — نفس العنصر
+  //    ما يتكرر إطلاقاً طول عمر هذي المسابقة، وينتهي تلقائياً مع نهايتها
+  //    (كائن Contest جديد = usedIds فاضية من جديد)
+  // 2) بين المرشحين المتبقين بعد الاستبعاد، اختيار عشوائي بسيط (كل عنصر
+  //    بنفس الاحتمالية بالضبط — بدون أي نظام وزن أو تناقص احتمالية)
   pickItem(poolType) {
     let pool;
     if (poolType === "images") pool = store.getImages();
@@ -73,14 +84,31 @@ class Contest {
 
     if (!pool || pool.length === 0) return null;
 
-    return weightedPicker.pickWeighted(poolType, pool, (it) => it.id);
+    if (!this.usedIds) this.usedIds = {};
+    if (!this.usedIds[poolType]) this.usedIds[poolType] = new Set();
+    const usedSet = this.usedIds[poolType];
+
+    let item = pickRandomExcluding(pool, (it) => it.id, usedSet);
+    if (!item && usedSet.size > 0) {
+      // خلص البنك كامل بهذي المسابقة بالذات (بنك صغير قياساً لطول
+      // المسابقة، أو مسابقة مستمرة طالت) — دورة جديدة لهذي المسابقة بس،
+      // بدل ما تعلق المسابقة بدون أسئلة
+      usedSet.clear();
+      item = pickRandomExcluding(pool, (it) => it.id, usedSet);
+    }
+    if (item) usedSet.add(item.id);
+    return item;
   }
 
   // فقرة الكتابة: يسحب 1-3 كلمات من بنك كلمات واحد بنفس نظام الوزن
-  // المتناقص العالمي (excludeKeys يمنع بس تكرار نفس الكلمة داخل هذي
+  // المتناقص العالمي (chosenKeys يمنع بس تكرار نفس الكلمة داخل هذي
   // الجولة الواحدة، مالها علاقة بتتبع الاستخدام عبر الزمن). كل كلمة لها
   // صيغ مقبولة (aliases)، ولازم كلها تنكتب (بأي رسالة، بأي ترتيب، حتى لو
   // وسط كلام زيادة) عشان تفوز بالجولة
+  //
+  // ✅ استبعاد صارم إضافي: بس لجولات "كلمة وحدة" (مو 2-3 كلمات مع بعض —
+  // هذي احتمال تكرارها بنفس المسابقة شبه معدوم أصلاً فما تحتاج استبعاد
+  // صارم)، نفس الكلمة ما تتكرر إطلاقاً طول عمر هذي المسابقة
   pickWritingRound(forcedCount) {
     const pool = store.getWords(); // array of { word: ["لوفي","luffy", ...] }
     if (!pool || pool.length === 0) return null;
@@ -91,14 +119,27 @@ class Contest {
 
     const desired = forcedCount || Math.floor(Math.random() * 3) + 1;
     const count = Math.min(desired, pool.length);
+    const isSingleWordRound = count === 1;
 
-    const chosenKeys = new Set();
+    if (isSingleWordRound && !this.usedSingleWords) this.usedSingleWords = new Set();
+    const chosenKeys = isSingleWordRound ? new Set(this.usedSingleWords) : new Set();
+
     const result = [];
     for (let i = 0; i < count; i++) {
-      const item = weightedPicker.pickWeighted("writing", pool, keyFn, chosenKeys);
+      let item = pickRandomExcluding(pool, keyFn, chosenKeys);
+      if (!item && isSingleWordRound && this.usedSingleWords.size > 0) {
+        // خلصت كل كلمات البنك (كواحدة مفردة) بهذي المسابقة — دورة جديدة
+        this.usedSingleWords.clear();
+        chosenKeys.clear();
+        item = pickRandomExcluding(pool, keyFn, chosenKeys);
+      }
       if (!item) break;
       chosenKeys.add(keyFn(item));
       result.push(item.word);
+    }
+
+    if (isSingleWordRound && result.length > 0) {
+      this.usedSingleWords.add(keyFn({ word: result[0] }));
     }
 
     return result.length > 0 ? result : null; // مصفوفة مصفوفات (slots)
@@ -143,13 +184,22 @@ class Contest {
     } else if (poolType === "dismantle" || poolType === "reverse" || poolType === "scramble") {
       // ✅ ثلاث فقرات مبنية على نفس بنك كلمات فقرة الكتابة (data/words.json)
       // — تفكيك (اكتب الحروف مفصولة)، عكس (اعكس الكلمة)، ترتيب (رتّب حروف
-      // مبعثرة). كل جولة تسحب كلمة بنظام الوزن المتناقص العالمي نفسه
+      // مبعثرة). كل جولة تسحب كلمة بنظام الوزن المتناقص العالمي، + استبعاد
+      // صارم على مستوى هذي المسابقة بالذات (نفس أسلوب pickItem بالضبط)
       const wordPool = store.getWords();
       if (!wordPool || wordPool.length === 0) {
         await this.sendChat(`⚠️ ما فيه كلمات بملف data/words.json. أضف كلمات أول.`);
         return;
       }
-      const wordItem = weightedPicker.pickWeighted(poolType, wordPool, (it) => it.word[0]);
+      if (!this.usedIds) this.usedIds = {};
+      if (!this.usedIds[poolType]) this.usedIds[poolType] = new Set();
+      const usedSet = this.usedIds[poolType];
+      let wordItem = pickRandomExcluding(wordPool, (it) => it.word[0], usedSet);
+      if (!wordItem && usedSet.size > 0) {
+        usedSet.clear();
+        wordItem = pickRandomExcluding(wordPool, (it) => it.word[0], usedSet);
+      }
+      usedSet.add(wordItem.word[0]);
       const rawWord = wordItem.word[0].replace(/\s+/g, ""); // نشيل المسافات (لو الاسم أكثر من كلمة) عشان الفقرات الثلاث تشتغل على كلمة مصمتة
       points = 1;
       required = 1;
@@ -266,9 +316,15 @@ class Contest {
     } else if (poolType === "counts") {
       sentMsg = await this.sendChat(`*تع/ ${questionText}*`);
     } else if (poolType === "dismantle") {
-      sentMsg = await this.sendChat(`*${questionText}*`);
+      // اسم الفقرة يظهر بس لو المسابقة فيها أكثر من فقرة ممكنة (يعني
+      // ممكن يجي بدلها فقرة ثانية)، عشان نفرّق بينها وبين بقية الفقرات.
+      // لو حددت الفقرة لحالها (مباشرة أو باختيار وحيد من القائمة)، ما
+      // فيه لبس أصلاً فترسل بدون اسم
+      const showLabel = this.contestType === "general" && this.allowedPoolTypes && this.allowedPoolTypes.length > 1;
+      sentMsg = await this.sendChat(showLabel ? `تفكيك\n\n*${questionText}*` : `*${questionText}*`);
     } else if (poolType === "reverse") {
-      sentMsg = await this.sendChat(`*${questionText}*`);
+      const showLabel = this.contestType === "general" && this.allowedPoolTypes && this.allowedPoolTypes.length > 1;
+      sentMsg = await this.sendChat(showLabel ? `عكس\n\n*${questionText}*` : `*${questionText}*`);
     } else if (poolType === "scramble") {
       sentMsg = await this.sendChat(`*${questionText}*`);
     }
@@ -279,7 +335,7 @@ class Contest {
     // وصل بالفترة القصيرة اللي بين التعيين والإرسال يشوف نفس المرجع
     round.startTime = Date.now();
 
-    // مؤقت حراسة: لو ما صار أي رد (ولا حتى محاولة خطأ) خلال 10 ثواني،
+    // مؤقت حراسة: لو ما صار أي رد (ولا حتى محاولة خطأ) خلال 20 ثانية،
     // على الأغلب الرسالة (سؤال/صورة) ما وصلت فعلياً لواتساب رغم إن سيرفرنا
     // ظن إنها انرسلت بنجاح — هذا وارد لو الاتصال متذبذب. بدل ما تفضل
     // المسابقة "عالقة" بصمت بدون أي تفسير، ننبّه القروب بوضوح. التقديم
@@ -292,7 +348,7 @@ class Contest {
             "⚠️ يبدو إن السؤال الحالي ما وصل بشكل طبيعي (تأخير غير عادي بالاتصال). جرب .سكب للانتقال للسؤال التالي، أو .انهاء لو تبي توقف المسابقة."
           ).catch((e) => console.error("فشل إرسال تنبيه انتظار السؤال:", e));
         }
-      }, 10000); // 10 ثواني
+      }, 20000); // 20 ثانية
     }
   }
 
@@ -473,6 +529,14 @@ class Contest {
         };
         leaderboard.record(round.poolType, entry);
         personalHistory.record(round.poolType, entry);
+        // ✅ إضافي: لفقرة الكتابة بس، نسجل نفس النتيجة كمان ببنك منفصل
+        // حسب عدد الكلمات بالضبط (round.required = عدد الكلمات بهذي
+        // الجولة) — لأمر .توب كت <رقم> الجديد. ما يأثر على تسجيل
+        // "writing" العادي فوق (أمر .توب كت الأصلي) إطلاقاً، هذا بنك ثاني
+        // تماماً بس يشارك نفس بيانات هذي الجولة
+        if (round.poolType === "writing" && round.required >= 1 && round.required <= 5) {
+          leaderboard.record(`writing${round.required}`, entry);
+        }
       } catch (e) {
         console.error("⚠️ خطأ تسجيل النتيجة بلوحة الصدارة (تجاهلناه، الجولة تكمل عادي):", e);
       }

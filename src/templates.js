@@ -33,6 +33,13 @@ const topTitles = {
   dismantle: { title: "تــوب الـتـفـكـيـك", icon: "🧩", compact: "تـفـكـيـك" },
   reverse: { title: "تــوب الـعـكـس", icon: "🔄", compact: "عـكـس" },
   scramble: { title: "تــوب الـتـرتـيـب", icon: "🔀", compact: "تـرتـيـب" },
+  // ✅ توب الكتابة حسب عدد الكلمات بالضبط (أمر .توب كت <رقم> الجديد) —
+  // منفصلة تماماً عن "writing" فوق (اللي هو أمر .توب كت العادي، ما اتغيّر)
+  writing1: { title: "تـوب كـتـابـة كـلـمـة", icon: "✒️", compact: "كـتـابـة كـلـمـة" },
+  writing2: { title: "تـوب كـتـابـة كـلـمـتـيـن", icon: "✒️", compact: "كـتـابـة كـلـمـتـيـن" },
+  writing3: { title: "تـوب كـتـابـة 3 كـلـمـات", icon: "✒️", compact: "كـتـابـة 3 كـلـمـات" },
+  writing4: { title: "تـوب كـتـابـة 4 كـلـمـات", icon: "✒️", compact: "كـتـابـة 4 كـلـمـات" },
+  writing5: { title: "تـوب كـتـابـة 5 كـلـمـات", icon: "✒️", compact: "كـتـابـة 5 كـلـمـات" },
 };
 const TOP_ORDER = ["writing", "images", "questions", "counts", "dismantle", "reverse", "scramble"];
 

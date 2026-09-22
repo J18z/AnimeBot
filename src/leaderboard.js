@@ -3,13 +3,20 @@
 
 const { getDb } = require("./db");
 
-const POOL_TYPES = ["writing", "images", "questions", "counts", "dismantle", "reverse", "scramble"];
+// ✅ "writing1".."writing5" بنوك إضافية منفصلة تماماً عن "writing" الأصلية
+// (اللي ما اتغيرت ولا اتلمست) — تتبع أفضل وقت لكل عدد كلمات بالضبط (1
+// إلى 5)، لأمر .توب كت <رقم> الجديد. تُملأ تلقائياً بنفس آلية .record
+// العادية (راجع game.js) — ما تحتاج أي تعامل خاص هنا غير التسجيل بقائمة
+// الأنواع عشان تنحفظ/تتصفر/تنمسح مع بقية الفقرات تلقائياً
+const WRITING_BY_COUNT = ["writing1", "writing2", "writing3", "writing4", "writing5"];
+const POOL_TYPES = ["writing", "images", "questions", "counts", "dismantle", "reverse", "scramble", ...WRITING_BY_COUNT];
 // نخزن أكثر من 5 داخلياً (30) عشان لما نفلتر لجوالات بس، يبقى فيه عمق
 // كافي نطلع منه أفضل 5 جوالات حتى لو ما كانوا بأعلى 5 عام
 const STORE_CAP = 30;
 const DISPLAY_CAP = 5;
 
-const board = { writing: [], images: [], questions: [], counts: [], dismantle: [], reverse: [], scramble: [] };
+const board = {};
+for (const t of POOL_TYPES) board[t] = [];
 
 // يحفظ كامل قائمة فقرة معينة بقاعدة البيانات (استبدال كامل، القائمة صغيرة أصلاً)
 async function persistPool(poolType) {

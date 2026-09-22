@@ -1042,6 +1042,27 @@ if (rejectChangeMatch) {
     return;
   }
 
+  // ✅ أمر .توب كت <رقم> [جوال]: توب الكتابة حسب عدد الكلمات بالضبط
+  // (1 إلى 5) — منفصل تماماً عن .توب كت العادي فوق (بدون رقم)، اللي ما
+  // اتغيّر ولا هيتأثر بهذا الأمر الجديد إطلاقاً
+  const topWritingCountMatch = text.match(/^\.توب كت (\d)(?:\s+(جوال))?$/);
+  if (topWritingCountMatch) {
+    const wordCount = parseInt(topWritingCountMatch[1], 10);
+    if (wordCount < 1 || wordCount > 5) {
+      await sock.sendMessage(chatId, { text: "⚠️ عدد الكلمات لازم يكون رقم من 1 إلى 5." }, { quoted: msg });
+      return;
+    }
+    const poolKey = `writing${wordCount}`;
+    const mobileOnly = !!topWritingCountMatch[2];
+    const entries = mobileOnly
+      ? leaderboard.getTopFiltered(poolKey, 5, (e) => isMobileEligible(e.userId))
+      : leaderboard.getTop(poolKey, 5);
+    const out = templates.formatTopSection(poolKey, entries, mobileOnly ? templates.TOP_SUBTITLE_MOBILE : undefined);
+    const mentions = entries.map((e) => e.userId);
+    await sock.sendMessage(chatId, { text: out, mentions }, { quoted: msg });
+    return;
+  }
+
   // أمر .ريسيت توب أو .ريسيت توب <نوع> [@شخص/اسم]: يصفّر لوحة الصدارة
   // (كلها، أو فقرة وحدة، أو سجل شخص معين بس لو فيه منشن/اسم) — مخصص
   // لصاحب البوت بس
@@ -1056,6 +1077,10 @@ if (rejectChangeMatch) {
     const trailingText = resetTopMatch[2];
     const mentioned = getMentionedJid(msg);
 
+    // ✅ القاعدة: فيه نوع فقرة محدد (ص/كت/تع...) = نحذفها من .نقاطي
+    // كمان (يصلح حالة شخص طلعت له نتيجة "حظ" غلط بفقرة معينة وتبي تصحح
+    // الاثنين مع بعض). ما فيه نوع محدد (تصفير شامل، بشخص أو بدونه) =
+    // .نقاطي ما يتأثر إطلاقاً، يبقى الشخص محتفظ بتاريخه الكامل
     const resetWholePool = async () => {
       if (poolType) {
         leaderboard.reset(poolType);
@@ -1067,7 +1092,6 @@ if (rejectChangeMatch) {
         );
       } else {
         leaderboard.reset();
-        personalHistory.resetAll();
         await sock.sendMessage(chatId, { text: "🗑️ تم تصفير لوحة الصدارة بالكامل." }, { quoted: msg });
       }
     };
@@ -1088,7 +1112,6 @@ if (rejectChangeMatch) {
         );
       } else {
         leaderboard.removeUser(target);
-        personalHistory.removeUser(target);
         await sock.sendMessage(
           chatId,
           { text: `🗑️ تم حذف كل سجلات @${target.split("@")[0]} من التوب (كل الفقرات).`, mentions: [target] },

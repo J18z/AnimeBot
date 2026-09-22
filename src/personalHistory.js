@@ -126,7 +126,12 @@ function resetAll(poolType) {
 // موجودة أصلاً بلوحة الصدارة العامة (leaderboard) — عشان تظهر بـ.نقاطي
 // فورًا بدون ما يحتاج يلعب من جديد. آمنة نكررها كل تشغيل (idempotent):
 // لو الشخص عنده تاريخ أصلاً بهذي الفقرة، نتخطاه ولا نكرر
+// يبذر تاريخ شخصي من بيانات لوحة صدارة موجودة أصلاً، لكن بس للفقرات
+// اللي فعلاً عندها تاريخ شخصي (POOL_TYPES هنا) — أي نوع لوحة صدارة ثاني
+// (زي "writing2".."writing5" المستخدمة لأمر .توب كت <رقم> فقط، بدون أي
+// تاريخ شخصي مقابل) نتجاهله بأمان بدل ما نحاول نوصل لمفتاح مو موجود
 function seedFromLeaderboard(leaderboardEntries, poolType) {
+  if (!POOL_TYPES.includes(poolType)) return;
   for (const e of leaderboardEntries) {
     const bucket = getUserBucket(e.userId);
     if (bucket[poolType].length > 0) continue; // عنده تاريخ أصلاً، تخطاه
