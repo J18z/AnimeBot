@@ -57,22 +57,51 @@ async function useMongoAuthState() {
   const dirty = new Set();
   let flushTimer = null;
 
-  const allDocs = await col.find({}).toArray();
-  let totalBytes = 0;
-  for (const doc of allDocs) {
-    if (doc.value === undefined) continue;
-    totalBytes += doc.value.length;
-    try {
-      cache.set(doc._id, JSON.parse(doc.value, BufferJSON.reviver));
-    } catch (e) {
-      // مفتاح تالف بقاعدة البيانات — نتجاهله بدل ما يوقف تحميل الجلسة كلها
+  // ✅ إصلاح تسرب ذاكرة تراكمي ثاني: قبل هذا التعديل، الكاش كان يحتفظ
+  // بكل مفتاح للأبد بدون أي سقف — كل شخص/عضو قروب جديد يتفاعل مع البوت
+  // يضيف مفاتيح جديدة، وبعد أسابيع تشغيل متواصل يتراكم الكاش لمئات
+  // الميجا (شُوهد فعلياً 350+MB)، وهذا يفسر بالضبط: "الجلسة الجديدة
+  // خفيفة وسريعة، وبعدها بفترة يرجع بطيء" — لأن مسح الجلسة يصفّر الكاش
+  // من جديد (useMongoAuthState تتنفذ من الصفر)، والتراكم يبدأ يزيد تاني
+  // تدريجياً مع الوقت
+  //
+  // الحل: سقف أقصى لعدد المفاتيح بالذاكرة (LRU — نحتفظ بالأحدث استخداماً
+  // بس). لو مفتاح قديم غير نشط اتطرد واحتجناه بعدين، نرجعه من قاعدة
+  // البيانات (رحلة شبكة، بس نادرة جداً — بس للمفاتيح الخاملة فعلاً، مو
+  // للمحادثات النشطة اللي تفضل بالكاش طول الوقت)
+  const MAX_CACHE_SIZE = 8000;
+
+  // ينقل مفتاح لآخر ترتيب الـMap (يعني "استُخدم للتو") — الأقدم استخداماً
+  // يفضل بأول الـMap دايمًا، وهو اللي نطرده أول لو الكاش امتلأ
+  function touch(id, value) {
+    cache.delete(id);
+    cache.set(id, value !== undefined ? value : cache.get(id));
+  }
+
+  async function evictIfNeeded() {
+    while (cache.size > MAX_CACHE_SIZE) {
+      const oldestKey = cache.keys().next().value;
+      if (oldestKey === "creds") {
+        // بيانات الاعتماد الأساسية — ما نطردها أبداً، ننقلها لآخر الترتيب
+        // ونكمل الفحص من غيرها
+        touch("creds");
+        break; // لو "creds" هي الوحيدة المتبقية عملياً مستحيل، بس احتياط يمنع لوب لانهائي
+      }
+      if (dirty.has(oldestKey)) {
+        // فيه تغيير معلّق ما انكتب لقاعدة البيانات بعد — نضمن نحفظه أول
+        // قبل ما نطرده من الذاكرة، عشان ما نفقد أي بيانات
+        try {
+          const value = JSON.stringify(cache.get(oldestKey), BufferJSON.replacer);
+          await col.updateOne({ _id: oldestKey }, { $set: { value } }, { upsert: true });
+          dirty.delete(oldestKey);
+        } catch (e) {
+          console.error(`⚠️ خطأ حفظ مفتاح قبل طرده من الكاش (${oldestKey}):`, e.message);
+          break; // ما نطرده لو فشل الحفظ — أحسن نحتفظ فيه بالذاكرة مؤقتاً
+        }
+      }
+      cache.delete(oldestKey);
     }
   }
-  // 🔍 تشخيص: نطبع حجم كاش الجلسة الفعلي عشان نعرف هل هو السبب الرئيسي
-  // باستهلاك الذاكرة (350+MB) ولا في مكان ثاني يستحق نركز عليه
-  console.log(
-    `📦 كاش جلسة واتساب: ${allDocs.length} مفتاح، ${(totalBytes / 1024 / 1024).toFixed(2)}MB (كنص JSON مضغوط، الحجم الفعلي بالذاكرة بعد التحليل أكبر عادة).`
-  );
 
   function scheduleFlush() {
     if (flushTimer) return; // فيه فلاش مجدول أصلاً، ما نكرر المؤقت
@@ -106,14 +135,30 @@ async function useMongoAuthState() {
     );
   }
 
-  function readData(id) {
-    return cache.has(id) ? cache.get(id) : null;
+  async function readData(id) {
+    if (cache.has(id)) {
+      touch(id);
+      return cache.get(id);
+    }
+    // مو موجود بالكاش (اتطرد قبل كذا لقلة استخدامه، أو أصلاً ما تحمّل) —
+    // رحلة شبكة نادرة بس لهالحالة تحديداً، ترجعه من قاعدة البيانات
+    try {
+      const doc = await col.findOne({ _id: id });
+      if (!doc || doc.value === undefined) return null;
+      const value = JSON.parse(doc.value, BufferJSON.reviver);
+      cache.set(id, value);
+      await evictIfNeeded();
+      return value;
+    } catch (e) {
+      return null;
+    }
   }
 
-  function writeData(id, data) {
-    cache.set(id, data);
+  async function writeData(id, data) {
+    touch(id, data);
     dirty.add(id);
     scheduleFlush();
+    await evictIfNeeded();
   }
 
   function removeData(id) {
@@ -122,8 +167,31 @@ async function useMongoAuthState() {
     scheduleFlush();
   }
 
-  const creds = readData("creds") || initAuthCreds();
-  if (!cache.has("creds")) cache.set("creds", creds);
+  const allDocs = await col.find({}).toArray();
+  let totalBytes = 0;
+  for (const doc of allDocs) {
+    if (doc.value === undefined) continue;
+    totalBytes += doc.value.length;
+    try {
+      cache.set(doc._id, JSON.parse(doc.value, BufferJSON.reviver));
+    } catch (e) {
+      // مفتاح تالف بقاعدة البيانات — نتجاهله بدل ما يوقف تحميل الجلسة كلها
+    }
+  }
+  // 🔍 تشخيص: نطبع حجم كاش الجلسة الفعلي عشان نعرف هل هو السبب الرئيسي
+  // باستهلاك الذاكرة (350+MB) ولا في مكان ثاني يستحق نركز عليه
+  console.log(
+    `📦 كاش جلسة واتساب: ${allDocs.length} مفتاح بقاعدة البيانات، ${(totalBytes / 1024 / 1024).toFixed(2)}MB (كنص JSON مضغوط، الحجم الفعلي بالذاكرة بعد التحليل أكبر عادة).`
+  );
+  // ✅ نطبّق سقف الذاكرة فوراً من بداية التشغيل (مو بس على التراكم
+  // المستقبلي) — لو كان محمّل أكثر من السقف، نطرد الفائض دفعة وحدة الآن
+  await evictIfNeeded();
+  if (allDocs.length > MAX_CACHE_SIZE) {
+    console.log(`✂️ طردنا ${allDocs.length - MAX_CACHE_SIZE} مفتاح من الذاكرة فوراً (سقف الكاش ${MAX_CACHE_SIZE}) — باقين بقاعدة البيانات، يرجعوا للكاش لو احتجناهم.`);
+  }
+
+  const creds = (await readData("creds")) || initAuthCreds();
+  if (!cache.has("creds")) touch("creds", creds);
 
   // ✅ نحدّث المرجع المشترك بس (مو نسجل مستمع process جديد) — المعالج
   // المسجل مرة وحدة فوق يستخدم هذا المرجع، فدايمًا يحفظ آخر جلسة نشطة
@@ -137,7 +205,7 @@ async function useMongoAuthState() {
         get: async (type, ids) => {
           const data = {};
           for (const id of ids) {
-            let value = readData(`${type}-${id}`);
+            let value = await readData(`${type}-${id}`);
             if (type === "app-state-sync-key" && value) {
               value = proto.Message.AppStateSyncKeyData.fromObject(value);
             }
@@ -150,7 +218,7 @@ async function useMongoAuthState() {
             for (const id in data[category]) {
               const value = data[category][id];
               const key = `${category}-${id}`;
-              if (value) writeData(key, value);
+              if (value) await writeData(key, value);
               else removeData(key);
             }
           }
