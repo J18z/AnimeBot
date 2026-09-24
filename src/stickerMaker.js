@@ -91,7 +91,7 @@ async function createAnimatedSticker(videoBuffer, pack, author) {
     await new Promise((resolve, reject) => {
       ffmpeg(inputPath)
         .outputOptions([
-          '-vf', 'fps=10,scale=w=512:h=512:force_original_aspect_ratio=decrease,scale=trunc(iw/2)*2:trunc(ih/2)*2',
+          '-vf', 'fps=10,scale=w=512:h=512:force_original_aspect_ratio=decrease,scale=trunc(iw/2)*2:trunc(ih/2)*2,setsar=1',
           '-c:v', 'libwebp',
           '-lossless', '0',
           '-q:v', '80',
