@@ -50,19 +50,6 @@ function startHealthServer() {
         return;
       }
 
-      if (req.url === "/memory") {
-        const m = process.memoryUsage();
-        const mb = (n) => (n / 1024 / 1024).toFixed(1) + " MB";
-        res.writeHead(200, { "Content-Type": "text/plain; charset=utf-8" });
-        res.end(
-          `استهلاك الذاكرة الحالي:\n` +
-            `RSS (الإجمالي الفعلي): ${mb(m.rss)}\n` +
-            `Heap مستخدم: ${mb(m.heapUsed)} / ${mb(m.heapTotal)}\n` +
-            `وقت التشغيل: ${(process.uptime() / 60).toFixed(1)} دقيقة`
-        );
-        return;
-      }
-
       res.writeHead(200, { "Content-Type": "text/plain; charset=utf-8" });
       res.end("بوت مسابقات الأنمي شغال ✅");
     })
