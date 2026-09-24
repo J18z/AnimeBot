@@ -499,10 +499,19 @@ async function connectSocket() {
 
   sock.ev.on("creds.update", saveCreds);
 
+  // ✅ وقت انتظار مسح QR لازم يكون أطول من وقت إعادة اتصال جلسة موجودة
+  // أصلاً — مسح QR يحتاج خطوات فعلية من المستخدم (فتح واتساب > الأجهزة
+  // المرتبطة > ربط جهاز > توجيه الكاميرا)، هذا يأخذ عادة أكثر من 5 ثواني
+  // بكثير. لو أعدنا إنشاء السوكت (وبالتالي كود QR جديد) كل 5 ثواني بينما
+  // لسا ننتظر أول مسح، الكود يتغيّر تحت يد المستخدم قبل ما يخلص المسح
+  // أصلاً، ويطلع له "Couldn't log in" رغم إن كل شي كان سليم لحظة المسح
+  let qrPending = false;
+
   sock.ev.on("connection.update", async (update) => {
     const { connection, lastDisconnect, qr } = update;
 
     if (qr) {
+      qrPending = true;
       console.log("امسح كود QR هذا من واتساب > الأجهزة المرتبطة:");
       qrcode.generate(qr, { small: true });
       setQr(qr); // نحدّث صفحة /qr كمان بآخر كود
@@ -510,6 +519,11 @@ async function connectSocket() {
 
     if (connection === "close") {
       const statusCode = new Boom(lastDisconnect?.error)?.output?.statusCode;
+      const errMsg = lastDisconnect?.error?.message || "بدون رسالة";
+      // 🔍 تشخيص أساسي كان ناقص: كنا نحسب سبب الانقطاع بس ما نطبعه أبداً
+      // — يعني ما فيه طريقة نعرف هل السبب شبكة، أو واتساب رافض الاتصال،
+      // أو تعارض جلسات، أو شي ثاني. لازم نشوف الرقم/الرسالة الحقيقية
+      console.log(`🔌 سبب الانقطاع: statusCode=${statusCode ?? "؟"} | ${errMsg}`);
       const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
       if (shouldReconnect) {
         const now = Date.now();
@@ -519,10 +533,15 @@ async function connectSocket() {
 
         if (consecutiveCloses > MAX_FAST_RETRIES) {
           console.error(
-            `🛑 انقطاعات متكررة (${consecutiveCloses} مرة خلال دقايق) — على الأغلب قيد مؤقت من واتساب. ` +
+            `🛑 انقطاعات متكررة (${consecutiveCloses} مرة خلال دقايق، آخر سبب: ${statusCode ?? "؟"}) — على الأغلب قيد مؤقت من واتساب. ` +
               `نبطّئ لمحاولة كل ${SLOW_RETRY_MS / 60000} دقايق بدل ما نستمر نقصف بسرعة.`
           );
           setTimeout(connectSocket, SLOW_RETRY_MS);
+        } else if (qrPending) {
+          // لسا ننتظر أول مسح QR — نعطي وقت كافي فعلي (25 ثانية) بدل
+          // 5 ثواني، عشان ما نغيّر الكود قبل ما يخلص المستخدم يمسحه
+          console.log("⚠️ انقطع الاتصال (لسا بانتظار مسح QR). إعادة محاولة خلال 25 ثانية...");
+          setTimeout(connectSocket, 25000);
         } else {
           console.log("⚠️ انقطع الاتصال. إعادة محاولة خلال 5 ثواني...");
           setTimeout(connectSocket, 5000);
