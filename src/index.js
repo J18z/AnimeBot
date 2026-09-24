@@ -471,6 +471,13 @@ async function connectSocket() {
   const { state, saveCreds } = authState;
   const { version } = await fetchLatestBaileysVersion();
 
+  // 🔍 تشخيص حاسم: نطبع هل الجلسة المحمّلة "مسجّلة" فعلاً عند واتساب
+  // (registered=true يعني تم ربطها بنجاح قبل كذا) قبل حتى ما نحاول نتصل.
+  // هذا يوريني مباشرة: هل الجلسة تتسجل بنجاح وبعدين "تُفقد" بين محاولة
+  // وثانية (مشكلة حفظ بقاعدة البيانات)، أو أصلاً ما توصل تتسجل من البداية
+  // (مشكلة شبكة/اتصال بواتساب نفسه قبل ما يكمل المسح)
+  console.log(`🔍 [تشخيص جلسة] creds.registered=${state.creds?.registered} | me=${state.creds?.me?.id || "لا يوجد"}`);
+
   const sock = makeWASocket({
     auth: state,
      version,
@@ -526,6 +533,18 @@ async function connectSocket() {
       console.log(`🔌 سبب الانقطاع: statusCode=${statusCode ?? "؟"} | ${errMsg}`);
       const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
       if (shouldReconnect) {
+        // ✅ استثناء حاسم: 515 (restartRequired) يصير عادة فور نجاح مسح
+        // QR — واتساب يطلب إعادة اتصال فورية لإكمال تثبيت الجلسة، مو
+        // "لسا ننتظر مسح". لو عالجناه زي انتظار QR العادي (25 ثانية)،
+        // نضيّع نافذة إكمال التسجيل القصيرة ونخسر الجلسة رغم نجاح المسح
+        // فعليًا — بالضبط اللي كان يصير. لازم نعيد الاتصال فورًا بدون
+        // أي شرط ثاني (قبل حتى فحص qrPending)
+        if (statusCode === DisconnectReason.restartRequired) {
+          console.log("🔁 515 (restartRequired) — إعادة اتصال فورية لإكمال تثبيت الجلسة...");
+          setTimeout(connectSocket, 0);
+          return;
+        }
+
         const now = Date.now();
         if (now - lastCloseTime > CLOSE_WINDOW_MS) consecutiveCloses = 0;
         consecutiveCloses += 1;
@@ -571,6 +590,7 @@ async function connectSocket() {
       }
     } else if (connection === "open") {
       console.log("✅ البوت جاهز ومتصل بواتساب!");
+      qrPending = false; // ✅ نصفّرها بعد نجاح الاتصال — كانت تفضل true للأبد
       consecutiveLogouts = 0; // اتصال ناجح = نصفّر العدادات
       consecutiveCloses = 0;
       clearQr();
