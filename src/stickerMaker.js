@@ -87,16 +87,11 @@ async function createAnimatedSticker(videoBuffer, pack, author) {
       throw new Error(`الفيديو طويل جداً (${duration.toFixed(1)} ثانية). الحد الأقصى المسموح: ${MAX_VIDEO_DURATION} ثواني.`);
     }
 
-    // تحويل الفيديو لـ animated webp — نحافظ على النسبة الأصلية للفيديو
-    // بالضبط (بدون أي هوامش/تعبئة pad)، بس نصغّره لين أكبر بعد فيه يصير
-    // 512 بحد أقصى (حد واتساب للستيكرات). ما نفرضه مربع أبدًا — واتساب
-    // أصلاً يدعم ستيكرات بأي نسبة أبعاد، وفرضه مربع هو اللي كان يسبب
-    // الهوامش الزايدة. force_divisible_by=2 شرط تقني لترميز الفيديو بس
-    // (الأبعاد لازم تكون زوجية)، ما يأثر على النسبة الفعلية بشكل ملحوظ
+    // تحويل الفيديو لـ animated webp
     await new Promise((resolve, reject) => {
       ffmpeg(inputPath)
         .outputOptions([
-          '-vf', 'fps=10,scale=w=512:h=512:force_original_aspect_ratio=decrease:force_divisible_by=2',
+          '-vf', 'fps=10,scale=512:512:force_original_aspect_ratio=decrease,pad=512:512:(ow-iw)/2:(oh-ih)/2:color=0x00000000',
           '-c:v', 'libwebp',
           '-lossless', '0',
           '-q:v', '80',
