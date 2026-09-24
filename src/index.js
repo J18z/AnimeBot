@@ -12,7 +12,7 @@ const registration = require("./registration");
 const moderation = require("./moderation");
 const templates = require("./templates");
 const db = require("./db");
-const { useMongoAuthState } = require("./mongoAuthState");
+const { useMongoAuthState, flushPendingAuth } = require("./mongoAuthState");
 const { startHealthServer, setQr, clearQr } = require("./healthServer");
 const dmPermissions = require("./dmPermissions");
 const instanceLock = require("./instanceLock");
@@ -469,7 +469,19 @@ async function connectSocket() {
     authState = await useMultiFileAuthState("auth_info_baileys");
   }
   const { state, saveCreds } = authState;
-  const { version } = await fetchLatestBaileysVersion();
+  const { version, isLatest } = await fetchLatestBaileysVersion();
+  // 🔍 تشخيص: نتأكد هل فعلاً قدرنا نجيب آخر نسخة بروتوكول من الإنترنت
+  // (isLatest=true) أو رجعنا لنسخة احتياطية مدمجة بالمكتبة (isLatest=false
+  // يعني فشل طلب الشبكة، وبروتوكول واتساب يمكن رفض النسخة القديمة بـ515
+  // بشكل متكرر بدون أي علاقة بمسح QR إطلاقًا)
+  console.log(`🔍 [نسخة بروتوكول واتساب] version=${version.join(".")} | isLatest=${isLatest}`);
+
+  // 🔍 تشخيص حاسم: نطبع هل الجلسة المحمّلة "مسجّلة" فعلاً عند واتساب
+  // (registered=true يعني تم ربطها بنجاح قبل كذا) قبل حتى ما نحاول نتصل.
+  // هذا يوريني مباشرة: هل الجلسة تتسجل بنجاح وبعدين "تُفقد" بين محاولة
+  // وثانية (مشكلة حفظ بقاعدة البيانات)، أو أصلاً ما توصل تتسجل من البداية
+  // (مشكلة شبكة/اتصال بواتساب نفسه قبل ما يكمل المسح)
+  console.log(`🔍 [تشخيص جلسة] creds.registered=${state.creds?.registered} | me=${state.creds?.me?.id || "لا يوجد"}`);
 
   const sock = makeWASocket({
     auth: state,
@@ -499,10 +511,19 @@ async function connectSocket() {
 
   sock.ev.on("creds.update", saveCreds);
 
+  // ✅ وقت انتظار مسح QR لازم يكون أطول من وقت إعادة اتصال جلسة موجودة
+  // أصلاً — مسح QR يحتاج خطوات فعلية من المستخدم (فتح واتساب > الأجهزة
+  // المرتبطة > ربط جهاز > توجيه الكاميرا)، هذا يأخذ عادة أكثر من 5 ثواني
+  // بكثير. لو أعدنا إنشاء السوكت (وبالتالي كود QR جديد) كل 5 ثواني بينما
+  // لسا ننتظر أول مسح، الكود يتغيّر تحت يد المستخدم قبل ما يخلص المسح
+  // أصلاً، ويطلع له "Couldn't log in" رغم إن كل شي كان سليم لحظة المسح
+  let qrPending = false;
+
   sock.ev.on("connection.update", async (update) => {
     const { connection, lastDisconnect, qr } = update;
 
     if (qr) {
+      qrPending = true;
       console.log("امسح كود QR هذا من واتساب > الأجهزة المرتبطة:");
       qrcode.generate(qr, { small: true });
       setQr(qr); // نحدّث صفحة /qr كمان بآخر كود
@@ -510,8 +531,34 @@ async function connectSocket() {
 
     if (connection === "close") {
       const statusCode = new Boom(lastDisconnect?.error)?.output?.statusCode;
+      const errMsg = lastDisconnect?.error?.message || "بدون رسالة";
+      // 🔍 تشخيص أساسي كان ناقص: كنا نحسب سبب الانقطاع بس ما نطبعه أبداً
+      // — يعني ما فيه طريقة نعرف هل السبب شبكة، أو واتساب رافض الاتصال،
+      // أو تعارض جلسات، أو شي ثاني. لازم نشوف الرقم/الرسالة الحقيقية
+      console.log(`🔌 سبب الانقطاع: statusCode=${statusCode ?? "؟"} | ${errMsg}`);
       const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
       if (shouldReconnect) {
+        // ✅ استثناء حاسم: 515 (restartRequired) يصير عادة فور نجاح مسح
+        // QR — واتساب يطلب إعادة اتصال فورية لإكمال تثبيت الجلسة، مو
+        // "لسا ننتظر مسح". لو عالجناه زي انتظار QR العادي (25 ثانية)،
+        // نضيّع نافذة إكمال التسجيل القصيرة ونخسر الجلسة رغم نجاح المسح
+        // فعليًا — بالضبط اللي كان يصير. لازم نعيد الاتصال فورًا بدون
+        // أي شرط ثاني (قبل حتى فحص qrPending)
+        if (statusCode === DisconnectReason.restartRequired) {
+          console.log("🔁 515 (restartRequired) — نحفظ الجلسة المعلّقة فورًا قبل إعادة الاتصال...");
+          // ✅ نجبر الكتابة المؤجلة (المجدولة أصلاً بعد 800ms) تصير الآن
+          // وننتظرها تخلص، بدل ما نعتمد على المؤقت ونعيد الاتصال قبل ما
+          // تكتمل — وإلا الجلسة الجديدة تقرأ بيانات قديمة غير مسجّلة من
+          // قاعدة البيانات رغم نجاح المسح فعليًا، ونضطر نطلب QR من جديد
+          try {
+            await flushPendingAuth();
+          } catch (e) {
+            console.error("⚠️ خطأ أثناء الحفظ الفوري قبل إعادة الاتصال:", e.message);
+          }
+          setTimeout(connectSocket, 0);
+          return;
+        }
+
         const now = Date.now();
         if (now - lastCloseTime > CLOSE_WINDOW_MS) consecutiveCloses = 0;
         consecutiveCloses += 1;
@@ -519,10 +566,15 @@ async function connectSocket() {
 
         if (consecutiveCloses > MAX_FAST_RETRIES) {
           console.error(
-            `🛑 انقطاعات متكررة (${consecutiveCloses} مرة خلال دقايق) — على الأغلب قيد مؤقت من واتساب. ` +
+            `🛑 انقطاعات متكررة (${consecutiveCloses} مرة خلال دقايق، آخر سبب: ${statusCode ?? "؟"}) — على الأغلب قيد مؤقت من واتساب. ` +
               `نبطّئ لمحاولة كل ${SLOW_RETRY_MS / 60000} دقايق بدل ما نستمر نقصف بسرعة.`
           );
           setTimeout(connectSocket, SLOW_RETRY_MS);
+        } else if (qrPending) {
+          // لسا ننتظر أول مسح QR — نعطي وقت كافي فعلي (25 ثانية) بدل
+          // 5 ثواني، عشان ما نغيّر الكود قبل ما يخلص المستخدم يمسحه
+          console.log("⚠️ انقطع الاتصال (لسا بانتظار مسح QR). إعادة محاولة خلال 25 ثانية...");
+          setTimeout(connectSocket, 25000);
         } else {
           console.log("⚠️ انقطع الاتصال. إعادة محاولة خلال 5 ثواني...");
           setTimeout(connectSocket, 5000);
@@ -552,6 +604,7 @@ async function connectSocket() {
       }
     } else if (connection === "open") {
       console.log("✅ البوت جاهز ومتصل بواتساب!");
+      qrPending = false; // ✅ نصفّرها بعد نجاح الاتصال — كانت تفضل true للأبد
       consecutiveLogouts = 0; // اتصال ناجح = نصفّر العدادات
       consecutiveCloses = 0;
       clearQr();
@@ -1104,7 +1157,12 @@ if (rejectChangeMatch) {
     await resolveTargetOrAsk(sock, chatId, msg, senderId, trailingText, "⚠️ ما لقيت هذا الشخص. استخدم منشن أو اسمه المسجل بالضبط.", async (target) => {
       if (poolType) {
         leaderboard.removeUserFromPool(poolType, target);
-        personalHistory.removeUserFromPool(poolType, target);
+        // ✅ نحذف بس أفضل نتيجة شخصية (اللي كانت مطابقة لسجل .توب)، مو
+        // كل تاريخه. ولو عنده نتيجة ثانية بعدها بـ.نقاطي، ندخلها تلقائياً
+        // بلوحة الصدارة (leaderboard.record يتحقق بنفسه هل تستاهل مركز
+        // فيها ولا لا — نفس منطق أي نتيجة عادية توصل وقت اللعب)
+        const nextBest = personalHistory.removeTopEntry(poolType, target);
+        if (nextBest) leaderboard.record(poolType, nextBest);
         await sock.sendMessage(
           chatId,
           { text: `🗑️ تم حذف سجل @${target.split("@")[0]} من توب فقرة ${poolLabels[poolType]}.`, mentions: [target] },
@@ -1533,6 +1591,15 @@ if (rejectChangeMatch) {
 // وحدة بس، مو عند كل إعادة اتصال بواتساب)، وبعدها نشغّل اتصال واتساب
 async function main() {
   startHealthServer(); // يفتح منفذ HTTP بسيط (يحتاجه Render وأشباهه)
+
+  // ✅ تشخيص مؤقت: نطبع استهلاك الذاكرة كل 15 دقيقة باللوق، عشان تقدر
+  // تراقب هل فيه تسرب حقيقي (رقم يصعد بلا توقف مع الوقت) أو مجرد تذبذب
+  // طبيعي (يثبت أو يرجع ينزل). راقبه أول يوم-يومين على السيرفر الجديد
+  setInterval(() => {
+    const m = process.memoryUsage();
+    const mb = (n) => (n / 1024 / 1024).toFixed(1);
+    console.log(`📊 الذاكرة: RSS=${mb(m.rss)}MB, Heap=${mb(m.heapUsed)}/${mb(m.heapTotal)}MB`);
+  }, 15 * 60 * 1000);
   await db.connect(store.getConfig().mongoUri);
   await Promise.all([
     leaderboard.loadFromDb(),
