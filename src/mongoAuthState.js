@@ -229,4 +229,14 @@ async function useMongoAuthState() {
   };
 }
 
-module.exports = { useMongoAuthState };
+// ✅ يحفظ فورًا أي تحديث جلسة معلّق بالذاكرة (بدل انتظار مؤقت الـ800ms
+// المجدول). نستخدمها قبل أي إعادة اتصال فورية (مثلاً عند 515) عشان نضمن
+// إن قاعدة البيانات محدّثة فعلاً قبل ما نبني جلسة جديدة تقرأ منها — وإلا
+// نلقى بيانات قديمة غير مسجّلة (creds.registered=false) رغم نجاح المسح
+// فعليًا، ونضطر نطلب QR من جديد بدون داعي. لو ما فيه جلسة نشطة أصلاً
+// (currentFlushNow لسا null)، ما تسوي شي — آمنة تنادى في أي وقت
+async function flushPendingAuth() {
+  if (currentFlushNow) await currentFlushNow();
+}
+
+module.exports = { useMongoAuthState, flushPendingAuth };

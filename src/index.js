@@ -12,7 +12,7 @@ const registration = require("./registration");
 const moderation = require("./moderation");
 const templates = require("./templates");
 const db = require("./db");
-const { useMongoAuthState } = require("./mongoAuthState");
+const { useMongoAuthState, flushPendingAuth } = require("./mongoAuthState");
 const { startHealthServer, setQr, clearQr } = require("./healthServer");
 const dmPermissions = require("./dmPermissions");
 const instanceLock = require("./instanceLock");
@@ -469,7 +469,12 @@ async function connectSocket() {
     authState = await useMultiFileAuthState("auth_info_baileys");
   }
   const { state, saveCreds } = authState;
-  const { version } = await fetchLatestBaileysVersion();
+  const { version, isLatest } = await fetchLatestBaileysVersion();
+  // 🔍 تشخيص: نتأكد هل فعلاً قدرنا نجيب آخر نسخة بروتوكول من الإنترنت
+  // (isLatest=true) أو رجعنا لنسخة احتياطية مدمجة بالمكتبة (isLatest=false
+  // يعني فشل طلب الشبكة، وبروتوكول واتساب يمكن رفض النسخة القديمة بـ515
+  // بشكل متكرر بدون أي علاقة بمسح QR إطلاقًا)
+  console.log(`🔍 [نسخة بروتوكول واتساب] version=${version.join(".")} | isLatest=${isLatest}`);
 
   // 🔍 تشخيص حاسم: نطبع هل الجلسة المحمّلة "مسجّلة" فعلاً عند واتساب
   // (registered=true يعني تم ربطها بنجاح قبل كذا) قبل حتى ما نحاول نتصل.
@@ -540,7 +545,16 @@ async function connectSocket() {
         // فعليًا — بالضبط اللي كان يصير. لازم نعيد الاتصال فورًا بدون
         // أي شرط ثاني (قبل حتى فحص qrPending)
         if (statusCode === DisconnectReason.restartRequired) {
-          console.log("🔁 515 (restartRequired) — إعادة اتصال فورية لإكمال تثبيت الجلسة...");
+          console.log("🔁 515 (restartRequired) — نحفظ الجلسة المعلّقة فورًا قبل إعادة الاتصال...");
+          // ✅ نجبر الكتابة المؤجلة (المجدولة أصلاً بعد 800ms) تصير الآن
+          // وننتظرها تخلص، بدل ما نعتمد على المؤقت ونعيد الاتصال قبل ما
+          // تكتمل — وإلا الجلسة الجديدة تقرأ بيانات قديمة غير مسجّلة من
+          // قاعدة البيانات رغم نجاح المسح فعليًا، ونضطر نطلب QR من جديد
+          try {
+            await flushPendingAuth();
+          } catch (e) {
+            console.error("⚠️ خطأ أثناء الحفظ الفوري قبل إعادة الاتصال:", e.message);
+          }
           setTimeout(connectSocket, 0);
           return;
         }
