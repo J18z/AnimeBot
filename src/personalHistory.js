@@ -77,18 +77,13 @@ function getTop(userId, poolType, n = DISPLAY_CAP) {
   return (bucket[poolType] || []).slice(0, n);
 }
 
-// يمسح بس أفضل نتيجة (الأسرع) من تاريخ شخص بفقرة معينة — يُستخدم مع
-// .ريسيت توب <نوع> <شخص> عشان يبقى متزامن مع لوحة الصدارة العامة (اللي
-// أصلاً تحتفظ بنفس هذي النتيجة بالضبط كسجلها الوحيد لهذا الشخص). باقي
-// تاريخه الشخصي (بقية أفضل 10 نتائج) يبقى كامل بدون أي تأثير. يرجع
-// النتيجة التالية اللي صارت الأفضل بعد الحذف (لو موجودة)، عشان المستدعي
-// يقدر يدخلها تلقائياً بلوحة الصدارة لو تستاهل مركز فيها
-function removeTopEntry(poolType, userId) {
+// يمسح تاريخ شخص بفقرة معينة (يُستخدم مع .ريسيت توب <نوع> <شخص> عشان
+// يبقى متزامن مع لوحة الصدارة العامة)
+function removeUserFromPool(poolType, userId) {
   const bucket = history.get(userId);
-  if (!bucket || !bucket[poolType] || bucket[poolType].length === 0) return null;
-  bucket[poolType].shift(); // القائمة مرتبة تصاعدياً (الأسرع أول) — نشيل بس أول عنصر
+  if (!bucket || !bucket[poolType] || bucket[poolType].length === 0) return;
+  bucket[poolType] = [];
   persistUserPool(userId, poolType);
-  return bucket[poolType][0] || null;
 }
 
 // يمسح تاريخ شخص بكل الفقرات (يُستخدم مع .ريسيت توب بدون نوع، أو
@@ -185,4 +180,4 @@ async function flushPending() {
   }
 }
 
-module.exports = { record, getTop, removeUser, removeTopEntry, resetAll, seedFromLeaderboard, loadFromDb, flushPending };
+module.exports = { record, getTop, removeUser, removeUserFromPool, resetAll, seedFromLeaderboard, loadFromDb, flushPending };
