@@ -1104,7 +1104,12 @@ if (rejectChangeMatch) {
     await resolveTargetOrAsk(sock, chatId, msg, senderId, trailingText, "⚠️ ما لقيت هذا الشخص. استخدم منشن أو اسمه المسجل بالضبط.", async (target) => {
       if (poolType) {
         leaderboard.removeUserFromPool(poolType, target);
-        personalHistory.removeUserFromPool(poolType, target);
+        // ✅ نحذف بس أفضل نتيجة شخصية (اللي كانت مطابقة لسجل .توب)، مو
+        // كل تاريخه. ولو عنده نتيجة ثانية بعدها بـ.نقاطي، ندخلها تلقائياً
+        // بلوحة الصدارة (leaderboard.record يتحقق بنفسه هل تستاهل مركز
+        // فيها ولا لا — نفس منطق أي نتيجة عادية توصل وقت اللعب)
+        const nextBest = personalHistory.removeTopEntry(poolType, target);
+        if (nextBest) leaderboard.record(poolType, nextBest);
         await sock.sendMessage(
           chatId,
           { text: `🗑️ تم حذف سجل @${target.split("@")[0]} من توب فقرة ${poolLabels[poolType]}.`, mentions: [target] },
@@ -1533,6 +1538,15 @@ if (rejectChangeMatch) {
 // وحدة بس، مو عند كل إعادة اتصال بواتساب)، وبعدها نشغّل اتصال واتساب
 async function main() {
   startHealthServer(); // يفتح منفذ HTTP بسيط (يحتاجه Render وأشباهه)
+
+  // 📊 تشخيص: نطبع استهلاك الذاكرة كل 15 دقيقة باللوق، عشان تقدر تراقب
+  // هل فيه تسرب حقيقي (رقم يصعد بلا توقف مع الوقت) أو مجرد تذبذب طبيعي
+  setInterval(() => {
+    const m = process.memoryUsage();
+    const mb = (n) => (n / 1024 / 1024).toFixed(1);
+    console.log(`📊 الذاكرة: RSS=${mb(m.rss)}MB, Heap=${mb(m.heapUsed)}/${mb(m.heapTotal)}MB`);
+  }, 15 * 60 * 1000);
+
   await db.connect(store.getConfig().mongoUri);
   await Promise.all([
     leaderboard.loadFromDb(),
