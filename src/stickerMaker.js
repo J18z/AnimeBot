@@ -21,10 +21,7 @@ function cleanup(...files) {
   }
 }
 
-async function addExif(webpBuffer, pack, author) {
-  const img = new webp.Image();
-  await img.load(webpBuffer);
-
+function buildExifPayload(pack, author) {
   const json = {
     "sticker-pack-id": "bot.reem.quiz",
     "sticker-pack-name": pack || "",
@@ -39,9 +36,64 @@ async function addExif(webpBuffer, pack, author) {
   const jsonBuffer = Buffer.from(JSON.stringify(json));
   const exif = Buffer.concat([exifAttr, jsonBuffer]);
   exif.writeUIntLE(jsonBuffer.length, 14, 4);
+  return exif;
+}
 
-  img.exif = exif;
+// ✅ إصلاح "نص الستيكر يتحرك ونص يتجمد": node-webpmux (يستخدمه addExif
+// تحت) يفكّك كل فريمات الستيكر المتحرك ويعيد بناءها من الصفر عشان يضيف
+// بيانات الباقة — وهذي بالضبط الحالة اللي فيها خطأ موثّق بمشروع libwebp
+// نفسه (Google) بعلم blend/dispose بين الفريمات لما فيه قناة شفافية:
+// فريم قديم يفضل عالق جزئياً بدل ما ينمسح، فيبين "نص يتحرك ونص واقف".
+// اختبرنا هذا فعلياً على فيديو حقيقي سبّب المشكلة — تأكدنا إن ffmpeg
+// نفسه ينتج ملف سليم 100%، والعطب يصير بالضبط بخطوة إعادة البناء هذي.
+//
+// الحل: نضيف بيانات الباقة مباشرة على مستوى الـbytes الخام لملف WebP
+// (RIFF chunks) بدون ما نلمس أي فريم إطلاقاً — بس نضيف تشنك EXIF
+// بآخر الملف ونفعّل بت العلم المناسب بترويسة VP8X. الملف الأصلي وكل
+// فريماته يبقون بالضبط زي ما طلعوا من ffmpeg، فمستحيل ينكسر شي
+function addExifRaw(webpBuffer, pack, author) {
+  const exif = buildExifPayload(pack, author);
+  const data = Buffer.from(webpBuffer); // نسخة قابلة للتعديل، ما نأثر على الأصل
+
+  const vp8xIndex = data.indexOf("VP8X");
+  if (vp8xIndex === -1) {
+    // نادر جداً (ملف متحرك بدون ترويسة VP8X) — نرمي خطأ عشان المستدعي
+    // يرجع لـaddExif (node-webpmux) كخطة بديلة بدل ما يفشل تماماً
+    throw new Error("لا توجد ترويسة VP8X بالملف");
+  }
+  const flagsPos = vp8xIndex + 8;
+  data[flagsPos] |= 0x08; // بت علم وجود EXIF (bit 3) بترويسة VP8X
+
+  const needsPad = exif.length % 2 !== 0;
+  const chunkHeader = Buffer.alloc(8);
+  chunkHeader.write("EXIF", 0, "ascii");
+  chunkHeader.writeUInt32LE(exif.length, 4);
+  const pad = needsPad ? Buffer.from([0x00]) : Buffer.alloc(0);
+
+  const result = Buffer.concat([data, chunkHeader, exif, pad]);
+  result.writeUInt32LE(result.length - 8, 4); // تحديث حجم RIFF الكامل
+  return result;
+}
+
+// الطريقة الأصلية عبر node-webpmux — نخليها للستيكرات الثابتة (فريم
+// وحيد، ما فيه فرصة لمشكلة blend/dispose بين فريمات أصلاً) وكخطة بديلة
+// لو addExifRaw فشلت لأي سبب
+async function addExif(webpBuffer, pack, author) {
+  const img = new webp.Image();
+  await img.load(webpBuffer);
+  img.exif = buildExifPayload(pack, author);
   return await img.save(null);
+}
+
+// يضيف بيانات الباقة لستيكر متحرك — يفضّل الطريقة الخام الآمنة، ولو
+// فشلت لأي سبب غير متوقع يرجع لـnode-webpmux بدل ما يكسر كل شي
+async function addExifAnimated(webpBuffer, pack, author) {
+  try {
+    return addExifRaw(webpBuffer, pack, author);
+  } catch (e) {
+    console.error("⚠️ فشلت إضافة EXIF بالطريقة الخام، رجعنا لـnode-webpmux:", e.message);
+    return await addExif(webpBuffer, pack, author);
+  }
 }
 
 async function createSticker(imageBuffer, pack, author) {
@@ -50,7 +102,7 @@ async function createSticker(imageBuffer, pack, author) {
     const img = new webp.Image();
     await img.load(imageBuffer);
     if (img.frames && img.frames.length > 1) {
-      return await addExif(imageBuffer, pack, author);
+      return await addExifAnimated(imageBuffer, pack, author);
     }
   } catch (e) {}
 
@@ -107,7 +159,7 @@ async function createAnimatedSticker(videoBuffer, pack, author) {
     });
 
     const webpBuffer = fs.readFileSync(outputPath);
-    return await addExif(webpBuffer, pack, author);
+    return await addExifAnimated(webpBuffer, pack, author);
 
   } finally {
     cleanup(inputPath, outputPath);
