@@ -143,7 +143,14 @@ async function createAnimatedSticker(videoBuffer, pack, author) {
     await new Promise((resolve, reject) => {
       ffmpeg(inputPath)
         .outputOptions([
-          '-vf', 'fps=10,scale=w=512:h=512:force_original_aspect_ratio=decrease,scale=trunc(iw/2)*2:trunc(ih/2)*2,setsar=1',
+          // نقص المربع النص من الفيديو ونكبّره لـ512×512 بالضبط — واتساب
+          // يشترط هذا المقاس تحديداً للستيكر المتحرك. جربنا قبل نحافظ على
+          // شكل الفيديو الطولي/العرضي الأصلي بدون قص (fit-within بدون
+          // مربع كامل)، وطلعت مشكلة "نص يتحرك ونص يتجمد" باستمرار حتى إن
+          // الملف نفسه كان سليم 100% لما فحصناه — يعني المشكلة مو بالملف،
+          // أغلب الظن إنها بطريقة عرض واتساب لستيكر أبعاده مو مربعة تمامًا.
+          // القص للمربع يضمن توافق كامل مع المواصفة ويلغي هذا الاحتمال نهائياً
+          '-vf', "fps=10,crop='min(iw\\,ih)':'min(iw\\,ih)',scale=512:512,setsar=1",
           '-c:v', 'libwebp',
           '-lossless', '0',
           '-q:v', '80',
