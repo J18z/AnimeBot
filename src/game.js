@@ -145,6 +145,32 @@ class Contest {
     return result.length > 0 ? result : null; // مصفوفة مصفوفات (slots)
   }
 
+  // فقرة التكرار: تسحب كلمتين لأربع كلمات (أو عدد ثابت لو محدد عبر
+  // .مستك <رقم>) من نفس بنك كلمات فقرة الكتابة (data/words.json)، وتعطي
+  // كل كلمة عدد تكرار عشوائي مستقل بين 2 و5. الفايز لازم يكتب كل كلمة
+  // العدد المطلوب بالضبط (زيادة أو نقصان = غلط)، بمسافات بينها، كلهم
+  // برسالة وحدة (مو متراكمة عبر أكثر من رسالة زي فقرة الكتابة العادية)
+  pickRepeatRound(forcedCount) {
+    const pool = store.getWords();
+    if (!pool || pool.length === 0) return null;
+
+    const keyFn = (it) => it.word[0];
+    const desired = forcedCount || Math.floor(Math.random() * 3) + 2; // 2..4
+    const count = Math.min(desired, pool.length);
+
+    const chosenKeys = new Set();
+    const result = [];
+    for (let i = 0; i < count; i++) {
+      const item = pickRandomExcluding(pool, keyFn, chosenKeys);
+      if (!item) break;
+      chosenKeys.add(keyFn(item));
+      const repeatCount = Math.floor(Math.random() * 4) + 2; // 2..5
+      result.push({ word: item.word, repeatCount });
+    }
+
+    return result.length > 0 ? result : null;
+  }
+
   // يرسل نص عادي، ويرجع كائن الرسالة المُرسلة (نحتاج توقيتها لحساب الوقت بدقة)
   async sendChat(text) {
     return this.client.sendMessage(this.chatId, { text });
@@ -170,9 +196,20 @@ class Contest {
     if (!this.active) return;
 
     const poolType = this.pickPoolType();
-    let slots, required, points, questionText, label;
+    let slots, required, points, questionText, label, repeatCounts;
 
-    if (poolType === "writing") {
+    if (poolType === "repeat") {
+      const picks = this.pickRepeatRound(this.fixedWordCount);
+      if (!picks) {
+        await this.sendChat(`⚠️ ما فيه كلمات بملف data/words.json. أضف كلمات أول.`);
+        return;
+      }
+      slots = picks.map((p) => p.word);
+      repeatCounts = picks.map((p) => p.repeatCount);
+      required = slots.length;
+      points = 1;
+      label = picks.map((p) => `${p.word[0]}(${p.repeatCount})`).join(" ");
+    } else if (poolType === "writing") {
       slots = this.pickWritingRound(this.fixedWordCount);
       if (!slots) {
         await this.sendChat(`⚠️ ما فيه كلمات بملف data/words.json. أضف كلمات أول.`);
@@ -263,6 +300,7 @@ class Contest {
       required,
       points,
       label, // "الإجابة" اللي تُعرض بلوحة الصدارة
+      repeatCounts, // بس لفقرة "تكرار": عدد التكرار المطلوب بالظبط لكل عنصر بـslots
       startTime: Date.now(), // قيمة مؤقتة، تنستبدل تحت بتوقيت واتساب الفعلي
       finished: false,
       perUser: new Map(), // userId -> Set(فهارس) — مسار كل شخص مستقل تماماً
@@ -273,7 +311,10 @@ class Contest {
 
     // إرسال السؤال بحسب نوع الفقرة — سادة بدون أي نص زائد، بادئة "س/"
     // للأسئلة و"تع/" للتعداد بس (الكتابة والصور بدون بادئة إطلاقاً)
-    if (poolType === "writing") {
+    if (poolType === "repeat") {
+      const preview = slots.map((s, i) => `*${s[0]}(${repeatCounts[i]})*`).join(" ");
+      sentMsg = await this.sendChat(preview);
+    } else if (poolType === "writing") {
       const preview = slots.map((s) => `*${s[0]}*`).join(" - ");
       sentMsg = await this.sendChat(preview);
     } else if (poolType === "images") {
@@ -447,6 +488,36 @@ class Contest {
     if (msg.pushName) this.nameCache.set(senderId, msg.pushName);
 
     const round = this.currentRound;
+
+    // ✅ فقرة "تكرار" لها نظام تحقق مختلف تماماً عن باقي الفقرات: مو
+    // تراكم عناصر عبر أكثر من رسالة (زي الكتابة)، كل رسالة لازم تكون
+    // محاولة كاملة لحالها — تحتوي كل الكلمات المطلوبة، كل وحدة مكررة
+    // العدد المطلوب بالضبط (زيادة أو نقصان = محاولة غلط بالكامل). لو
+    // غلطت، الشخص يقدر يرسل رسالة جديدة كاملة ويحاول من جديد (نفس فكرة
+    // "تصحيح برسالة ثانية" بباقي الفقرات، بس هنا المحاولة كلها من الصفر
+    // مو تكملة الجزء الناقص بس)
+    if (round.poolType === "repeat") {
+      const tokens = text.trim().split(/\s+/).filter(Boolean);
+      let allMatch = tokens.length > 0;
+      if (allMatch) {
+        for (let i = 0; i < round.slots.length; i++) {
+          const aliases = round.slots[i];
+          const need = round.repeatCounts[i];
+          let found = 0;
+          for (const tok of tokens) {
+            if (aliases.includes(tok)) found++;
+          }
+          if (found !== need) {
+            allMatch = false;
+            break;
+          }
+        }
+      }
+      if (allMatch) {
+        await this.completeRound(msg, senderId, text);
+      }
+      return;
+    }
 
     // كل شخص عنده مساره الخاص المستقل تماماً — إجابات شخص ثاني ما تأثر
     // على فرص هذا الشخص، وما تحجز عناصر تمنعه من إكمالها لحاله

@@ -250,7 +250,7 @@ async function startPractice(chatId, sock, msg, poolType, extraOpts = {}) {
   await safeStartFirstRound(chatId, sock, contest);
 }
 
-const endlessTypeLabels = { images: "صور", writing: "كتابة", counts: "تعداد", questions: "أسئلة", dismantle: "تفكيك", reverse: "عكس", scramble: "ترتيب" };
+const endlessTypeLabels = { images: "صور", writing: "كتابة", counts: "تعداد", questions: "أسئلة", dismantle: "تفكيك", reverse: "عكس", scramble: "ترتيب", repeat: "تكرار" };
 
 // يبدأ مسابقة مستمرة (ما تتوقف تلقائياً، بس بأمر إيقاف مخصص)
 async function startEndless(chatId, sock, msg, senderId, poolType, extraOpts = {}) {
@@ -307,16 +307,17 @@ const POOL_MENU_LABELS = {
   5: "تفكيك",
   6: "ترتيب",
   7: "عكس",
+  8: "تكرار",
 };
-const POOL_MENU_TYPES = { 1: "writing", 2: "images", 3: "questions", 4: "counts", 5: "dismantle", 6: "scramble", 7: "reverse" };
+const POOL_MENU_TYPES = { 1: "writing", 2: "images", 3: "questions", 4: "counts", 5: "dismantle", 6: "scramble", 7: "reverse", 8: "repeat" };
 const CLASSIC_FOUR = ["writing", "images", "questions", "counts"];
-const ALL_SEVEN = ["writing", "images", "questions", "counts", "dismantle", "scramble", "reverse"];
+const ALL_EIGHT = ["writing", "images", "questions", "counts", "dismantle", "scramble", "reverse", "repeat"];
 
 function poolSelectionMenuText() {
   let out = "🎯 اختر الفقرات (رد برقم أو أكثر مفصولين بمسافة، أو اكتب \"الكل\"):\n\n";
   out += "0. فنش عادي (كتابة، صور، أسئلة، تعداد)\n";
-  for (const n of [1, 2, 3, 4, 5, 6, 7]) out += `${n}. ${POOL_MENU_LABELS[n]}\n`;
-  out += `\n*˼‏مثال: 1 2 3 (كتابة+صور+أسئلة) — أو اكتب "الكل" لكل الفقرات السبعة⋄◟*`;
+  for (const n of [1, 2, 3, 4, 5, 6, 7, 8]) out += `${n}. ${POOL_MENU_LABELS[n]}\n`;
+  out += `\n*˼‏مثال: 1 2 3 (كتابة+صور+أسئلة) — أو اكتب "الكل" لكل الفقرات الثمانية⋄◟*`;
   return out;
 }
 
@@ -324,7 +325,7 @@ function poolSelectionMenuText() {
 // null لو الرد مو صالح (رقم غير موجود بالقائمة، أو نص فاضي)
 function parsePoolSelection(text) {
   const t = text.trim();
-  if (t === "الكل") return [...ALL_SEVEN];
+  if (t === "الكل") return [...ALL_EIGHT];
   const parts = t.split(/\s+/);
   if (parts.length === 0) return null;
   const chosen = new Set();
@@ -370,8 +371,8 @@ function isMobileEligible(userId) {
 }
 
 // أسماء عرض الفقرات + اختصاراتها (نفس اختصارات أوامر البدء بدون نقطة/ف)
-const poolLabels = { writing: "كتابة", images: "صور", questions: "أسئلة", counts: "تعداد", dismantle: "تفكيك", reverse: "عكس", scramble: "ترتيب" };
-const topTypeMap = { ص: "images", كت: "writing", تع: "counts", سس: "questions", فك: "dismantle", عك: "reverse", تر: "scramble" };
+const poolLabels = { writing: "كتابة", images: "صور", questions: "أسئلة", counts: "تعداد", dismantle: "تفكيك", reverse: "عكس", scramble: "ترتيب", repeat: "تكرار" };
+const topTypeMap = { ص: "images", كت: "writing", تع: "counts", سس: "questions", فك: "dismantle", عك: "reverse", تر: "scramble", تك: "repeat" };
 
 // يرسل قائمة سجل تراكمي مزخرفة (يستخدمها .سجل و.سجل جوالات)
 async function sendStandingsList(sock, chatId, msg, list, subtitle) {
@@ -1361,6 +1362,10 @@ if (rejectChangeMatch) {
     await startPractice(chatId, sock, msg, "scramble");
     return;
   }
+  if (text === ".تك") {
+    await startPractice(chatId, sock, msg, "repeat");
+    return;
+  }
 
   // ".كت كلمة" / "كلمتين" / ... تغيّر عدد الكلمات الافتراضي لأمر ".كت"
   const wordSetMatch = text.match(/^\.كت (كلمة|كلمتين|ثلاث كلمات|اربع كلمات|خمس كلمات)$/);
@@ -1406,6 +1411,23 @@ if (rejectChangeMatch) {
       await startEndless(chatId, sock, msg, senderId, "writing", { fixedWordCount: n, hamzaMode: h.hamzaMode });
       return;
     }
+    // ✅ .مستك بدون دعم همزات عمداً (بخلاف بقية أوامر .مس-): فقرة "تكرار"
+    // تتحقق من الإجابة بمطابقة حرفية دقيقة كاملة برسالة وحدة، فوضع
+    // الهمزات (اللي يشتغل على أول محاولة بس) ما ينطبق على نظامها أصلاً
+    const msTkMatch = text.match(/^\.مستك\s+(\d+)$/);
+    if (msTkMatch) {
+      const n = parseInt(msTkMatch[1], 10);
+      if (n < 2) {
+        await sock.sendMessage(chatId, { text: "لازم رقم 2 أو أكثر." }, { quoted: msg });
+        return;
+      }
+      if (n > 50) {
+        await sock.sendMessage(chatId, { text: "🚫 وصلت للحد الأقصى (50 كلمة بالرسالة الوحدة)." }, { quoted: msg });
+        return;
+      }
+      await startEndless(chatId, sock, msg, senderId, "repeat", { fixedWordCount: n });
+      return;
+    }
     if (h.text === ".مستف") {
       await startEndless(chatId, sock, msg, senderId, "dismantle", { hamzaMode: h.hamzaMode });
       return;
@@ -1446,6 +1468,10 @@ if (rejectChangeMatch) {
   }
   if (text === ".ستر") {
     await stopEndless(chatId, sock, msg, "scramble");
+    return;
+  }
+  if (text === ".ستك") {
+    await stopEndless(chatId, sock, msg, "repeat");
     return;
   }
 
@@ -1496,7 +1522,7 @@ if (rejectChangeMatch) {
       return;
     }
     if (contest.endless) {
-      const stopCmdFor = { writing: ".سكت", images: ".سص", questions: ".سس", counts: ".ستع", dismantle: ".ستف", reverse: ".سعك", scramble: ".ستر" };
+      const stopCmdFor = { writing: ".سكت", images: ".سص", questions: ".سس", counts: ".ستع", dismantle: ".ستف", reverse: ".سعك", scramble: ".ستر", repeat: ".ستك" };
       await sock.sendMessage(
         chatId,
         { text: `⚠️ هذي مسابقة مستمرة، ما توقف بـ .انهاء. استخدم: ${stopCmdFor[contest.contestType]}` },

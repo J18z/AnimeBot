@@ -9,7 +9,7 @@ const { getDb } = require("./db");
 // العادية (راجع game.js) — ما تحتاج أي تعامل خاص هنا غير التسجيل بقائمة
 // الأنواع عشان تنحفظ/تتصفر/تنمسح مع بقية الفقرات تلقائياً
 const WRITING_BY_COUNT = ["writing1", "writing2", "writing3", "writing4", "writing5"];
-const POOL_TYPES = ["writing", "images", "questions", "counts", "dismantle", "reverse", "scramble", ...WRITING_BY_COUNT];
+const POOL_TYPES = ["writing", "images", "questions", "counts", "dismantle", "reverse", "scramble", "repeat", ...WRITING_BY_COUNT];
 // نخزن أكثر من 5 داخلياً (30) عشان لما نفلتر لجوالات بس، يبقى فيه عمق
 // كافي نطلع منه أفضل 5 جوالات حتى لو ما كانوا بأعلى 5 عام
 const STORE_CAP = 30;
