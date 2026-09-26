@@ -14,21 +14,6 @@ let heartbeatTimer = null;
 
 // يحاول ياخذ القفل. يرجع true لو نجح (مافيه نسخة ثانية حية)، أو false لو
 // فيه نسخة ثانية شغّالة فعليًا هذي اللحظة
-//
-// ✅ إصلاح سباق تزامن (race condition): النسخة القديمة كانت تسوي findOne
-// ثم updateOne كخطوتين منفصلتين — فيه فاصل زمني بينهم (ولو أجزاء من
-// الثانية). لو نسختان استدعتا tryAcquire() بنفس اللحظة تقريباً (يصير
-// فعلياً وقت أي إعادة نشر على Render، أو لو اتعمل Deploy وبعدها Deploy
-// ثاني قبل ما ينتهي الأول)، الاثنتين ممكن تشوفان "ما فيه قفل" وتاخذانه
-// سوا، فيتصلان بواتساب بنفس الوقت بنفس الجلسة ويحصل تلف/فقد للجلسة
-// بقاعدة البيانات (كل وحدة عندها كاش منفصل بالذاكرة، وأول واحدة تحفظ
-// تمسح مفاتيح الثانية).
-//
-// الحل: عملية ذرية وحدة بس (findOneAndUpdate) بدل خطوتين. لو فيه وثيقة
-// حية فعلاً بنفس اللحظة (نسخة ثانية غير ميتة)، الـ upsert يفشل بخطأ
-// تكرار مفتاح (E11000) لأن MongoDB يمنع وثيقتين بنفس الـ_id — وهذا بالضبط
-// اللي نستخدمه كدليل إن فيه نسخة حية، بدل الاعتماد على قراءة سابقة ممكن
-// تصير قديمة (stale) لحظة التنفيذ الفعلي
 async function tryAcquire() {
   const db = getDb();
   if (!db) {
@@ -37,32 +22,22 @@ async function tryAcquire() {
   }
   const col = db.collection("botLock");
   const now = Date.now();
-  const staleThreshold = now - STALE_AFTER_MS;
+  const existing = await col.findOne({ _id: "singleton" });
 
-  try {
-    await col.findOneAndUpdate(
-      {
-        _id: "singleton",
-        // نسمح بالاستحواذ لو: الوثيقة مو موجودة أصلاً (upsert)، أو
-        // صاحبها إحنا نفسنا (تجديد)، أو صاحبها ميت (heartbeat قديم)
-        $or: [{ instanceId: INSTANCE_ID }, { heartbeatAt: { $lt: staleThreshold } }],
-      },
-      { $set: { instanceId: INSTANCE_ID, heartbeatAt: now } },
-      { upsert: true }
-    );
-  } catch (e) {
-    if (e.code === 11000) {
-      return false; // فيه نسخة ثانية حية فعلاً ماسكة القفل هذي اللحظة
-    }
-    throw e;
+  if (existing && existing.instanceId !== INSTANCE_ID && now - existing.heartbeatAt < STALE_AFTER_MS) {
+    return false; // فيه نسخة ثانية حية فعلاً
   }
+
+  await col.updateOne(
+    { _id: "singleton" },
+    { $set: { instanceId: INSTANCE_ID, heartbeatAt: now } },
+    { upsert: true }
+  );
 
   if (!heartbeatTimer) {
     heartbeatTimer = setInterval(async () => {
       try {
-        // نجدد بس لو القفل لسا لنا (فلتر instanceId) — نتفادى نسرق أو
-        // نجدد قفل نسخة ثانية بالغلط لو صار تعارض غريب
-        await col.updateOne({ _id: "singleton", instanceId: INSTANCE_ID }, { $set: { heartbeatAt: Date.now() } });
+        await col.updateOne({ _id: "singleton" }, { $set: { instanceId: INSTANCE_ID, heartbeatAt: Date.now() } });
       } catch (e) {
         console.error("⚠️ خطأ تجديد قفل النسخة:", e.message);
       }
