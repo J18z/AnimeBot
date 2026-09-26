@@ -19,6 +19,13 @@ function getWords() {
   return readJson("words.json");
 }
 
+// بنك كلمات مخصص لفقرة "تكرار" بس — كلمات قصيرة (2-4 أحرف) عشان ما
+// تتعب لما تتكرر 2-5 مرات برسالة وحدة. مفصول عن بنك الكتابة العادي
+// (اللي فيه كلمات أطول تناسب فقرة الكتابة العادية)
+function getWordsRepeat() {
+  return readJson("words_repeat.json");
+}
+
 function getCounts() {
   return readJson("counts.json");
 }
@@ -49,6 +56,7 @@ function getImagePath(fileName) {
 module.exports = {
   getQuestions,
   getWords,
+  getWordsRepeat,
   getCounts,
   getImages,
   getConfig,

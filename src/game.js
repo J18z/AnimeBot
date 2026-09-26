@@ -151,7 +151,7 @@ class Contest {
   // العدد المطلوب بالضبط (زيادة أو نقصان = غلط)، بمسافات بينها، كلهم
   // برسالة وحدة (مو متراكمة عبر أكثر من رسالة زي فقرة الكتابة العادية)
   pickRepeatRound(forcedCount) {
-    const pool = store.getWords();
+    const pool = store.getWordsRepeat();
     if (!pool || pool.length === 0) return null;
 
     const keyFn = (it) => it.word[0];
