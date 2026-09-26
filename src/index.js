@@ -12,7 +12,7 @@ const registration = require("./registration");
 const moderation = require("./moderation");
 const templates = require("./templates");
 const db = require("./db");
-const { useMongoAuthState } = require("./mongoAuthState");
+const { useMongoAuthState, flushPendingAuth } = require("./mongoAuthState");
 const { startHealthServer, setQr, clearQr } = require("./healthServer");
 const dmPermissions = require("./dmPermissions");
 const instanceLock = require("./instanceLock");
@@ -509,6 +509,14 @@ async function connectSocket() {
     }
 
     if (connection === "close") {
+      // ✅ mongoAuthState.js صار يستخدم كاش بالذاكرة + حفظ مؤجل (800ms)
+      // عشان الأداء (بدل ما كل قراءة/كتابة تضرب MongoDB مباشرة). أي
+      // اتصال جديد (connectSocket) يفتح كاش جديد من الصفر من القاعدة،
+      // فلازم نضمن كل تغيير معلّق انكتب فعلياً قبل هذا التبديل — نادي
+      // الحفظ الفوري هنا كتحوط، حتى إن التأخير بالأسفل (5 أو 8 ثواني)
+      // أطول أصلاً من مهلة التأجيل نفسها
+      await flushPendingAuth();
+
       const statusCode = new Boom(lastDisconnect?.error)?.output?.statusCode;
       const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
       if (shouldReconnect) {
