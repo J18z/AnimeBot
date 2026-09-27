@@ -1,20 +1,20 @@
-// أمر .ستيكر — يحوّل صورة/فيديو/ستيكر مردود عليه لستيكر واتساب بحقوق
-// (pack/author) مخصصة. ميزة مستقلة تمامًا عن منطق المسابقات، فُصلت هنا
-// عشان index.js يفضل مركّز على التوزيع بس، مو تفاصيل تنفيذ كل أمر.
+// أمر .ستكر — نفس فكرة .ستيكر بالضبط، بس يستخدم الطريقة القديمة لصنع
+// الستيكر (../stickerMakerOld) بدل الجديدة. الاثنين مطلوبين مع بعض بنفس
+// البوت (بطلب المستخدم)، فخليناهم بملفين منفصلين تماماً عشان أي تعديل
+// على وحدة مستقبلاً ما يأثر على الثانية.
 const { downloadContentFromMessage } = require("@whiskeysockets/baileys");
-const { createSticker, createAnimatedSticker } = require("../stickerMaker");
+const { createSticker, createAnimatedSticker } = require("../stickerMakerOld");
 
-// يرجع true لو تكفل بالرسالة (أمر ستيكر فعلاً)، و false لو مالها علاقة —
-// نفس نمط handleMatsuriMessage عشان index.js يقدر يستدعيه بنفس الطريقة
-async function handleStickerCommand(sock, msg, text, chatId) {
-  const stickerMatch = text.match(/^\.ستيكر\s+(.+)$/);
+// يرجع true لو تكفل بالرسالة (أمر .ستكر فعلاً)، و false لو مالها علاقة
+async function handleStickerOldCommand(sock, msg, text, chatId) {
+  const stickerMatch = text.match(/^\.ستكر\s+(.+)$/);
   if (!stickerMatch) return false;
 
   const raw = stickerMatch[1].trim();
   if (!raw) {
     await sock.sendMessage(
       chatId,
-      { text: "⚠️ اكتب الحقوق بعد الأمر، مثال:\n.ستيكر J18\n.ستيكر J18|فداك الستيكر" },
+      { text: "⚠️ اكتب الحقوق بعد الأمر، مثال:\n.ستكر J18\n.ستكر J18|فداك الستيكر" },
       { quoted: msg }
     );
     return true;
@@ -87,7 +87,7 @@ async function handleStickerCommand(sock, msg, text, chatId) {
       { quoted: msg }
     );
   } catch (err) {
-    console.error("⚠️ خطأ بإنشاء الستيكر:", err.message);
+    console.error("⚠️ خطأ بإنشاء الستيكر (.ستكر):", err.message);
     await sock.sendMessage(
       chatId,
       { text: `⚠️ صار خطأ: ${err.message}` },
@@ -97,4 +97,4 @@ async function handleStickerCommand(sock, msg, text, chatId) {
   return true;
 }
 
-module.exports = { handleStickerCommand };
+module.exports = { handleStickerOldCommand };

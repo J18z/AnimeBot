@@ -22,6 +22,7 @@ const roulette = require("../matsuri/roulette");
 const rasad = require("../matsuri/rasad");
 const helpText = require("./helpText");
 const { handleStickerCommand } = require("./commands/sticker");
+const { handleStickerOldCommand } = require("./commands/stickerOld");
 
 // حماية كاملة من انهيار البرنامج: Baileys أحياناً يرمي أخطاء غير متوقعة
 // من داخل عمليات خلفية (مثلاً محاولة إعادة إرسال رسالة بعد ما ينقطع
@@ -752,6 +753,8 @@ async function handleIncoming(sock, msg) {
 
   // أمر .ستيكر — منطقه الكامل بملف مستقل: commands/sticker.js
   if (await handleStickerCommand(sock, msg, text, chatId)) return;
+  // أمر .ستكر — نفس الفكرة بس بالطريقة القديمة لصنع الستيكر: commands/stickerOld.js
+  if (await handleStickerOldCommand(sock, msg, text, chatId)) return;
 
 // أمر .تسجيل جوال / .تسجيل خارجي: يحدد نوع جهاز الشخص (بالثقة، بدون تحقق تقني)
 // — مقفول بمجرد ما يسجل الشخص أول مرة، ما يقدر يغيّر نوعه مباشرة بعدها
@@ -987,7 +990,7 @@ if (rejectChangeMatch) {
   }
 
   // أمر .توب أو .توب <نوع>: يعرض أفضل الأوقات (3 لكل الفقرات، أو 5 لفقرة محددة)
-  const topMatch = text.match(/^\.توب(?:\s+(ص|كت|تع|سس|فك|عك|تر))?$/);
+  const topMatch = text.match(/^\.توب(?:\s+(ص|كت|تع|سس|فك|عك|تر|تك))?$/);
   if (topMatch) {
     const shortType = topMatch[1];
     let out, mentions;
@@ -1041,7 +1044,7 @@ if (rejectChangeMatch) {
   }
 
   // أمر .توب <نوع> جوال: زي .توب <نوع> بس بس الأشخاص المسجلين كجوال
-  const topMobileMatch = text.match(/^\.توب (ص|كت|تع|سس|فك|عك|تر) جوال$/);
+  const topMobileMatch = text.match(/^\.توب (ص|كت|تع|سس|فك|عك|تر|تك) جوال$/);
   if (topMobileMatch) {
     const poolType = topTypeMap[topMobileMatch[1]];
     const entries = leaderboard.getTopFiltered(poolType, 5, (e) => isMobileEligible(e.userId));
@@ -1075,7 +1078,7 @@ if (rejectChangeMatch) {
   // أمر .ريسيت توب أو .ريسيت توب <نوع> [@شخص/اسم]: يصفّر لوحة الصدارة
   // (كلها، أو فقرة وحدة، أو سجل شخص معين بس لو فيه منشن/اسم) — مخصص
   // لصاحب البوت بس
-  const resetTopMatch = text.match(/^\.ريسيت توب(?:\s+(ص|كت|تع|سس|فك|عك|تر))?(?:\s+(.+))?$/);
+  const resetTopMatch = text.match(/^\.ريسيت توب(?:\s+(ص|كت|تع|سس|فك|عك|تر|تك))?(?:\s+(.+))?$/);
   if (resetTopMatch) {
     if (!isOwner(senderId)) {
       await sock.sendMessage(chatId, { text: "⛔ هذا الأمر مخصص لصاحب البوت بس." }, { quoted: msg });

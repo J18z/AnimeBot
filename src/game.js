@@ -498,7 +498,13 @@ class Contest {
     // مو تكملة الجزء الناقص بس)
     if (round.poolType === "repeat") {
       const tokens = text.trim().split(/\s+/).filter(Boolean);
-      let allMatch = tokens.length > 0;
+      // ✅ تحقق صارم: عدد الكلمات بالرسالة لازم يطابق المجموع المطلوب
+      // بالضبط (مجموع كل التكرارات). أي كلمة أو حرف زيادة (حتى لو كل
+      // الكلمات المطلوبة موجودة وبالعدد الصحيح) يرفض المحاولة بالكامل —
+      // قبل هذا الشرط، كان ممكن تمرر رسالة فيها كلام إضافي زيادة على
+      // المطلوب وتُحسب صح غلط
+      const totalNeeded = round.repeatCounts.reduce((a, b) => a + b, 0);
+      let allMatch = tokens.length === totalNeeded;
       if (allMatch) {
         for (let i = 0; i < round.slots.length; i++) {
           const aliases = round.slots[i];
