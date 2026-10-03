@@ -191,6 +191,52 @@ class Contest {
     }
   }
 
+  // يرسل صورة السؤال على 3 مراحل منفصلة (قراءة ← معالجة ← إرسال) عشان نعرف
+  // بالضبط وين الفشل. المعالجة (sharp) لو فشلت نرسل الصورة الأصلية بدل ما
+  // نفشل الجولة، والإرسال نعيده حتى مرتين لو كان العطل مؤقت بالاتصال
+  async _sendImageQuestion(file) {
+    const tag = (stage, err) => Object.assign(new Error(`${stage}: ${err.message}`), { stage, cause: err });
+
+    let imageBuffer;
+    try {
+      const imagePath = store.resolveImagePath(file);
+      if (!imagePath) throw new Error(`الملف غير موجود: ${file}`);
+      imageBuffer = fs.readFileSync(imagePath);
+      if (!imageBuffer.length) throw new Error("الملف فاضي (0 بايت)");
+    } catch (err) {
+      throw tag("read", err);
+    }
+
+    let content = { image: imageBuffer, mimetype: "image/jpeg" };
+    if (sharp) {
+      try {
+        // نصغّر الصورة شوي عشان تتحمل بسرعة (WhatsApp يحب الصور الخفيفة)
+        const resized = await sharp(imageBuffer)
+          .rotate()
+          .resize(1000, 1000, { fit: "inside", withoutEnlargement: true })
+          .jpeg({ quality: 85, progressive: true })
+          .toBuffer();
+        // thumbnail يدوي — يظهر فوراً بدون "تالف"
+        const thumb = await sharp(resized).resize(120, 120, { fit: "cover" }).jpeg({ quality: 60 }).toBuffer();
+        content = { image: resized, jpegThumbnail: thumb, mimetype: "image/jpeg" };
+      } catch (err) {
+        console.error(`⚠️ sharp فشل مع ${file} — نرسل الصورة الأصلية بدون تصغير:`, err.message);
+      }
+    }
+
+    let lastErr;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        return await this.client.sendMessage(this.chatId, content);
+      } catch (err) {
+        lastErr = err;
+        console.error(`⚠️ إرسال ${file} فشل (محاولة ${attempt}/3):`, err.message);
+        if (attempt < 3) await new Promise((r) => setTimeout(r, 1500 * attempt));
+      }
+    }
+    throw tag("send", lastErr);
+  }
+
   // يبدأ جولة جديدة
   async nextRound() {
     if (!this.active) return;
@@ -319,37 +365,25 @@ class Contest {
       sentMsg = await this.sendChat(preview);
     } else if (poolType === "images") {
       try {
-        const imagePath = store.getImagePath(this._lastItem.file);
-        let imageBuffer = fs.readFileSync(imagePath);
-
-        if (sharp) {
-          // نصغّر الصورة شوي عشان تتحمل بسرعة (WhatsApp يحب الصور الخفيفة)
-          imageBuffer = await sharp(imageBuffer)
-            .resize(1000, 1000, { fit: "inside", withoutEnlargement: true })
-            .jpeg({ quality: 85, progressive: true })
-            .toBuffer();
-
-          // ✅ نولّد thumbnail يدوياً — هذا اللي يظهر فوراً بدون "تالف"
-          const thumbBuffer = await sharp(imageBuffer)
-            .resize(120, 120, { fit: "cover" })
-            .jpeg({ quality: 60 })
-            .toBuffer();
-
-          sentMsg = await this.client.sendMessage(this.chatId, {
-            image: imageBuffer,
-            jpegThumbnail: thumbBuffer, // ← المعاينة الفورية
-            mimetype: "image/jpeg",
-          });
-        } else {
-          // لو sharp مو موجود
-          sentMsg = await this.client.sendMessage(this.chatId, {
-            image: imageBuffer,
-            mimetype: "image/jpeg",
-          });
-        }
+        sentMsg = await this._sendImageQuestion(this._lastItem.file);
+        this._imgFailStreak = 0;
       } catch (e) {
         this.currentRound = null;
-        await this.sendChat(`⚠️ ما قدرت أفتح الصورة: ${this._lastItem.file}. تأكد إنها موجودة بمجلد data/images`);
+        // نسجل السبب الحقيقي بالسجلات (مرحلة الفشل + رسالة الخطأ) بدل ما
+        // نخفيه — الرسالة القديمة كانت تقول "ما قدرت أفتح الصورة" حتى لو
+        // السبب انقطاع شبكة لحظي بالإرسال، والصورة نفسها سليمة
+        console.error(`⚠️ فشل إرسال صورة ${this._lastItem.file} [مرحلة: ${e.stage || "غير معروفة"}]:`, e.cause || e);
+        this._imgFailStreak = (this._imgFailStreak || 0) + 1;
+        // بدل ما تتوقف المسابقة: نجرب صورة ثانية تلقائياً (حد أقصى 3 فشلات متتالية)
+        if (this._imgFailStreak < 3 && this.active) {
+          return this.nextRound();
+        }
+        this._imgFailStreak = 0;
+        const why =
+          e.stage === "read" ? "الملف غير موجود أو ما ينقرأ (تأكد من الاسم ومجلد data/images)"
+          : e.stage === "send" ? "فشل الإرسال لواتساب (مشكلة اتصال مؤقتة غالباً)"
+          : "مشكلة بمعالجة الصورة";
+        await this.sendChat(`⚠️ تعذّر إرسال الصورة: ${this._lastItem.file}\nالسبب: ${why}`);
         return;
       }
     } else if (poolType === "questions") {

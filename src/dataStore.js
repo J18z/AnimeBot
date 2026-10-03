@@ -46,11 +46,29 @@ function getConfig() {
     matsuriOwnerId: process.env.MATSURI_OWNER_ID || fileConfig.matsuriOwnerId,
     rouletteChatId: process.env.ROULETTE_CHAT_ID || fileConfig.rouletteChatId,
     rasadChatId: process.env.RASAD_CHAT_ID || fileConfig.rasadChatId,
+    horaChatId: process.env.HORA_CHAT_ID || fileConfig.horaChatId,
   };
 }
 
 function getImagePath(fileName) {
   return path.join(DATA_DIR, "images", fileName);
+}
+
+// يلقى الصورة حتى لو اختلفت حالة الأحرف (Musashi.JPG vs musashi.jpg) أو
+// فيه مسافة زايدة بالاسم — لينكس حساس لحالة الأحرف وويندوز لا، فصورة تشتغل
+// عندك محلياً ممكن تفشل بالسيرفر. يرجع null لو الملف فعلاً غير موجود
+function resolveImagePath(fileName) {
+  const clean = String(fileName || "").trim();
+  const exact = getImagePath(clean);
+  if (fs.existsSync(exact)) return exact;
+  try {
+    const dir = path.join(DATA_DIR, "images");
+    const lower = clean.toLowerCase();
+    const found = fs.readdirSync(dir).find((f) => f.toLowerCase() === lower);
+    return found ? path.join(dir, found) : null;
+  } catch (e) {
+    return null;
+  }
 }
 
 module.exports = {
@@ -61,5 +79,6 @@ module.exports = {
   getImages,
   getConfig,
   getImagePath,
+  resolveImagePath,
   DATA_DIR,
 };

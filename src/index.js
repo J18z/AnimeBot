@@ -18,6 +18,7 @@ const dmPermissions = require("./dmPermissions");
 const instanceLock = require("./instanceLock");
 const CONFIG = store.getConfig(); // ✅ نقرأ config مرة وحدة عند التشغيل
 const { handleMatsuriMessage } = require("../matsuri/matsuri");
+const { handleHoraMessage } = require("../hora/hora");
 const roulette = require("../matsuri/roulette");
 const rasad = require("../matsuri/rasad");
 const helpText = require("./helpText");
@@ -731,6 +732,9 @@ async function handleIncoming(sock, msg) {
   }
 
   if (await handleMatsuriMessage(sock, msg, text, chatId, senderId)) return;
+
+  // 🩸 استمارات نقابة هورا — مجلد مستقل، يشتغل فقط بقروب horaChatId
+  if (await handleHoraMessage(sock, msg, text, chatId, senderId)) return;
 
   // أمر مساعدة: يعطيك آيدي المحادثة عشان تحطه بـ config.json لو تبي تحصر البوت بقروب معين
   if (text === "شات الايدي" || text === "chat id") {
