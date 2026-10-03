@@ -20,19 +20,14 @@ const fs = require("fs");
 const path = require("path");
 const store = require("../src/dataStore");
 
-// رقم إصدار هذي الوحدة — يطلع بسجل التشغيل وبأمر "تشخيص هورا"، عشان تتأكد
-// إن السيرفر شغّال على آخر نسخة فعلاً مو نسخة قديمة
-const BUILD = "hora-r7";
-
 const BASE = __dirname;
 const SEPARATOR = /^[ \t]*@@@@[ \t]*$/m;
 
 // يوحّد أشكال الألف/التاء المربوطة/الألف المقصورة ويشيل التشكيل والتطويل
-// والمسافات الزايدة — عشان "أبراج" و"ابراج" و"انذار  عضو" كلها تضبط
+// ورموز الاتجاه الخفية والمسافات الزايدة — عشان "أبراج" و"ابراج" و"انذار
+// عضو" (حتى لو فيها مسافة إضافية أو رمز خفي من لوحة مفاتيح الجوال) تضبط
 function normalize(s) {
   return String(s || "")
-    // رموز الاتجاه/العرض الصفري غير المرئية (تنضاف أحياناً من كيبورد الجوال
-    // أو عند اللصق) — تخلّي "شموع" تبان نفسها بس ما تتطابق مع الأمر
     .replace(/[\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/g, "")
     .replace(/[\u064B-\u065F\u0670\u0640]/g, "")
     .replace(/[أإآ]/g, "ا")
@@ -108,95 +103,18 @@ function configuredChatId() {
   return cleanChatId(store.getConfig().horaChatId);
 }
 
-const warnedChats = new Set();
-let seenHoraChat = false;
-let probeCount = 0;
-
 function isHoraChat(chatId) {
   const configured = configuredChatId();
   return !!configured && cleanChatId(chatId) === configured;
 }
 
-// ينطبع مرة وحدة عند التشغيل — تشوفه بسجلات السيرفر وتتأكد المتغير وصل
-console.log(
-  `🩸 هورا [${BUILD}]: ` +
-    (configuredChatId()
-      ? `القروب المحدد = ${configuredChatId()} | أوامر محمّلة = ${index.size}`
-      : "HORA_CHAT_ID غير مضبوط — وحدة هورا معطّلة")
-);
-
 // نقطة الدخول الوحيدة — تُستدعى من index.js لكل رسالة قروب.
 // ترجع true لو تكفلت بالرسالة، و false لو مالها علاقة بهورا
 async function handleHoraMessage(sock, msg, text, chatId, senderId) {
+  if (!isHoraChat(chatId)) return false;
+
   const key = normalize(text);
   if (!key) return false;
-
-  const inHora = isHoraChat(chatId);
-
-  // probe: أي رسالة فيها "هورا" تنطبع بالسجلات (حد أقصى 20 بالتشغيل الواحد) —
-  // لو كتبت .هورا وما طلع هنا شي، يعني الرسالة ما وصلت لهذي الوحدة أصلاً
-  if (key.includes("هورا") && probeCount < 20) {
-    probeCount++;
-    console.log(`🩸 هورا [${BUILD}] probe: شات=${chatId} | هو قروب هورا=${inHora ? "نعم" : "لا"} | نص=${JSON.stringify(text)}`);
-  }
-
-  // أمر التشخيص يشتغل بأي قروب: يعرض نسخة الكود الشغّالة ونتيجة المطابقة
-  if (key === "تشخيص هورا") {
-    const conf = configuredChatId();
-    const isOwnerSender = !!store.getConfig().ownerId && senderId === store.getConfig().ownerId;
-    await sock.sendMessage(
-      chatId,
-      {
-        text:
-          `🩸 تشخيص هورا\n` +
-          `نسخة الكود: ${BUILD}\n` +
-          `أوامر محمّلة: ${index.size}\n` +
-          `آيدي هذا الشات: ${chatId}\n` +
-          `HORA_CHAT_ID: ${conf ? (isOwnerSender ? conf : "مضبوط ✅") : "❌ فاضي — المتغير ما وصل للبوت"}\n` +
-          `هل هذا قروب هورا: ${inHora ? "✅ نعم" : "❌ لا"}`,
-      },
-      { quoted: msg }
-    );
-    return true;
-  }
-
-  if (!inHora) {
-    // أمر هورا وصل من قروب غير المحدد: نسجل آيدي هذا القروب مرة وحدة بالسجلات
-    if ((index.has(key) || key === ".هورا") && !warnedChats.has(chatId)) {
-      warnedChats.add(chatId);
-      console.log(
-        `🩸 هورا: وصل أمر "${key}" من قروب غير المحدد.\n   آيدي هذا القروب: ${chatId}\n   المضبوط بـHORA_CHAT_ID: ${configuredChatId() || "(فاضي)"}`
-      );
-    }
-    // صاحب البوت يكتب .هورا بقروب غلط ← يرد عليه بسبب الفشل داخل الشات
-    if (key === ".هورا") {
-      const ownerId = store.getConfig().ownerId;
-      if (ownerId && senderId === ownerId) {
-        await sock.sendMessage(
-          chatId,
-          {
-            text:
-              `🩸 هذا القروب مو القروب المحدد لهورا (أو المتغير ما وصل).\n` +
-              `آيدي هذا الشات: ${chatId}\n` +
-              `HORA_CHAT_ID المضبوط: ${configuredChatId() || "(فاضي — المتغير ما وصل للبوت)"}`,
-          },
-          { quoted: msg }
-        );
-        return true;
-      }
-    }
-    return false;
-  }
-
-  // تشخيص: HORA_DEBUG=1 بمتغيرات البيئة يطبع كل رسالة توصل من قروب هورا
-  // (النص كما وصل بالضبط + الرموز الخفية إن وجدت + هل هو أمر معروف). بدونه
-  // يطبع سطر واحد فقط عند أول رسالة، عشان تتأكد إن قروب هورا يوصّل رسائل للبوت
-  const known = index.has(key);
-  if (process.env.HORA_DEBUG === "1" || !seenHoraChat) {
-    seenHoraChat = true;
-    const hidden = [...String(text)].filter((c) => /[\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/.test(c)).length;
-    console.log(`🩸 هورا: وصلت رسالة من قروب هورا ← نص=${JSON.stringify(text)} | بعد التطبيع=${JSON.stringify(key)} | رموز خفية=${hidden} | أمر معروف=${known ? "نعم" : "لا"}`);
-  }
 
   const parts = index.get(key);
   if (!parts) return false;

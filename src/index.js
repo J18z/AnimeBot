@@ -428,6 +428,14 @@ let consecutiveCloses = 0;
 let lastCloseTime = 0;
 const CLOSE_WINDOW_MS = 2 * 60 * 1000; // دقيقتين
 const MAX_FAST_RETRIES = 5; // بعدها نبطّئ الوتيرة بشكل كبير
+// ✅ وقت آخر اتصال ناجح (connection === "open") — نستخدمه عشان نفرّق بين
+// اتصال "استقر فعلاً" واتصال "نجح للحظة وبعدها انقطع فورًا" (تذبذب/تعارض
+// جلسات). بدون هذا، كل اتصال ولو عاش ثانية وحدة يصفّر عداد الانقطاعات
+// المتكررة، فنظام التهدئة (المفروض يوقف الحلقة بعد 5 محاولات) ما يشتغل
+// أبدًا — بالضبط اللي كان يصير
+let lastOpenTime = 0;
+let stableConnectionTimer = null;
+const MIN_STABLE_CONNECTION_MS = 30 * 1000; // 30 ثانية استقرار حقيقي
 const SLOW_RETRY_MS = 10 * 60 * 1000; // 10 دقايق بين كل محاولة بعد كذا
 
 // يمسح جلسة واتساب المخزنة (سواء بقاعدة البيانات أو ملف محلي) — يُستخدم
@@ -538,6 +546,9 @@ async function connectSocket() {
       // الحفظ الفوري هنا كتحوط، حتى إن التأخير بالأسفل (5 أو 8 ثواني)
       // أطول أصلاً من مهلة التأجيل نفسها
       await flushPendingAuth();
+      // ✅ نلغي مؤقت "تثبيت الاتصال" المعلّق — لو كان الاتصال انقطع قبل
+      // لا يوصل لـ30 ثانية، ما نبيه يصفّر عداد الانقطاعات لاحقًا بالغلط
+      clearTimeout(stableConnectionTimer);
 
       const statusCode = new Boom(lastDisconnect?.error)?.output?.statusCode;
       const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
@@ -547,9 +558,18 @@ async function connectSocket() {
         consecutiveCloses += 1;
         lastCloseTime = now;
 
+        // 🔍 تشخيص: نطبع كم ثانية عاش الاتصال قبل ما ينقطع (المدة بين آخر
+        // "open" وهذا "close"). اتصال يعيش ثواني بس بشكل متكرر = توقيع
+        // تعارض جلسات (جهازين/رقمين يحاولون يستخدموا نفس الجلسة بنفس
+        // الوقت)، مختلف تمامًا عن مشكلة شبكة عادية
+        const aliveMs = lastOpenTime ? now - lastOpenTime : null;
+        console.log(
+          `🔍 [انقطاع] سبب=${statusCode ?? "؟"} | عاش الاتصال قبله=${aliveMs !== null ? aliveMs + "ms" : "لم يفتح أصلاً"} | عداد الانقطاعات المتتالية=${consecutiveCloses}`
+        );
+
         if (consecutiveCloses > MAX_FAST_RETRIES) {
           console.error(
-            `🛑 انقطاعات متكررة (${consecutiveCloses} مرة خلال دقايق) — على الأغلب قيد مؤقت من واتساب. ` +
+            `🛑 انقطاعات متكررة (${consecutiveCloses} مرة خلال دقايق، آخر سبب: ${statusCode ?? "؟"}) — على الأغلب قيد مؤقت من واتساب أو تعارض جلسات. ` +
               `نبطّئ لمحاولة كل ${SLOW_RETRY_MS / 60000} دقايق بدل ما نستمر نقصف بسرعة.`
           );
           setTimeout(connectSocket, SLOW_RETRY_MS);
@@ -582,8 +602,18 @@ async function connectSocket() {
       }
     } else if (connection === "open") {
       console.log("✅ البوت جاهز ومتصل بواتساب!");
+      lastOpenTime = Date.now();
       consecutiveLogouts = 0; // اتصال ناجح = نصفّر العدادات
-      consecutiveCloses = 0;
+      // ✅ إصلاح مهم: ما نصفّر عداد الانقطاعات المتتالية هنا بعد، لأن
+      // "open" وحده ما يعني استقرار حقيقي — لو ينقطع بعد ثواني قليلة
+      // (تعارض جلسات مثلاً)، كان العداد يرجع صفر كل مرة وأبدًا ما يوصل
+      // لحد "التهدئة" (MAX_FAST_RETRIES)، رغم عشرات الانقطاعات المتتالية.
+      // الحين نصفّره بس لما الاتصال يثبت فترة حقيقية — نجدولها بمؤقت
+      // منفصل (بدل فحص وقت لاحق) عشان تنصفّر بالضبط لو فضل مفتوح لين كذا
+      clearTimeout(stableConnectionTimer);
+      stableConnectionTimer = setTimeout(() => {
+        consecutiveCloses = 0;
+      }, MIN_STABLE_CONNECTION_MS);
       clearQr();
     }
   });
