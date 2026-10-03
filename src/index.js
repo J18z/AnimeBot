@@ -633,6 +633,14 @@ async function handleIncoming(sock, msg) {
   if (!chatId || chatId === "status@broadcast") return;
   // بالقروبات: participant هو آيدي الشخص الفعلي. بالخاص: remoteJid هو نفسه
   const senderId = msg.key.participant || msg.key.remoteJid;
+  // 🩸 استمارات نقابة هورا — قبل بوابة allowedChats عمداً: قروب هورا المحدد
+  // بـHORA_CHAT_ID يشتغل بدون ما نضيفه لـallowedChats، وبقية أوامر البوت
+  // (مسابقات...) تبقى محصورة بالقروبات المسموحة فقط
+  if (isGroupChat(chatId)) {
+    const horaText = extractText(msg);
+    if (await handleHoraMessage(sock, msg, horaText, chatId, senderId)) return;
+  }
+
   if (!isChatAllowed(chatId, senderId)) return;
 
   const text = extractText(msg);
@@ -732,9 +740,6 @@ async function handleIncoming(sock, msg) {
   }
 
   if (await handleMatsuriMessage(sock, msg, text, chatId, senderId)) return;
-
-  // 🩸 استمارات نقابة هورا — مجلد مستقل، يشتغل فقط بقروب horaChatId
-  if (await handleHoraMessage(sock, msg, text, chatId, senderId)) return;
 
   // أمر مساعدة: يعطيك آيدي المحادثة عشان تحطه بـ config.json لو تبي تحصر البوت بقروب معين
   if (text === "شات الايدي" || text === "chat id") {

@@ -89,18 +89,58 @@ for (const entry of [...MENUS, ...COMMANDS]) {
   for (const n of entry.names) index.set(normalize(n), parts);
 }
 
-function isHoraChat(chatId) {
-  const cfg = store.getConfig();
-  return !!cfg.horaChatId && chatId === cfg.horaChatId;
+// يوحّد صيغة الآيدي: يشيل المسافات والاقتباس (شائعة عند لصق القيمة بإعدادات
+// الاستضافة)، ويكمّل "@g.us" لو انكتب الرقم بس
+function cleanChatId(raw) {
+  let id = String(raw || "").trim().replace(/^["'`]+|["'`]+$/g, "").trim();
+  if (id && !id.includes("@")) id += "@g.us";
+  return id;
 }
 
-// نقطة الدخول الوحيدة — تُستدعى من index.js لكل رسالة.
-// ترجع true لو تكفلت بالرسالة، و false لو مالها علاقة بهورا
-async function handleHoraMessage(sock, msg, text, chatId /*, senderId */) {
-  if (!isHoraChat(chatId)) return false;
+function configuredChatId() {
+  return cleanChatId(store.getConfig().horaChatId);
+}
 
+function isHoraChat(chatId) {
+  const configured = configuredChatId();
+  return !!configured && cleanChatId(chatId) === configured;
+}
+
+// ينطبع مرة وحدة عند التشغيل — تشوفه بسجلات السيرفر وتتأكد المتغير وصل
+console.log(
+  configuredChatId()
+    ? `🩸 هورا: القروب المحدد = ${configuredChatId()}`
+    : "🩸 هورا: HORA_CHAT_ID غير مضبوط — وحدة هورا معطّلة"
+);
+
+// نقطة الدخول الوحيدة — تُستدعى من index.js لكل رسالة قروب.
+// ترجع true لو تكفلت بالرسالة، و false لو مالها علاقة بهورا
+async function handleHoraMessage(sock, msg, text, chatId, senderId) {
   const key = normalize(text);
   if (!key) return false;
+
+  if (!isHoraChat(chatId)) {
+    // تشخيص: صاحب البوت يكتب "تشخيص هورا" بأي قروب ويعرف ليش ما اشتغل
+    if (key === "تشخيص هورا") {
+      const ownerId = store.getConfig().ownerId;
+      if (ownerId && senderId === ownerId) {
+        const conf = configuredChatId();
+        await sock.sendMessage(
+          chatId,
+          {
+            text:
+              `🩸 تشخيص هورا\n` +
+              `آيدي هذا الشات: ${chatId}\n` +
+              `HORA_CHAT_ID المضبوط: ${conf || "(فاضي — المتغير ما وصل للبوت)"}\n` +
+              `التطابق: ${conf && cleanChatId(chatId) === conf ? "✅ نعم" : "❌ لا"}`,
+          },
+          { quoted: msg }
+        );
+        return true;
+      }
+    }
+    return false;
+  }
 
   const parts = index.get(key);
   if (!parts) return false;
