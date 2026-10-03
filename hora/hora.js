@@ -20,6 +20,10 @@ const fs = require("fs");
 const path = require("path");
 const store = require("../src/dataStore");
 
+// رقم إصدار هذي الوحدة — يطلع بسجل التشغيل وبأمر "تشخيص هورا"، عشان تتأكد
+// إن السيرفر شغّال على آخر نسخة فعلاً مو نسخة قديمة
+const BUILD = "hora-r7";
+
 const BASE = __dirname;
 const SEPARATOR = /^[ \t]*@@@@[ \t]*$/m;
 
@@ -106,6 +110,7 @@ function configuredChatId() {
 
 const warnedChats = new Set();
 let seenHoraChat = false;
+let probeCount = 0;
 
 function isHoraChat(chatId) {
   const configured = configuredChatId();
@@ -114,9 +119,10 @@ function isHoraChat(chatId) {
 
 // ينطبع مرة وحدة عند التشغيل — تشوفه بسجلات السيرفر وتتأكد المتغير وصل
 console.log(
-  configuredChatId()
-    ? `🩸 هورا: القروب المحدد = ${configuredChatId()}`
-    : "🩸 هورا: HORA_CHAT_ID غير مضبوط — وحدة هورا معطّلة"
+  `🩸 هورا [${BUILD}]: ` +
+    (configuredChatId()
+      ? `القروب المحدد = ${configuredChatId()} | أوامر محمّلة = ${index.size}`
+      : "HORA_CHAT_ID غير مضبوط — وحدة هورا معطّلة")
 );
 
 // نقطة الدخول الوحيدة — تُستدعى من index.js لكل رسالة قروب.
@@ -125,28 +131,54 @@ async function handleHoraMessage(sock, msg, text, chatId, senderId) {
   const key = normalize(text);
   if (!key) return false;
 
-  if (!isHoraChat(chatId)) {
+  const inHora = isHoraChat(chatId);
+
+  // probe: أي رسالة فيها "هورا" تنطبع بالسجلات (حد أقصى 20 بالتشغيل الواحد) —
+  // لو كتبت .هورا وما طلع هنا شي، يعني الرسالة ما وصلت لهذي الوحدة أصلاً
+  if (key.includes("هورا") && probeCount < 20) {
+    probeCount++;
+    console.log(`🩸 هورا [${BUILD}] probe: شات=${chatId} | هو قروب هورا=${inHora ? "نعم" : "لا"} | نص=${JSON.stringify(text)}`);
+  }
+
+  // أمر التشخيص يشتغل بأي قروب: يعرض نسخة الكود الشغّالة ونتيجة المطابقة
+  if (key === "تشخيص هورا") {
+    const conf = configuredChatId();
+    const isOwnerSender = !!store.getConfig().ownerId && senderId === store.getConfig().ownerId;
+    await sock.sendMessage(
+      chatId,
+      {
+        text:
+          `🩸 تشخيص هورا\n` +
+          `نسخة الكود: ${BUILD}\n` +
+          `أوامر محمّلة: ${index.size}\n` +
+          `آيدي هذا الشات: ${chatId}\n` +
+          `HORA_CHAT_ID: ${conf ? (isOwnerSender ? conf : "مضبوط ✅") : "❌ فاضي — المتغير ما وصل للبوت"}\n` +
+          `هل هذا قروب هورا: ${inHora ? "✅ نعم" : "❌ لا"}`,
+      },
+      { quoted: msg }
+    );
+    return true;
+  }
+
+  if (!inHora) {
     // أمر هورا وصل من قروب غير المحدد: نسجل آيدي هذا القروب مرة وحدة بالسجلات
-    // عشان تقارنه بالمضبوط وتعرف بسهولة لو الآيدي غلط
     if ((index.has(key) || key === ".هورا") && !warnedChats.has(chatId)) {
       warnedChats.add(chatId);
       console.log(
         `🩸 هورا: وصل أمر "${key}" من قروب غير المحدد.\n   آيدي هذا القروب: ${chatId}\n   المضبوط بـHORA_CHAT_ID: ${configuredChatId() || "(فاضي)"}`
       );
     }
-    // تشخيص: صاحب البوت يكتب "تشخيص هورا" بأي قروب ويعرف ليش ما اشتغل
-    if (key === "تشخيص هورا" || key === ".هورا") {
+    // صاحب البوت يكتب .هورا بقروب غلط ← يرد عليه بسبب الفشل داخل الشات
+    if (key === ".هورا") {
       const ownerId = store.getConfig().ownerId;
       if (ownerId && senderId === ownerId) {
-        const conf = configuredChatId();
         await sock.sendMessage(
           chatId,
           {
             text:
               `🩸 هذا القروب مو القروب المحدد لهورا (أو المتغير ما وصل).\n` +
               `آيدي هذا الشات: ${chatId}\n` +
-              `HORA_CHAT_ID المضبوط: ${conf || "(فاضي — المتغير ما وصل للبوت)"}\n` +
-              `التطابق: ${conf && cleanChatId(chatId) === conf ? "✅ نعم" : "❌ لا"}`,
+              `HORA_CHAT_ID المضبوط: ${configuredChatId() || "(فاضي — المتغير ما وصل للبوت)"}`,
           },
           { quoted: msg }
         );
