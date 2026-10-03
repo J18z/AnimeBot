@@ -135,7 +135,7 @@ async function handleHoraMessage(sock, msg, text, chatId, senderId) {
       );
     }
     // تشخيص: صاحب البوت يكتب "تشخيص هورا" بأي قروب ويعرف ليش ما اشتغل
-    if (key === "تشخيص هورا") {
+    if (key === "تشخيص هورا" || key === ".هورا") {
       const ownerId = store.getConfig().ownerId;
       if (ownerId && senderId === ownerId) {
         const conf = configuredChatId();
@@ -143,7 +143,7 @@ async function handleHoraMessage(sock, msg, text, chatId, senderId) {
           chatId,
           {
             text:
-              `🩸 تشخيص هورا\n` +
+              `🩸 هذا القروب مو القروب المحدد لهورا (أو المتغير ما وصل).\n` +
               `آيدي هذا الشات: ${chatId}\n` +
               `HORA_CHAT_ID المضبوط: ${conf || "(فاضي — المتغير ما وصل للبوت)"}\n` +
               `التطابق: ${conf && cleanChatId(chatId) === conf ? "✅ نعم" : "❌ لا"}`,
