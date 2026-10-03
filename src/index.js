@@ -350,8 +350,27 @@ const pendingPoolSelection = new Map(); // chatId -> { starterId, mode, target/r
 const POOL_SELECTION_TIMEOUT_MS = 3 * 60 * 1000; // 3 دقايق
 
 // يستخرج النص من رسالة Baileys بمختلف أنواعها (نص عادي، رد، كابشن صورة...)
+// يفك الأغلفة اللي واتساب يلفّ فيها الرسالة: الرسائل المؤقتة (القروبات اللي
+// فيها "رسائل تختفي")، عرض لمرة وحدة، المستند مع تعليق، والرسالة المعدّلة.
+// بدون هذا الفك، نص الرسالة يطلع فاضي وكل أمر بالقروب يتجاهله البوت بصمت
+function unwrapMessageContent(m) {
+  for (let i = 0; i < 5 && m; i++) {
+    const inner =
+      m.ephemeralMessage?.message ||
+      m.viewOnceMessage?.message ||
+      m.viewOnceMessageV2?.message ||
+      m.viewOnceMessageV2Extension?.message ||
+      m.documentWithCaptionMessage?.message ||
+      m.editedMessage?.message?.protocolMessage?.editedMessage ||
+      m.editedMessage?.message;
+    if (!inner) break;
+    m = inner;
+  }
+  return m;
+}
+
 function extractText(msg) {
-  const m = msg.message;
+  const m = unwrapMessageContent(msg.message);
   if (!m) return "";
   return (
     m.conversation ||

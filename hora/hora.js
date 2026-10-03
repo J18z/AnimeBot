@@ -27,6 +27,9 @@ const SEPARATOR = /^[ \t]*@@@@[ \t]*$/m;
 // والمسافات الزايدة — عشان "أبراج" و"ابراج" و"انذار  عضو" كلها تضبط
 function normalize(s) {
   return String(s || "")
+    // رموز الاتجاه/العرض الصفري غير المرئية (تنضاف أحياناً من كيبورد الجوال
+    // أو عند اللصق) — تخلّي "شموع" تبان نفسها بس ما تتطابق مع الأمر
+    .replace(/[\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/g, "")
     .replace(/[\u064B-\u065F\u0670\u0640]/g, "")
     .replace(/[أإآ]/g, "ا")
     .replace(/ة/g, "ه")
@@ -101,6 +104,9 @@ function configuredChatId() {
   return cleanChatId(store.getConfig().horaChatId);
 }
 
+const warnedChats = new Set();
+let seenHoraChat = false;
+
 function isHoraChat(chatId) {
   const configured = configuredChatId();
   return !!configured && cleanChatId(chatId) === configured;
@@ -120,6 +126,14 @@ async function handleHoraMessage(sock, msg, text, chatId, senderId) {
   if (!key) return false;
 
   if (!isHoraChat(chatId)) {
+    // أمر هورا وصل من قروب غير المحدد: نسجل آيدي هذا القروب مرة وحدة بالسجلات
+    // عشان تقارنه بالمضبوط وتعرف بسهولة لو الآيدي غلط
+    if ((index.has(key) || key === ".هورا") && !warnedChats.has(chatId)) {
+      warnedChats.add(chatId);
+      console.log(
+        `🩸 هورا: وصل أمر "${key}" من قروب غير المحدد.\n   آيدي هذا القروب: ${chatId}\n   المضبوط بـHORA_CHAT_ID: ${configuredChatId() || "(فاضي)"}`
+      );
+    }
     // تشخيص: صاحب البوت يكتب "تشخيص هورا" بأي قروب ويعرف ليش ما اشتغل
     if (key === "تشخيص هورا") {
       const ownerId = store.getConfig().ownerId;
@@ -140,6 +154,16 @@ async function handleHoraMessage(sock, msg, text, chatId, senderId) {
       }
     }
     return false;
+  }
+
+  // تشخيص: HORA_DEBUG=1 بمتغيرات البيئة يطبع كل رسالة توصل من قروب هورا
+  // (النص كما وصل بالضبط + الرموز الخفية إن وجدت + هل هو أمر معروف). بدونه
+  // يطبع سطر واحد فقط عند أول رسالة، عشان تتأكد إن قروب هورا يوصّل رسائل للبوت
+  const known = index.has(key);
+  if (process.env.HORA_DEBUG === "1" || !seenHoraChat) {
+    seenHoraChat = true;
+    const hidden = [...String(text)].filter((c) => /[\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/.test(c)).length;
+    console.log(`🩸 هورا: وصلت رسالة من قروب هورا ← نص=${JSON.stringify(text)} | بعد التطبيع=${JSON.stringify(key)} | رموز خفية=${hidden} | أمر معروف=${known ? "نعم" : "لا"}`);
   }
 
   const parts = index.get(key);
