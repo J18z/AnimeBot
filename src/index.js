@@ -1,3 +1,4 @@
+require("./signalNoise").install(); // أول شي: يكتم سيل أخطاء التشفير قبل ما تُحمَّل أي مكتبة
 const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion } = require("@whiskeysockets/baileys");
 const { Boom } = require("@hapi/boom");
 const P = require("pino");
