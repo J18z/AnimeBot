@@ -219,7 +219,7 @@ class Contest {
       try {
         // نصغّر الصورة شوي عشان تتحمل بسرعة. بدون progressive (أبطأ
         // بالترميز وما يفيد، واتساب يعيد ضغط الصورة أصلاً)
-        const resized = await sharp(imageBuffer)
+        const resized = await sharp(imageBuffer, { sequentialRead: true })
           .rotate()
           .resize(1000, 1000, { fit: "inside", withoutEnlargement: true })
           .jpeg({ quality: 85 })

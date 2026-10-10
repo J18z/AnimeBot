@@ -45,6 +45,26 @@ let currentSock = null;
 let connecting = false;
 let cachedWaVersion = null;
 
+// كاش بيانات القروبات: صلاحية 5 دقايق، وحد أقصى 100 قروب (ما يتراكم شي)
+const groupMetaCache = new Map(); // jid -> { meta, at }
+const GROUP_META_TTL_MS = 5 * 60 * 1000;
+async function getGroupMeta(jid, getSock) {
+  const hit = groupMetaCache.get(jid);
+  if (hit && Date.now() - hit.at < GROUP_META_TTL_MS) return hit.meta;
+  const s = getSock();
+  if (!s) return undefined;
+  try {
+    const meta = await s.groupMetadata(jid);
+    groupMetaCache.delete(jid);
+    groupMetaCache.set(jid, { meta, at: Date.now() });
+    if (groupMetaCache.size > 100) groupMetaCache.delete(groupMetaCache.keys().next().value);
+    return meta;
+  } catch (e) {
+    // لو فشل الجلب وعندنا نسخة قديمة نستخدمها بدل ما نوقف الإرسال
+    return hit ? hit.meta : undefined;
+  }
+}
+
 // ✅ حماية إضافية (خط دفاع ثاني): نتجاهل أي رسالة سبق نعالجها فعلاً حسب
 // آيدي الرسالة (msg.key.id)، حتى لو وصلت من أكثر من سوكت أو تكررت لأي
 // سبب ثاني. نحتفظ بآخر 500 آيدي بس (كافي لأي تكرار خلال دقيقة) عشان
@@ -525,9 +545,22 @@ async function connectSocket() {
     syncFullHistory: false,
     shouldSyncHistoryMessage: () => false,
     shouldIgnoreJid: (jid) => !!jid && (jid === "status@broadcast" || jid.endsWith("@broadcast") || jid.endsWith("@newsletter")),
-    markOnlineOnConnect: false,
     emitOwnEvents: false,
     generateHighQualityLinkPreview: false,
+    // ✅ كاش بيانات القروب (الأعضاء/الأجهزة): بدون هذا بيليز يرسل طلب
+    // "جلب بيانات القروب" لسيرفر واتساب مع كل رسالة يرسلها البوت للقروب.
+    // بالمسابقات السريعة (رسالتين كل جولة) تتراكم مئات الطلبات، وواتساب
+    // يبدأ يحدّ منها (rate-overlimit) فيتأخر كل إرسال أكثر وأكثر لين
+    // يتجمد — وهذا يطابق وصفك (بطء متصاعد بعد عدد جولات ثم توقف)
+    cachedGroupMetadata: async (jid) => getGroupMeta(jid, () => sock),
+  });
+
+  // لو تغيّر القروب (أعضاء/إعدادات) نحذف نسخته من الكاش عشان تنجلب جديدة
+  sock.ev.on("groups.update", (events) => {
+    for (const e of events || []) if (e.id) groupMetaCache.delete(e.id);
+  });
+  sock.ev.on("group-participants.update", (e) => {
+    if (e && e.id) groupMetaCache.delete(e.id);
   });
 
   // ✅ هذا الآن هو السوكت "الرسمي" الوحيد — أي سوكت سابق انقفل فعلياً فوق
@@ -546,7 +579,19 @@ async function connectSocket() {
   sock.sendMessage = async (...args) => {
     const t0 = Date.now();
     try {
-      return await rawSendMessage(...args);
+      // ✅ مهلة 40 ثانية: إرسال (خصوصاً رفع صورة) ممكن يعلق للأبد بدون
+      // خطأ لو الاتصال بسيرفرات واتساب تدهور — وعندها المسابقة كلها
+      // تتجمد لأن الجولة التالية تنتظر هذا الإرسال. مع المهلة يفشل
+      // الإرسال بخطأ واضح، والمسابقة تجرب صورة ثانية أو تكمل
+      let timer;
+      const timeout = new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error("sendMessage timeout (40s)")), 40000);
+      });
+      try {
+        return await Promise.race([rawSendMessage(...args), timeout]);
+      } finally {
+        clearTimeout(timer);
+      }
     } finally {
       const dt = Date.now() - t0;
       if (dt > 500) {
@@ -1726,11 +1771,30 @@ async function main() {
   await instanceLock.acquireWithRetry();
   await connectSocket();
 }
-// سطر ذاكرة واحد كل 10 دقايق (كان فيه مؤقتين مكررين)
+// 📊 مراقبة: سطر ذاكرة كل 5 دقايق (مع الذاكرة الخارجية: صور/بافرات
+// وهي خارج الـHeap وهي اللي تفلت من المراقبة عادة)، وكاشف "تجمّد" المعالج:
+// لو الـevent loop تأخر أكثر من 1.5 ثانية عن موعده، نطبع تحذير — هذا يفرّق
+// بوضوح بين (الكود/المعالج مخنوق) و(الشبكة/واتساب بطيء)
 setInterval(() => {
-  const mem = process.memoryUsage();
-  console.log(`📊 الذاكرة: RSS=${(mem.rss / 1024 / 1024).toFixed(1)}MB | Heap=${(mem.heapUsed / 1024 / 1024).toFixed(1)}MB`);
-}, 10 * 60 * 1000).unref();
+  const m = process.memoryUsage();
+  const mb = (n) => (n / 1024 / 1024).toFixed(0);
+  console.log(
+    `📊 الذاكرة: RSS=${mb(m.rss)}MB | Heap=${mb(m.heapUsed)}MB | خارجية=${mb(m.external)}MB | بافرات=${mb(m.arrayBuffers)}MB | مسابقات نشطة=${activeContests.size}`
+  );
+}, 5 * 60 * 1000).unref();
+
+let lastTick = Date.now();
+let lastLagLog = 0;
+setInterval(() => {
+  const now = Date.now();
+  const lag = now - lastTick - 1000;
+  lastTick = now;
+  if (lag > 1500 && now - lastLagLog > 30000) {
+    lastLagLog = now;
+    const m = process.memoryUsage();
+    console.warn(`🐌 تجمّد المعالج ${lag}ms (RSS=${(m.rss / 1048576).toFixed(0)}MB, Heap=${(m.heapUsed / 1048576).toFixed(0)}MB)`);
+  }
+}, 1000).unref();
 
 // ✅ معالج إغلاق واحد موحّد (كان فيه معالجين، أول واحد يخلص يقتل
 // البرنامج قبل ما الثاني يحفظ بياناته). نحفظ كل شي معلّق بالتوازي مع مهلة
