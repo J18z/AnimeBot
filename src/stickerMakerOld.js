@@ -74,13 +74,12 @@ async function createSticker(imageBuffer, pack, author) {
 // فيديو → ستيكر متحرك (animated webp)
 async function createAnimatedSticker(videoBuffer, pack, author) {
   const tmpDir = "/tmp";
-  const id = Date.now();
+  const id = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`; // عشان طلبين بنفس اللحظة ما يتصادمون
   const inputPath = path.join(tmpDir, `in_${id}.mp4`);
   const outputPath = path.join(tmpDir, `out_${id}.webp`);
 
-  fs.writeFileSync(inputPath, videoBuffer);
-
   try {
+    await fs.promises.writeFile(inputPath, videoBuffer);
     // فحص مدة الفيديو
     const metadata = await new Promise((resolve, reject) => {
       ffmpeg.ffprobe(inputPath, (err, meta) => {
@@ -113,7 +112,7 @@ async function createAnimatedSticker(videoBuffer, pack, author) {
         .on('error', reject);
     });
 
-    const webpBuffer = fs.readFileSync(outputPath);
+    const webpBuffer = await fs.promises.readFile(outputPath);
     return await addExif(webpBuffer, pack, author);
 
   } finally {

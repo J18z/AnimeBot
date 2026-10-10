@@ -17,23 +17,11 @@ const instanceLock = require("./instanceLock");
 // الجلسة بالذاكرة وتخلي البوت يبطّئ تدريجيًا. هذا المتغير يشاور دايمًا
 // على آخر flushNow نشط، ونحدّثه بس كل ما صار اتصال جديد بدل ما نسجل
 // مستمع جديد من الصفر
+// معالج الإغلاق (SIGTERM/SIGINT) صار موحّد بملف index.js (كان عندنا معالجين
+// يتسابقون: أول واحد يخلص يسوي process.exit ويقطع الثاني قبل ما يحفظ
+// بياناته). هنا نكتفي بحفظ مرجع لآخر flushNow نشط
 let currentFlushNow = null;
-let shuttingDown = false;
-async function gracefulShutdown(signal) {
-  if (shuttingDown) return;
-  shuttingDown = true;
-  console.log(`🛑 استلمنا ${signal} — نحفظ جلسة واتساب المعلّقة قبل الإغلاق...`);
-  try {
-    if (currentFlushNow) await currentFlushNow();
-    await instanceLock.release();
-    console.log("✅ تم حفظ جلسة واتساب وتحرير القفل، جاهزين للإغلاق.");
-  } catch (e) {
-    console.error("⚠️ خطأ أثناء حفظ الجلسة وقت الإغلاق:", e.message);
-  }
-  process.exit(0);
-}
-process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
-process.on("SIGINT", () => gracefulShutdown("SIGINT"));
+let currentReset = null;
 
 async function useMongoAuthState() {
   const db = getDb();
@@ -55,6 +43,8 @@ async function useMongoAuthState() {
   // معالجة الرسالة الحالية بانتظارها
   const cache = new Map();
   const dirty = new Set();
+  let inflight = new Set(); // مفاتيح قيد الكتابة حالياً
+  let flushChain = Promise.resolve(); // الكتابات تتنفذ بالتسلسل
   let flushTimer = null;
 
   // ✅ إصلاح تسرب ذاكرة تراكمي ثاني: قبل هذا التعديل، الكاش كان يحتفظ
@@ -102,6 +92,12 @@ async function useMongoAuthState() {
         touch("creds");
         continue;
       }
+      if (inflight.has(oldestKey)) {
+        // ✅ المفتاح قيد الكتابة لقاعدة البيانات الآن — لو طردناه ثم احتجناه،
+        // نقرأ نسخة قديمة من القاعدة (لسا ما انكتبت الجديدة) = Bad MAC
+        touch(oldestKey);
+        continue;
+      }
       if (dirty.has(oldestKey)) {
         // فيه تغيير معلّق ما انكتب لقاعدة البيانات بعد — نضمن نحفظه أول
         // قبل ما نطرده من الذاكرة، عشان ما نفقد أي بيانات
@@ -127,27 +123,53 @@ async function useMongoAuthState() {
   // وقت إغلاق البرنامج (SIGTERM/SIGINT) عشان نضمن ما نفقد أي مفتاح جلسة
   // معلّق بالذاكرة لو صار إعادة تشغيل مفاجئة للسيرفر بنفس لحظة تحديث
   // مفتاح (هذا بالضبط كان يسبب انفكاك الجلسة المفاجئ بدون سبب واضح)
-  async function flushNow() {
+  // ✅ الكتابات تتسلسل (وحدة بعد وحدة): قبل كذا لو تداخلت كتابتان (مؤقت +
+  // إغلاق، أو فشل وإعادة محاولة)، ممكن النسخة الأقدم من مفتاح تجي للقاعدة
+  // بعد الأحدث وتكتب فوقها — جلسة تشفير قديمة = Bad MAC و"Over 2000
+  // messages into the future" (العداد عندنا متأخر عن اللي عند الطرف الثاني)
+  function flushNow() {
+    flushChain = flushChain.then(doFlush, doFlush);
+    return flushChain;
+  }
+
+  async function doFlush() {
     if (flushTimer) {
       clearTimeout(flushTimer);
       flushTimer = null;
     }
     const keysToFlush = Array.from(dirty);
     dirty.clear();
-    await Promise.all(
-      keysToFlush.map(async (id) => {
-        try {
-          if (!cache.has(id)) {
-            await col.deleteOne({ _id: id });
-          } else {
+    if (keysToFlush.length === 0) return;
+    inflight = new Set(keysToFlush);
+    // ✅ كل المفاتيح المعلّقة بعملية bulkWrite وحدة (رحلة شبكة وحدة) بدل
+    // updateOne منفصل لكل مفتاح — وبدفعات 500 كحد أقصى
+    for (let i = 0; i < keysToFlush.length; i += 500) {
+      const chunk = keysToFlush.slice(i, i + 500);
+      const ops = [];
+      for (const id of chunk) {
+        if (!cache.has(id)) {
+          ops.push({ deleteOne: { filter: { _id: id } } });
+        } else {
+          try {
             const value = JSON.stringify(cache.get(id), BufferJSON.replacer);
-            await col.updateOne({ _id: id }, { $set: { value } }, { upsert: true });
+            ops.push({ updateOne: { filter: { _id: id }, update: { $set: { value } }, upsert: true } });
+          } catch (e) {
+            console.error(`⚠️ تعذّر تحويل مفتاح جلسة (${id}):`, e.message);
           }
-        } catch (e) {
-          console.error(`⚠️ خطأ حفظ مفتاح جلسة واتساب (${id}):`, e.message);
         }
-      })
-    );
+      }
+      if (!ops.length) continue;
+      try {
+        await col.bulkWrite(ops, { ordered: false });
+      } catch (e) {
+        // فشل مؤقت: نرجّع المفاتيح للقائمة المعلّقة ونعيد المحاولة بعد شوي
+        // بدل ما نفقد تحديثات الجلسة (فقدها يسبب Bad MAC/انفكاك الجلسة)
+        console.error(`⚠️ خطأ حفظ مفاتيح جلسة واتساب (${chunk.length}):`, e.message);
+        for (const id of chunk) dirty.add(id);
+        if (!flushTimer) flushTimer = setTimeout(flushNow, 5000);
+      }
+    }
+    inflight = new Set();
   }
 
   async function readData(id) {
@@ -155,6 +177,9 @@ async function useMongoAuthState() {
       touch(id);
       return cache.get(id);
     }
+    // ✅ مفتاح انحذف بالذاكرة وحذفه لسا ما وصل للقاعدة: ما نرجعه من القاعدة
+    // (كان يرجع "ميت" من نسخة قديمة وتخرب الجلسة)
+    if (dirty.has(id) || inflight.has(id)) return null;
     // مو موجود بالكاش (اتطرد قبل كذا لقلة استخدامه، أو أصلاً ما تحمّل) —
     // رحلة شبكة نادرة بس لهالحالة تحديداً، ترجعه من قاعدة البيانات
     try {
@@ -213,6 +238,25 @@ async function useMongoAuthState() {
   // فعلاً وقت الإغلاق، بدون ما نراكم مستمعين مع كل إعادة اتصال
   currentFlushNow = flushNow;
 
+  // 🧹 تصفير تشفير المحادثات فقط: نحذف مفاتيح الجلسات الفردية
+  // (session-*) ومفاتيح القروبات (sender-key-*) بالذاكرة والقاعدة، ونبقي
+  // creds والـpre-keys ومفاتيح مزامنة التطبيق — فالبوت يبقى مربوط بدون QR،
+  // وكل محادثة تبني تشفيرها من جديد عند أول رسالة
+  const isChatKey = (id) => id.startsWith("session-") || id.startsWith("sender-key-");
+  currentReset = async function resetChatSessions() {
+    let inMemory = 0;
+    for (const id of [...cache.keys()]) {
+      if (isChatKey(id)) {
+        cache.delete(id);
+        inMemory++;
+      }
+    }
+    for (const id of [...dirty]) if (isChatKey(id)) dirty.delete(id);
+    await flushChain.catch(() => {}); // ننتظر أي كتابة جارية قبل الحذف
+    const res = await col.deleteMany({ _id: { $regex: "^(session|sender-key)-" } });
+    return { inMemory, inDb: res.deletedCount || 0 };
+  };
+
   return {
     state: {
       creds,
@@ -254,4 +298,9 @@ async function flushPendingAuth() {
   if (currentFlushNow) await currentFlushNow();
 }
 
-module.exports = { useMongoAuthState, flushPendingAuth };
+async function resetChatEncryption() {
+  if (!currentReset) throw new Error("ما فيه جلسة نشطة.");
+  return currentReset();
+}
+
+module.exports = { useMongoAuthState, flushPendingAuth, resetChatEncryption };

@@ -12,7 +12,7 @@ const registration = require("./registration");
 const moderation = require("./moderation");
 const templates = require("./templates");
 const db = require("./db");
-const { useMongoAuthState, flushPendingAuth } = require("./mongoAuthState");
+const { useMongoAuthState, flushPendingAuth, resetChatEncryption } = require("./mongoAuthState");
 const { startHealthServer, setQr, clearQr } = require("./healthServer");
 const dmPermissions = require("./dmPermissions");
 const instanceLock = require("./instanceLock");
@@ -43,6 +43,7 @@ process.on("unhandledRejection", (err) => {
 // ما يقفل القديم (اللي يفضل شغال بالخلفية ويعالج نفس الرسائل مرتين)
 let currentSock = null;
 let connecting = false;
+let cachedWaVersion = null;
 
 // ✅ حماية إضافية (خط دفاع ثاني): نتجاهل أي رسالة سبق نعالجها فعلاً حسب
 // آيدي الرسالة (msg.key.id)، حتى لو وصلت من أكثر من سوكت أو تكررت لأي
@@ -74,6 +75,7 @@ const pendingChangeRequests = new Map();
 // معينة (زي الخاص تبعه). كمان نطبع بالـ logs لو رسالة انرفضت بسبب هذا
 // القيد، عشان لو صار تجاهل غريب لمحادثة معينة يكون سببه واضح فورًا
 // بالسجلات بدل ما يفضل لغز صامت
+const loggedDisallowedChats = new Set();
 function isChatAllowed(chatId, senderId) {
   if (isOwner(senderId)) return true;
   // ✅ نستخدم CONFIG المحمّل مرة وحدة بالبداية بدل ما نعيد قراءة الملف
@@ -81,7 +83,10 @@ function isChatAllowed(chatId, senderId) {
   // بدون داعي، والقيمة أصلاً ما تتغير أثناء التشغيل عادة
   if (!CONFIG.allowedChats || CONFIG.allowedChats.length === 0) return true;
   const allowed = CONFIG.allowedChats.includes(chatId);
-  if (!allowed) {
+  if (!allowed && !loggedDisallowedChats.has(chatId)) {
+    // ✅ نطبع مرة وحدة لكل محادثة (قبل كذا كل رسالة بكل قروب غير مدرج
+    // تطبع سطر — لوق يتضخم + كتابة كونسول مع كل رسالة)
+    loggedDisallowedChats.add(chatId);
     console.log(
       `🚪 رسالة من محادثة غير مدرجة بـallowedChats (${chatId}) — تجاهلناها. لو هذا خطأ، أضف آيديها بconfig.json.`
     );
@@ -499,17 +504,40 @@ async function connectSocket() {
     authState = await useMultiFileAuthState("auth_info_baileys");
   }
   const { state, saveCreds } = authState;
-  const { version } = await fetchLatestBaileysVersion();
+  // ✅ نسخة واتساب ويب نجلبها مرة وحدة (طلب شبكة لـGitHub مع كل إعادة
+  // اتصال يبطّئ الرجوع). لو فشل الجلب نستخدم آخر نسخة معروفة أو الافتراضية
+  if (!cachedWaVersion) {
+    try {
+      const r = await fetchLatestBaileysVersion();
+      if (r && r.version) cachedWaVersion = r.version;
+    } catch (e) {
+      console.error("⚠️ تعذّر جلب نسخة واتساب، نستخدم الافتراضية:", e.message);
+    }
+  }
 
   const sock = makeWASocket({
     auth: state,
-     version,
+    ...(cachedWaVersion ? { version: cachedWaVersion } : {}),
     logger: P({ level: "silent" }),
+    // 🚀 تخفيف الحمل: ما نحتاج مزامنة السجل القديم، ولا رسائل الستاتس/
+    // البث/القنوات (بدون هذا بيليز يفك تشفير كل ستاتس ينزله أي جهة اتصال
+    // بالرقم، وهذا أكبر مستهلك مخفي للمعالج والذاكرة بالبوتات)
+    syncFullHistory: false,
+    shouldSyncHistoryMessage: () => false,
+    shouldIgnoreJid: (jid) => !!jid && (jid === "status@broadcast" || jid.endsWith("@broadcast") || jid.endsWith("@newsletter")),
+    markOnlineOnConnect: false,
+    emitOwnEvents: false,
+    generateHighQualityLinkPreview: false,
   });
 
   // ✅ هذا الآن هو السوكت "الرسمي" الوحيد — أي سوكت سابق انقفل فعلياً فوق
   currentSock = sock;
   connecting = false;
+
+  // ✅ إصلاح: أي مسابقة شغالة وقت إعادة الاتصال كانت تظل ماسكة السوكت
+  // القديم (المقفول) — فتفشل كل رسائلها بعد الانقطاع وتعلق، ويبقى السوكت
+  // القديم محجوز بالذاكرة. الحين نحوّلها للسوكت الجديد فورًا
+  for (const c of activeContests.values()) c.client = sock;
 
   // 🔍 تشخيص دقيق: نلف sock.sendMessage عشان نقيس وقت الإرسال الفعلي
   // (الشبكة/واتساب) لوحده، منفصل عن وقت تجهيز الرد بكودنا — هذا يفرق
@@ -685,14 +713,12 @@ async function handleIncoming(sock, msg) {
   // 🩸 استمارات نقابة هورا — قبل بوابة allowedChats عمداً: قروب هورا المحدد
   // بـHORA_CHAT_ID يشتغل بدون ما نضيفه لـallowedChats، وبقية أوامر البوت
   // (مسابقات...) تبقى محصورة بالقروبات المسموحة فقط
+  const text = extractText(msg); // مرة وحدة بس لكل رسالة
   if (isGroupChat(chatId)) {
-    const horaText = extractText(msg);
-    if (await handleHoraMessage(sock, msg, horaText, chatId, senderId)) return;
+    if (await handleHoraMessage(sock, msg, text, chatId, senderId)) return;
   }
 
   if (!isChatAllowed(chatId, senderId)) return;
-
-  const text = extractText(msg);
 
   // 🚪 قفل شامل للخاص: أي حد غير صاحب البوت (وغير المسموح له صراحة بأمر
   // .سماح المخفي) يرسل بالخاص، نتجاهله كليًا بصمت — ولا حتى رد واحد، ولا
@@ -1197,6 +1223,37 @@ if (rejectChangeMatch) {
     return;
   }
 
+  // أمر .تصفير_التشفير: يحذف مفاتيح تشفير المحادثات التالفة (Bad MAC /
+  // Over 2000 messages into the future) من الذاكرة وقاعدة البيانات، مع
+  // إبقاء ربط الجهاز (بدون QR). بعدها نعيد الاتصال تلقائياً. مخصص للمالك
+  if (text === ".تصفير_التشفير") {
+    if (!isOwner(senderId)) {
+      await sock.sendMessage(chatId, { text: "⛔ هذا الأمر مخصص لصاحب البوت بس." }, { quoted: msg });
+      return;
+    }
+    try {
+      const r = await resetChatEncryption();
+      await sock.sendMessage(
+        chatId,
+        {
+          text: `✅ تم تصفير تشفير المحادثات (${r.inDb} مفتاح من القاعدة).\nالربط محفوظ (بدون QR). نعيد الاتصال خلال ثواني — وأول رسالة من كل محادثة ممكن تتأخر شوي لين يتجدد التشفير.`,
+        },
+        { quoted: msg }
+      );
+      setTimeout(() => {
+        try {
+          sock.end(new Error("chat-encryption-reset"));
+        } catch (e) {
+          /* تجاهل */
+        }
+      }, 1500);
+    } catch (e) {
+      console.error("خطأ تصفير التشفير:", e);
+      await sock.sendMessage(chatId, { text: "❌ تعذّر التصفير: " + e.message }, { quoted: msg });
+    }
+    return;
+  }
+
   // أمر .سجل: يعرض السجل التراكمي (مجموع نقاط كل شخص عبر كل المسابقات
   // اللي شارك فيها 3 أشخاص فأكثر)
   if (text === ".سجل") {
@@ -1626,21 +1683,25 @@ if (rejectChangeMatch) {
   const contest = activeContests.get(chatId);
   if (contest && contest.active) {
     await contest.handleMessage(msg, text, senderId);
+  } else if (contest) {
+    activeContests.delete(chatId); // مسابقة منتهية (فاز أحد بالهدف) — نحرر ذاكرتها
   }
 }
+
+// 🧹 تنظيف دوري: مسابقات انتهت تلقائياً (وصل أحد الهدف) كانت تبقى
+// بالـMap بكل نقاطها وأسمائها وسوكتها لين تجي رسالة جديدة، وطلبات اختيار
+// فقرات/تشابه أسماء منتهية الصلاحية تبقى بدون مسح
+setInterval(() => {
+  const now = Date.now();
+  for (const [chatId, c] of activeContests) if (!c.active) activeContests.delete(chatId);
+  for (const [chatId, p] of pendingPoolSelection) if (now > p.expiresAt) pendingPoolSelection.delete(chatId);
+  for (const [id, p] of pendingDisambiguation) if (now > p.expiresAt) pendingDisambiguation.delete(id);
+}, 5 * 60 * 1000).unref();
 
 // نقطة البداية: نتصل بقاعدة البيانات ونسحب كل البيانات المحفوظة (مرة
 // وحدة بس، مو عند كل إعادة اتصال بواتساب)، وبعدها نشغّل اتصال واتساب
 async function main() {
   startHealthServer(); // يفتح منفذ HTTP بسيط (يحتاجه Render وأشباهه)
-
-  // 📊 تشخيص: نطبع استهلاك الذاكرة كل 15 دقيقة باللوق، عشان تقدر تراقب
-  // هل فيه تسرب حقيقي (رقم يصعد بلا توقف مع الوقت) أو مجرد تذبذب طبيعي
-  setInterval(() => {
-    const m = process.memoryUsage();
-    const mb = (n) => (n / 1024 / 1024).toFixed(1);
-    console.log(`📊 الذاكرة: RSS=${mb(m.rss)}MB, Heap=${mb(m.heapUsed)}/${mb(m.heapTotal)}MB`);
-  }, 15 * 60 * 1000);
 
   await db.connect(store.getConfig().mongoUri);
   await Promise.all([
@@ -1665,28 +1726,32 @@ async function main() {
   await instanceLock.acquireWithRetry();
   await connectSocket();
 }
+// سطر ذاكرة واحد كل 10 دقايق (كان فيه مؤقتين مكررين)
 setInterval(() => {
   const mem = process.memoryUsage();
   console.log(`📊 الذاكرة: RSS=${(mem.rss / 1024 / 1024).toFixed(1)}MB | Heap=${(mem.heapUsed / 1024 / 1024).toFixed(1)}MB`);
-}, 5 * 60 * 1000); // كل 5 دقايق
+}, 10 * 60 * 1000).unref();
 
-// ✅ نحرر قفل النسخة الوحيدة صراحة وقت إغلاق البرنامج (Render يبعث SIGTERM
-// وقت أي Redeploy/Restart) — بدون هذا، القفل يفضل "محجوز" باسم نسخة ميتة
-// لين تنتهي مهلة الدقيقة (STALE_AFTER_MS)، وبهالفترة ممكن يصير تداخل بين
-// النسخة القديمة (تحتضر) والجديدة (تنتظر/تحاول). التحرير الصريح هنا يخلي
-// النسخة الجديدة تاخذ القفل فورًا تقريبًا بدون أي انتظار
+// ✅ معالج إغلاق واحد موحّد (كان فيه معالجين، أول واحد يخلص يقتل
+// البرنامج قبل ما الثاني يحفظ بياناته). نحفظ كل شي معلّق بالتوازي مع مهلة
+// أمان 10 ثواني عشان ما نعلق
+let shuttingDown = false;
 async function shutdown(signal) {
-  console.log(`🛑 استلمنا ${signal} — نحرر قفل النسخة ونطفي بأمان...`);
-  try {
-    await personalHistory.flushPending();
-  } catch (e) {
-    console.error("⚠️ خطأ أثناء تفريغ السجل الشخصي المؤجل وقت الإغلاق:", e.message);
-  }
-  try {
-    await instanceLock.release();
-  } catch (e) {
-    console.error("⚠️ خطأ أثناء تحرير القفل وقت الإغلاق:", e.message);
-  }
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`🛑 استلمنا ${signal} — نحفظ كل البيانات المعلّقة ونطفي بأمان...`);
+  setTimeout(() => process.exit(0), 10000).unref();
+  const step = (name, fn) =>
+    Promise.resolve()
+      .then(fn)
+      .catch((e) => console.error(`⚠️ خطأ أثناء حفظ ${name} وقت الإغلاق:`, e.message));
+  await Promise.all([
+    step("جلسة واتساب", flushPendingAuth),
+    step("السجل الشخصي", () => personalHistory.flushPending()),
+    step("لوحة الصدارة", () => leaderboard.flushPending()),
+    step("الرصد", () => rasad.flushPending()),
+  ]);
+  await step("قفل النسخة", () => instanceLock.release());
   process.exit(0);
 }
 process.on("SIGTERM", () => shutdown("SIGTERM"));

@@ -40,20 +40,46 @@ function schedulePersist(userId, poolType) {
   pendingPersistTimers.set(key, timer);
 }
 
-// يحفظ سجل شخص واحد بفقرة معينة بقاعدة البيانات (استبدال كامل، القائمة صغيرة أصلاً)
-async function persistUserPool(userId, poolType) {
+// يحفظ سجل شخص واحد بفقرة معينة بقاعدة البيانات (استبدال كامل، القائمة
+// صغيرة أصلاً). ✅ نفس إصلاح لوحة الصدارة: حذف+إدخال بعملية وحدة
+// (bulkWrite)، وما نبدأ كتابة جديدة لنفس (شخص+فقرة) قبل ما تخلص السابقة —
+// بدون هذا، كتابتين متداخلتين تضاعفان السجلات بقاعدة البيانات
+const persistRunning = new Map(); // key -> { promise, again }
+
+async function writeUserPool(userId, poolType) {
   const db = getDb();
   if (!db) return;
-  try {
-    const col = db.collection("personalHistory");
-    await col.deleteMany({ userId, poolType });
-    const entries = getUserBucket(userId)[poolType];
-    if (entries.length > 0) {
-      await col.insertMany(entries.map((e) => ({ ...e, userId, poolType })));
-    }
-  } catch (err) {
-    console.error("خطأ حفظ السجل الشخصي:", err.message);
+  const entries = getUserBucket(userId)[poolType];
+  const ops = [{ deleteMany: { filter: { userId, poolType } } }];
+  for (const e of entries) ops.push({ insertOne: { document: { ...e, userId, poolType } } });
+  await db.collection("personalHistory").bulkWrite(ops, { ordered: true });
+}
+
+async function persistUserPool(userId, poolType) {
+  if (!getDb()) return;
+  const key = `${userId}|${poolType}`;
+  const running = persistRunning.get(key);
+  if (running) {
+    running.again = true; // تتعاد بعد الجارية بآخر بيانات
+    return running.promise;
   }
+  const state = { again: false, promise: null };
+  state.promise = (async () => {
+    try {
+      do {
+        state.again = false;
+        try {
+          await writeUserPool(userId, poolType);
+        } catch (err) {
+          console.error("خطأ حفظ السجل الشخصي:", err.message);
+        }
+      } while (state.again);
+    } finally {
+      persistRunning.delete(key); // ما يتراكم شي بالـMap
+    }
+  })();
+  persistRunning.set(key, state);
+  return state.promise;
 }
 
 // يسجل نتيجة جديدة لتاريخ شخص معين — بعكس leaderboard، هنا كل نتيجة تُضاف
@@ -153,6 +179,8 @@ async function loadFromDb() {
     let count = 0;
     for (const doc of docs) {
       const bucket = getUserBucket(doc.userId);
+      // تخطي تكرارات قديمة (نفس النتيجة بالضبط انكتبت أكثر من مرة)
+      if (bucket[doc.poolType] && bucket[doc.poolType].some((e) => e.ts === doc.ts && e.elapsed === doc.elapsed)) continue;
       if (bucket[doc.poolType]) {
         bucket[doc.poolType].push({
           userId: doc.userId,
@@ -183,6 +211,7 @@ async function flushPending() {
     const [userId, poolType] = key.split("|");
     await persistUserPool(userId, poolType);
   }
+  await Promise.all([...persistRunning.values()].map((st) => st.promise));
 }
 
 module.exports = { record, getTop, removeUser, removeTopEntry, resetAll, seedFromLeaderboard, loadFromDb, flushPending };

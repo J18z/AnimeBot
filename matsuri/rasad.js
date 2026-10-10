@@ -37,16 +37,41 @@ async function loadFromDb() {
   }
 }
 
+// ✅ حفظ الحالة مجمّع وبدون تعطيل الرد: قبل كذا كل رسالة رصد كانت تنتظر
+// كتابة MongoDB (رحلة شبكة) قبل ما يوصل "✅ تم الرصد". الحين الذاكرة
+// تتحدث فورًا والرد يطلع، والحفظ يصير بالخلفية — وما تتداخل كتابتين (لو
+// تغيّرت الحالة أثناء كتابة جارية، تنعاد مرة وحدة بآخر بيانات)
+let saving = null;
+let saveAgain = false;
 async function persist() {
-  const db = getDb();
-  if (!db) return;
-  try {
-    await db
-      .collection("matsuri_rasad")
-      .updateOne({ _id: "state" }, { $set: { totals, active, startedAt } }, { upsert: true });
-  } catch (err) {
-    console.error("خطأ حفظ بيانات الرصد:", err.message);
+  if (!getDb()) return;
+  if (saving) {
+    saveAgain = true;
+    return saving;
   }
+  saving = (async () => {
+    try {
+      do {
+        saveAgain = false;
+        try {
+          await getDb()
+            .collection("matsuri_rasad")
+            .updateOne({ _id: "state" }, { $set: { totals, active, startedAt } }, { upsert: true });
+        } catch (err) {
+          console.error("خطأ حفظ بيانات الرصد:", err.message);
+        }
+      } while (saveAgain);
+    } finally {
+      saving = null;
+    }
+  })();
+  return saving;
+}
+
+// للإغلاق الآمن: ننتظر أي حفظ جاري
+async function flushPending() {
+  if (saving) await saving;
+  await persist();
 }
 
 // سجل خام لكل رسالة تدخل قروب الرصد (لأجل .رصد_الكل و.رصد)
@@ -54,7 +79,13 @@ async function logRawMessage(msgId, senderId, text, timestamp, parsed) {
   const db = getDb();
   if (!db) return;
   try {
-    await db.collection("matsuri_rasad_log").insertOne({ msgId, senderId, text, timestamp, parsed });
+    const doc = { msgId, senderId, text, timestamp, parsed };
+    if (msgId) {
+      // upsert بالآيدي: نفس الرسالة ما تنكتب مرتين
+      await db.collection("matsuri_rasad_log").updateOne({ msgId }, { $setOnInsert: doc }, { upsert: true });
+    } else {
+      await db.collection("matsuri_rasad_log").insertOne(doc);
+    }
   } catch (err) {
     console.error("خطأ تسجيل رسالة الرصد:", err.message);
   }
@@ -337,11 +368,11 @@ async function handleRasadMessage(sock, msg, text, chatId, senderId) {
     const applied = applyEntries(entries);
 
     if (applied) {
-      await persist();
+      persist(); // بالخلفية
       if (logEntry) {
-        await markLogParsed(quoted.msgId);
+        markLogParsed(quoted.msgId);
       } else {
-        await logRawMessage(quoted.msgId, senderId, quoted.text, now, true);
+        logRawMessage(quoted.msgId, senderId, quoted.text, now, true);
       }
       await reply(sock, chatId, msg, "✅ تم الرصد.");
     } else {
@@ -353,7 +384,6 @@ async function handleRasadMessage(sock, msg, text, chatId, senderId) {
   // مو أمر معروف — رسالة عادية بالقروب
   const msgId = msg.key?.id || null;
   let parsed = false;
-  let replied = false;
 
   // نحاول نرصد بس لو الرسالة انطابقت فعلاً مع أحد أشكال الرصد المعروفة
   // (الـ parser نفسه يرفض أي سطر فيه كلام زيادة غير الاسم والمبلغ).
@@ -363,17 +393,20 @@ async function handleRasadMessage(sock, msg, text, chatId, senderId) {
   if (active && entries.length > 0) {
     parsed = applyEntries(entries);
     if (parsed) {
-      await persist();
+      persist(); // بالخلفية — الرد أول
+      logRawMessage(msgId, senderId, t, now, true); // بالخلفية
       await reply(sock, chatId, msg, "✅ تم الرصد.");
     } else {
+      logRawMessage(msgId, senderId, t, now, false);
       await reply(sock, chatId, msg, "❌ حدثت مشكلة أثناء الرصد.");
     }
-    replied = true;
+    return true;
   }
 
-  await logRawMessage(msgId, senderId, t, now, parsed);
+  // رسالة عادية ما انرصدت: نسجلها بالخلفية بدون ما نعطّل بقية المعالجة
+  logRawMessage(msgId, senderId, t, now, false);
 
-  return replied; // لو رددنا (الرصد شغال)، نوقف هنا. غير كذا نسمح لباقي البوت يكمل
+  return false; // ما رددنا: نسمح لباقي البوت يكمل
 }
 
-module.exports = { handleRasadMessage, loadFromDb, isRasadChat };
+module.exports = { handleRasadMessage, loadFromDb, isRasadChat, flushPending };

@@ -3,6 +3,7 @@
 // البوت (بطلب المستخدم)، فخليناهم بملفين منفصلين تماماً عشان أي تعديل
 // على وحدة مستقبلاً ما يأثر على الثانية.
 const { downloadContentFromMessage } = require("@whiskeysockets/baileys");
+const { streamToBuffer } = require("../mediaUtil");
 const { createSticker, createAnimatedSticker } = require("../stickerMakerOld");
 
 // يرجع true لو تكفل بالرسالة (أمر .ستكر فعلاً)، و false لو مالها علاقة
@@ -51,16 +52,13 @@ async function handleStickerOldCommand(sock, msg, text, chatId) {
 
     if (quoted.imageMessage) {
       const stream = await downloadContentFromMessage(quoted.imageMessage, "image");
-      buffer = Buffer.from([]);
-      for await (const chunk of stream) buffer = Buffer.concat([buffer, chunk]);
+      buffer = await streamToBuffer(stream);
     } else if (quoted.stickerMessage) {
       const stream = await downloadContentFromMessage(quoted.stickerMessage, "image");
-      buffer = Buffer.from([]);
-      for await (const chunk of stream) buffer = Buffer.concat([buffer, chunk]);
+      buffer = await streamToBuffer(stream);
     } else if (quoted.videoMessage) {
       const stream = await downloadContentFromMessage(quoted.videoMessage, "video");
-      buffer = Buffer.from([]);
-      for await (const chunk of stream) buffer = Buffer.concat([buffer, chunk]);
+      buffer = await streamToBuffer(stream);
       isVideo = true;
     }
 

@@ -18,19 +18,67 @@ const DISPLAY_CAP = 5;
 const board = {};
 for (const t of POOL_TYPES) board[t] = [];
 
-// يحفظ كامل قائمة فقرة معينة بقاعدة البيانات (استبدال كامل، القائمة صغيرة أصلاً)
-async function persistPool(poolType) {
+// ✅ إصلاح مهم: الحفظ القديم كان deleteMany ثم insertMany كخطوتين، وكل
+// تسجيل نتيجة يطلقه فورًا بدون انتظار السابق. لو جا تسجيلان متقاربان،
+// خطواتهم تتداخل (حذف، حذف، إدخال، إدخال) فتنكتب كل السجلات مرتين
+// بقاعدة البيانات — وعند كل تشغيل جديد كانت تنقرأ مكررة (تراكم بيانات
+// بلا فايدة + قوائم توب فيها نفس الشخص أكثر من مرة). الحين:
+//  1) الحفظ مؤجل ومجمّع (ثانية ونص) — عدة تحديثات متتالية = كتابة وحدة
+//  2) حذف + إدخال بعملية bulkWrite وحدة (رحلة شبكة واحدة)
+//  3) ما نبدأ كتابة جديدة لنفس الفقرة قبل ما تخلص السابقة
+const PERSIST_DEBOUNCE_MS = 1500;
+const persistTimers = new Map(); // poolType -> timeout
+const persistRunning = new Map(); // poolType -> Promise جاري
+const persistAgain = new Set(); // فقرات تغيّرت أثناء كتابة جارية
+
+async function writePool(poolType) {
   const db = getDb();
   if (!db) return;
-  try {
-    const col = db.collection("leaderboard");
-    await col.deleteMany({ poolType });
-    if (board[poolType].length > 0) {
-      await col.insertMany(board[poolType].map((e) => ({ ...e, poolType })));
-    }
-  } catch (err) {
-    console.error("خطأ حفظ لوحة الصدارة:", err.message);
+  const ops = [{ deleteMany: { filter: { poolType } } }];
+  for (const e of board[poolType]) ops.push({ insertOne: { document: { ...e, poolType } } });
+  await db.collection("leaderboard").bulkWrite(ops, { ordered: true });
+}
+
+async function runPersist(poolType) {
+  if (persistRunning.has(poolType)) {
+    persistAgain.add(poolType); // نعيدها بعد ما تخلص الجارية، بآخر بيانات
+    return persistRunning.get(poolType);
   }
+  const p = (async () => {
+    try {
+      do {
+        persistAgain.delete(poolType);
+        try {
+          await writePool(poolType);
+        } catch (err) {
+          console.error("خطأ حفظ لوحة الصدارة:", err.message);
+        }
+      } while (persistAgain.has(poolType));
+    } finally {
+      persistRunning.delete(poolType);
+    }
+  })();
+  persistRunning.set(poolType, p);
+  return p;
+}
+
+function persistPool(poolType) {
+  if (!getDb()) return;
+  if (persistTimers.has(poolType)) return; // فيه كتابة مجدولة، بتاخذ آخر بيانات
+  const t = setTimeout(() => {
+    persistTimers.delete(poolType);
+    runPersist(poolType);
+  }, PERSIST_DEBOUNCE_MS);
+  persistTimers.set(poolType, t);
+}
+
+// يفرّغ كل الكتابات المؤجلة فورًا (وقت إغلاق البرنامج)
+async function flushPending() {
+  const pools = [...persistTimers.keys()];
+  for (const t of persistTimers.values()) clearTimeout(t);
+  persistTimers.clear();
+  await Promise.all(pools.map((p) => runPersist(p)));
+  await Promise.all([...persistRunning.values()]);
 }
 
 // يسجل نتيجة جديدة — كل شخص له سجل واحد بس بكل فقرة (أفضل وقت له).
@@ -99,23 +147,35 @@ async function loadFromDb() {
   try {
     const docs = await db.collection("leaderboard").find({}).toArray();
     let count = 0;
+    const dirtyPools = new Set();
     for (const doc of docs) {
-      if (board[doc.poolType]) {
-        board[doc.poolType].push({
-          userId: doc.userId,
-          displayName: doc.displayName,
-          elapsed: doc.elapsed,
-          answer: doc.answer,
-          ts: doc.ts,
-        });
-        count++;
+      if (!board[doc.poolType]) continue;
+      const entry = {
+        userId: doc.userId,
+        displayName: doc.displayName,
+        elapsed: doc.elapsed,
+        answer: doc.answer,
+        ts: doc.ts,
+      };
+      // تنظيف تكرارات قديمة: شخص واحد = سجل واحد بالفقرة (الأفضل وقتاً)
+      const idx = board[doc.poolType].findIndex((e) => e.userId === entry.userId);
+      if (idx !== -1) {
+        dirtyPools.add(doc.poolType);
+        if (entry.elapsed < board[doc.poolType][idx].elapsed) board[doc.poolType][idx] = entry;
+        continue;
       }
+      board[doc.poolType].push(entry);
+      count++;
     }
     for (const t of POOL_TYPES) board[t].sort((a, b) => a.elapsed - b.elapsed);
     console.log(`📥 تحميل ${count} سجل لوحة صدارة من قاعدة البيانات.`);
+    if (dirtyPools.size) {
+      console.log(`🧹 نظّفنا سجلات مكررة قديمة بلوحة الصدارة (${[...dirtyPools].join("، ")}).`);
+      for (const t of dirtyPools) persistPool(t);
+    }
   } catch (err) {
     console.error("خطأ تحميل لوحة الصدارة:", err.message);
   }
 }
 
-module.exports = { record, getTop, getTopFiltered, getAllTypes, reset, removeUser, removeUserFromPool, loadFromDb };
+module.exports = { record, getTop, getTopFiltered, getAllTypes, reset, removeUser, removeUserFromPool, loadFromDb, flushPending };

@@ -10,15 +10,25 @@ const totals = new Map(); // userId -> { displayName, points, wins }
 // حد يلعب لحاله ويكدس نقاط بدون منافسة حقيقية
 const MIN_PLAYERS = 2;
 
-async function persistOne(userId) {
+// ✅ كتابة دفعة وحدة (bulkWrite) لكل المشاركين بدل updateOne منفصل لكل
+// شخص — نهاية مسابقة فيها 100+ مشارك كانت تطلق 100+ طلب شبكة بنفس اللحظة
+async function persistMany(userIds) {
   const db = getDb();
-  if (!db) return;
+  if (!db || userIds.length === 0) return;
   try {
-    const e = totals.get(userId);
-    if (!e) return;
-    await db
-      .collection("standings")
-      .updateOne({ _id: userId }, { $set: { displayName: e.displayName, points: e.points, wins: e.wins } }, { upsert: true });
+    const ops = [];
+    for (const userId of userIds) {
+      const e = totals.get(userId);
+      if (!e) continue;
+      ops.push({
+        updateOne: {
+          filter: { _id: userId },
+          update: { $set: { displayName: e.displayName, points: e.points, wins: e.wins } },
+          upsert: true,
+        },
+      });
+    }
+    if (ops.length) await db.collection("standings").bulkWrite(ops, { ordered: false });
   } catch (err) {
     console.error("خطأ حفظ السجل:", err.message);
   }
@@ -40,6 +50,7 @@ function addContestResult(scoresMap, nameCache, options = {}) {
   }
   const countWin = options.countWin !== false && winnerPoints > 0;
 
+  const touched = [];
   for (const [userId, points] of scoresMap.entries()) {
     const displayName = (nameCache && nameCache.get(userId)) || userId.split("@")[0];
     const current = totals.get(userId) || { displayName, points: 0, wins: 0 };
@@ -47,8 +58,9 @@ function addContestResult(scoresMap, nameCache, options = {}) {
     current.displayName = displayName;
     if (countWin && userId === winnerId) current.wins += 1;
     totals.set(userId, current);
-    persistOne(userId); // بدون انتظار
+    touched.push(userId);
   }
+  persistMany(touched); // بدون انتظار
 }
 
 function getStandings() {

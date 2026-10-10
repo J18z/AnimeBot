@@ -2,6 +2,7 @@
 // (pack/author) مخصصة. ميزة مستقلة تمامًا عن منطق المسابقات، فُصلت هنا
 // عشان index.js يفضل مركّز على التوزيع بس، مو تفاصيل تنفيذ كل أمر.
 const { downloadContentFromMessage } = require("@whiskeysockets/baileys");
+const { streamToBuffer } = require("../mediaUtil");
 const { createSticker, createAnimatedSticker } = require("../stickerMaker");
 
 // يرجع true لو تكفل بالرسالة (أمر ستيكر فعلاً)، و false لو مالها علاقة —
@@ -51,16 +52,13 @@ async function handleStickerCommand(sock, msg, text, chatId) {
 
     if (quoted.imageMessage) {
       const stream = await downloadContentFromMessage(quoted.imageMessage, "image");
-      buffer = Buffer.from([]);
-      for await (const chunk of stream) buffer = Buffer.concat([buffer, chunk]);
+      buffer = await streamToBuffer(stream);
     } else if (quoted.stickerMessage) {
       const stream = await downloadContentFromMessage(quoted.stickerMessage, "image");
-      buffer = Buffer.from([]);
-      for await (const chunk of stream) buffer = Buffer.concat([buffer, chunk]);
+      buffer = await streamToBuffer(stream);
     } else if (quoted.videoMessage) {
       const stream = await downloadContentFromMessage(quoted.videoMessage, "video");
-      buffer = Buffer.from([]);
-      for await (const chunk of stream) buffer = Buffer.concat([buffer, chunk]);
+      buffer = await streamToBuffer(stream);
       isVideo = true;
     }
 

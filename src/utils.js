@@ -185,6 +185,43 @@ function unwrapHamza(text, pattern) {
   return middle.slice(1, -1);
 }
 
+/**
+ * ✅ نسخة محسّنة من findAllMatches للجولات: تطبيع الإجابات المقبولة
+ * (كل الصيغ + ترتيبها) يتم مرة وحدة بس لكل جولة (prepareSlots) بدل ما
+ * يتكرر مع كل رسالة من كل متسابق — أيام السبام الكثيف كان هذا يعيد
+ * تطبيع نفس الإجابات مئات المرات بالثانية. النتيجة نفس نتيجة
+ * findAllMatches بالضبط.
+ */
+function prepareSlots(slots, relaxed = false) {
+  const normalize = relaxed ? normalizeRelaxed : normalizeWritingRelaxed;
+  const candidates = [];
+  slots.forEach((aliases, idx) => {
+    aliases.forEach((alias) => {
+      const norm = normalize(alias);
+      if (norm) candidates.push({ idx, norm, pattern: " " + norm + " ", wordCount: norm.split(" ").length });
+    });
+  });
+  candidates.sort((a, b) => b.wordCount - a.wordCount);
+  return { candidates, relaxed };
+}
+
+function findAllMatchesPrepared(message, prepared, claimedSet) {
+  const normalize = prepared.relaxed ? normalizeRelaxed : normalizeWritingRelaxed;
+  let text = " " + normalize(message) + " ";
+  const claimedNow = [];
+  const usedIdx = new Set();
+  for (const c of prepared.candidates) {
+    if (claimedSet.has(c.idx) || usedIdx.has(c.idx)) continue;
+    const pos = text.indexOf(c.pattern);
+    if (pos !== -1) {
+      claimedNow.push(c.idx);
+      usedIdx.add(c.idx);
+      text = text.slice(0, pos + 1) + text.slice(pos + c.pattern.length - 1);
+    }
+  }
+  return claimedNow;
+}
+
 module.exports = {
   normalizeText,
   normalizeRelaxed,
@@ -194,6 +231,8 @@ module.exports = {
   shuffle,
   formatSeconds,
   findAllMatches,
+  prepareSlots,
+  findAllMatchesPrepared,
   parseHamzaPattern,
   unwrapHamza,
 };

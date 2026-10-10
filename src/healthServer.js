@@ -69,6 +69,28 @@ function startHealthServer() {
     .listen(port, () => {
       console.log(`🌐 سيرفر الفحص الصحي شغال على المنفذ ${port}`);
     });
+
+  // 💤 منع نوم الخدمة: خطة Render المجانية توقف الخدمة بعد ~15 دقيقة بدون
+  // أي زيارة HTTP، وأول رسالة بعدها تنتظر إقلاع كامل من الصفر (هذا بالضبط
+  // "البطء" اللي يظهر بعد فترة هدوء). Render يعطينا RENDER_EXTERNAL_URL
+  // تلقائياً، فنزور نفسنا كل 10 دقايق. لتعطيله: KEEP_ALIVE=0 بمتغيرات البيئة
+  // (مو لازم لو تستخدم UptimeRobot أو خطة مدفوعة، بس ما يضر)
+  const selfUrl = process.env.RENDER_EXTERNAL_URL;
+  if (selfUrl && process.env.KEEP_ALIVE !== "0") {
+    const lib = selfUrl.startsWith("https") ? require("https") : http;
+    setInterval(() => {
+      try {
+        lib
+          .get(selfUrl, { timeout: 10000 }, (res) => res.resume())
+          .on("error", () => {})
+          .on("timeout", function () {
+            this.destroy();
+          });
+      } catch (e) {
+        /* تجاهل */
+      }
+    }, 10 * 60 * 1000).unref();
+  }
 }
 
 module.exports = { startHealthServer, setQr, clearQr };

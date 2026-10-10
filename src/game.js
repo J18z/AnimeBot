@@ -1,5 +1,5 @@
 const fs = require("fs");
-const { pickRandom, shuffle, formatSeconds, findAllMatches, parseHamzaPattern, unwrapHamza } = require("./utils");
+const { pickRandom, shuffle, formatSeconds, prepareSlots, findAllMatchesPrepared, parseHamzaPattern, unwrapHamza } = require("./utils");
 const store = require("./dataStore");
 const leaderboard = require("./leaderboard");
 const personalHistory = require("./personalHistory");
@@ -8,7 +8,14 @@ const moderation = require("./moderation");
 const registration = require("./registration");
 const templates = require("./templates");
 let sharp;
-try { sharp = require("sharp"); } catch (e) { sharp = null; }
+try {
+  sharp = require("sharp");
+  // ✅ كل صورة تُعالج مرة وحدة بس، فكاش sharp الداخلي ما يفيد ويحجز ذاكرة.
+  // وخيط واحد لـlibvips: بسيرفر صغير (Render) os.cpus() يعرض أنوية
+  // الجهاز المضيف كلها فيفتح خيوط كثيرة تتزاحم على معالج ضئيل
+  sharp.cache(false);
+  sharp.concurrency(1);
+} catch (e) { sharp = null; }
 // هامش زمني ثابت وصغير (مو متغيّر أو متوقّع) نطرحه من وقت أي إجابة، تعويض
 // تقريبي بسيط لزمن وصول رسالة السؤال قبل ما يبدأ المتسابق يقرأها. متعمد
 // إنه رقم ثابت صغير (مو تخمين ديناميكي) عشان يبقى الوقت المعروض ثابت
@@ -191,17 +198,17 @@ class Contest {
     }
   }
 
-  // يرسل صورة السؤال على 3 مراحل منفصلة (قراءة ← معالجة ← إرسال) عشان نعرف
-  // بالضبط وين الفشل. المعالجة (sharp) لو فشلت نرسل الصورة الأصلية بدل ما
-  // نفشل الجولة، والإرسال نعيده حتى مرتين لو كان العطل مؤقت بالاتصال
-  async _sendImageQuestion(file) {
+  // يجهّز محتوى الصورة (قراءة ← تصغير). مفصولة عن الإرسال عشان نقدر
+  // نجهّز صورة السؤال القادم بالخلفية أثناء ما المتسابقين يجاوبون على
+  // السؤال الحالي، فتطلع الصورة فور بدء الجولة بدل ما ننتظر المعالجة
+  async _prepareImage(file) {
     const tag = (stage, err) => Object.assign(new Error(`${stage}: ${err.message}`), { stage, cause: err });
 
     let imageBuffer;
     try {
       const imagePath = store.resolveImagePath(file);
       if (!imagePath) throw new Error(`الملف غير موجود: ${file}`);
-      imageBuffer = fs.readFileSync(imagePath);
+      imageBuffer = await fs.promises.readFile(imagePath); // غير متزامن: ما يوقف باقي الرسائل
       if (!imageBuffer.length) throw new Error("الملف فاضي (0 بايت)");
     } catch (err) {
       throw tag("read", err);
@@ -210,11 +217,12 @@ class Contest {
     let content = { image: imageBuffer, mimetype: "image/jpeg" };
     if (sharp) {
       try {
-        // نصغّر الصورة شوي عشان تتحمل بسرعة (WhatsApp يحب الصور الخفيفة)
+        // نصغّر الصورة شوي عشان تتحمل بسرعة. بدون progressive (أبطأ
+        // بالترميز وما يفيد، واتساب يعيد ضغط الصورة أصلاً)
         const resized = await sharp(imageBuffer)
           .rotate()
           .resize(1000, 1000, { fit: "inside", withoutEnlargement: true })
-          .jpeg({ quality: 85, progressive: true })
+          .jpeg({ quality: 85 })
           .toBuffer();
         // thumbnail يدوي — يظهر فوراً بدون "تالف"
         const thumb = await sharp(resized).resize(120, 120, { fit: "cover" }).jpeg({ quality: 60 }).toBuffer();
@@ -222,6 +230,22 @@ class Contest {
       } catch (err) {
         console.error(`⚠️ sharp فشل مع ${file} — نرسل الصورة الأصلية بدون تصغير:`, err.message);
       }
+    }
+    return content;
+  }
+
+  // يرسل صورة السؤال (المحتوى جاهز مسبقاً لو الجلب المسبق نجح). الإرسال
+  // نعيده حتى مرتين لو كان العطل مؤقت بالاتصال
+  async _sendImageQuestion(file) {
+    const tag = (stage, err) => Object.assign(new Error(`${stage}: ${err.message}`), { stage, cause: err });
+
+    let content;
+    const pre = this._prefetched;
+    this._prefetched = null; // نفرّغ المرجع دايماً — ما نحتفظ بالصورة بالذاكرة بعد استخدامها
+    if (pre && pre.file === file) {
+      content = await pre.promise; // لو فشل التجهيز المسبق يرمي نفس خطأ المرحلة الأصلية
+    } else {
+      content = await this._prepareImage(file);
     }
 
     let lastErr;
@@ -237,11 +261,40 @@ class Contest {
     throw tag("send", lastErr);
   }
 
+  // 🚀 جلب مسبق: نقرر نوع الجولة القادمة من الحين، ولو صور نجهّز صورتها
+  // بالخلفية. نحتفظ بصورة وحدة بس كحد أقصى، وتنمسح فور استخدامها أو
+  // عند انتهاء المسابقة (ما يتراكم شي)
+  _planNextRound() {
+    if (this.practiceMode || !this.active) return;
+    try {
+      const nextType = this.pickPoolType();
+      this._plannedPoolType = nextType;
+      if (nextType !== "images") return;
+      const item = this.pickItem("images");
+      if (!item) return;
+      this._plannedImageItem = item;
+      const promise = this._prepareImage(item.file);
+      promise.catch(() => {}); // الخطأ يُعالج وقت الاستخدام الفعلي
+      this._prefetched = { file: item.file, promise };
+    } catch (e) {
+      this._plannedPoolType = null;
+      this._plannedImageItem = null;
+      this._prefetched = null;
+    }
+  }
+
+  _clearPlanned() {
+    this._plannedPoolType = null;
+    this._plannedImageItem = null;
+    this._prefetched = null;
+  }
+
   // يبدأ جولة جديدة
   async nextRound() {
     if (!this.active) return;
 
-    const poolType = this.pickPoolType();
+    const poolType = this._plannedPoolType || this.pickPoolType();
+    this._plannedPoolType = null;
     let slots, required, points, questionText, label, repeatCounts;
 
     if (poolType === "repeat") {
@@ -309,7 +362,13 @@ class Contest {
       }
       slots = [[label]];
     } else {
-      const item = this.pickItem(poolType);
+      let item;
+      if (poolType === "images" && this._plannedImageItem) {
+        item = this._plannedImageItem;
+        this._plannedImageItem = null;
+      } else {
+        item = this.pickItem(poolType);
+      }
       if (!item) {
         await this.sendChat(`⚠️ ما فيه أسئلة متوفرة لفقرة "${poolType}". أضف بيانات بملف data/${poolType}.json`);
         return;
@@ -424,6 +483,7 @@ class Contest {
           ).catch((e) => console.error("فشل إرسال تنبيه انتظار السؤال:", e));
         }
       }, 20000); // 20 ثانية
+      this._planNextRound();
     }
   }
 
@@ -581,7 +641,9 @@ class Contest {
       if (unwrapped === null) return;
       searchText = unwrapped;
     }
-    const newlyClaimed = findAllMatches(searchText, round.slots, userSet, relaxed);
+    // تطبيع الإجابات المقبولة مرة وحدة لكل جولة (مو مع كل رسالة)
+    if (!round.prepared) round.prepared = prepareSlots(round.slots, relaxed);
+    const newlyClaimed = findAllMatchesPrepared(searchText, round.prepared, userSet);
     if (newlyClaimed.length === 0) return;
 
     for (const idx of newlyClaimed) userSet.add(idx);
@@ -689,7 +751,8 @@ class Contest {
         await this.nextRound();
       } catch (e1) {
         console.error(`⚠️ خطأ بـ${context} (محاولة أولى):`, e1);
-        setTimeout(async () => {
+        if (!this.active) return;
+        this.nextRoundTimer = setTimeout(async () => {
           try {
             await this.nextRound();
           } catch (e2) {
@@ -787,6 +850,7 @@ class Contest {
       this.nextRoundTimer = null;
     }
     this.clearRoundWatchdog();
+    this._clearPlanned();
     this.active = false;
     const ranking = [...this.scores.entries()].sort((a, b) => b[1] - a[1]);
 
@@ -817,6 +881,7 @@ class Contest {
       this.nextRoundTimer = null;
     }
     this.clearRoundWatchdog();
+    this._clearPlanned();
     this.active = false;
     this.currentRound = null;
   }
