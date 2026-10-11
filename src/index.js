@@ -44,27 +44,6 @@ process.on("unhandledRejection", (err) => {
 // ما يقفل القديم (اللي يفضل شغال بالخلفية ويعالج نفس الرسائل مرتين)
 let currentSock = null;
 let connecting = false;
-let cachedWaVersion = null;
-
-// كاش بيانات القروبات: صلاحية 5 دقايق، وحد أقصى 100 قروب (ما يتراكم شي)
-const groupMetaCache = new Map(); // jid -> { meta, at }
-const GROUP_META_TTL_MS = 5 * 60 * 1000;
-async function getGroupMeta(jid, getSock) {
-  const hit = groupMetaCache.get(jid);
-  if (hit && Date.now() - hit.at < GROUP_META_TTL_MS) return hit.meta;
-  const s = getSock();
-  if (!s) return undefined;
-  try {
-    const meta = await s.groupMetadata(jid);
-    groupMetaCache.delete(jid);
-    groupMetaCache.set(jid, { meta, at: Date.now() });
-    if (groupMetaCache.size > 100) groupMetaCache.delete(groupMetaCache.keys().next().value);
-    return meta;
-  } catch (e) {
-    // لو فشل الجلب وعندنا نسخة قديمة نستخدمها بدل ما نوقف الإرسال
-    return hit ? hit.meta : undefined;
-  }
-}
 
 // ✅ حماية إضافية (خط دفاع ثاني): نتجاهل أي رسالة سبق نعالجها فعلاً حسب
 // آيدي الرسالة (msg.key.id)، حتى لو وصلت من أكثر من سوكت أو تكررت لأي
@@ -525,43 +504,15 @@ async function connectSocket() {
     authState = await useMultiFileAuthState("auth_info_baileys");
   }
   const { state, saveCreds } = authState;
-  // ✅ نسخة واتساب ويب نجلبها مرة وحدة (طلب شبكة لـGitHub مع كل إعادة
-  // اتصال يبطّئ الرجوع). لو فشل الجلب نستخدم آخر نسخة معروفة أو الافتراضية
-  if (!cachedWaVersion) {
-    try {
-      const r = await fetchLatestBaileysVersion();
-      if (r && r.version) cachedWaVersion = r.version;
-    } catch (e) {
-      console.error("⚠️ تعذّر جلب نسخة واتساب، نستخدم الافتراضية:", e.message);
-    }
-  }
+  const { version } = await fetchLatestBaileysVersion();
 
+  // ↩️ رجّعنا إعدادات الاتصال لنفس الأصل بالضبط (الافتراضية). كنت أضفت
+  // خيارات (تعطيل مزامنة السجل، تجاهل البث، كاش القروب...) وما قدرت أتحقق
+  // منها على نسختك الفعلية من المكتبة، والمشكلة ظهرت بعد التحديث
   const sock = makeWASocket({
     auth: state,
-    ...(cachedWaVersion ? { version: cachedWaVersion } : {}),
+    version,
     logger: P({ level: "silent" }),
-    // 🚀 تخفيف الحمل: ما نحتاج مزامنة السجل القديم، ولا رسائل الستاتس/
-    // البث/القنوات (بدون هذا بيليز يفك تشفير كل ستاتس ينزله أي جهة اتصال
-    // بالرقم، وهذا أكبر مستهلك مخفي للمعالج والذاكرة بالبوتات)
-    syncFullHistory: false,
-    shouldSyncHistoryMessage: () => false,
-    shouldIgnoreJid: (jid) => !!jid && (jid === "status@broadcast" || jid.endsWith("@broadcast") || jid.endsWith("@newsletter")),
-    emitOwnEvents: false,
-    generateHighQualityLinkPreview: false,
-    // ✅ كاش بيانات القروب (الأعضاء/الأجهزة): بدون هذا بيليز يرسل طلب
-    // "جلب بيانات القروب" لسيرفر واتساب مع كل رسالة يرسلها البوت للقروب.
-    // بالمسابقات السريعة (رسالتين كل جولة) تتراكم مئات الطلبات، وواتساب
-    // يبدأ يحدّ منها (rate-overlimit) فيتأخر كل إرسال أكثر وأكثر لين
-    // يتجمد — وهذا يطابق وصفك (بطء متصاعد بعد عدد جولات ثم توقف)
-    cachedGroupMetadata: async (jid) => getGroupMeta(jid, () => sock),
-  });
-
-  // لو تغيّر القروب (أعضاء/إعدادات) نحذف نسخته من الكاش عشان تنجلب جديدة
-  sock.ev.on("groups.update", (events) => {
-    for (const e of events || []) if (e.id) groupMetaCache.delete(e.id);
-  });
-  sock.ev.on("group-participants.update", (e) => {
-    if (e && e.id) groupMetaCache.delete(e.id);
   });
 
   // ✅ هذا الآن هو السوكت "الرسمي" الوحيد — أي سوكت سابق انقفل فعلياً فوق

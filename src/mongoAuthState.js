@@ -20,6 +20,7 @@ const instanceLock = require("./instanceLock");
 // معالج الإغلاق (SIGTERM/SIGINT) صار موحّد بملف index.js (كان عندنا معالجين
 // يتسابقون: أول واحد يخلص يسوي process.exit ويقطع الثاني قبل ما يحفظ
 // بياناته). هنا نكتفي بحفظ مرجع لآخر flushNow نشط
+const FAST_MISS = process.env.AUTH_FAST_MISS !== "0";
 let currentFlushNow = null;
 let currentReset = null;
 
@@ -46,6 +47,14 @@ async function useMongoAuthState() {
   let inflight = new Set(); // مفاتيح قيد الكتابة حالياً
   let flushChain = Promise.resolve(); // الكتابات تتنفذ بالتسلسل
   let flushTimer = null;
+  // ✅ مفاتيح اتطردت من الكاش (لكنها موجودة بقاعدة البيانات). أي مفتاح مو
+  // موجود بالكاش وما هو بهالقائمة = غير موجود أصلاً، فنرد null فوراً بدل
+  // رحلة شبكة لـMongoDB. هذا كان من أكبر أسباب تأخر وصول الرسائل: بيليز
+  // يسأل عن مفاتيح جلسات لأجهزة ما سبق نتعامل معها (عشرات بالرسالة الواحدة
+  // بالقروبات)، وكل سؤال كان ينتظر ping كامل لقاعدة البيانات بالتسلسل،
+  // وفك التشفير كله ينتظر هذي الأسئلة — فتتراكم الرسائل (تأخير 40+ ثانية)
+  const evictedIds = new Set();
+  let cacheIncomplete = false; // لو كثرت المطرودات نرجع للسلوك الآمن (نسأل القاعدة)
 
   // ✅ إصلاح تسرب ذاكرة تراكمي ثاني: قبل هذا التعديل، الكاش كان يحتفظ
   // بكل مفتاح للأبد بدون أي سقف — كل شخص/عضو قروب جديد يتفاعل مع البوت
@@ -111,6 +120,8 @@ async function useMongoAuthState() {
         }
       }
       cache.delete(oldestKey);
+      evictedIds.add(oldestKey);
+      if (evictedIds.size > 50000) cacheIncomplete = true;
     }
   }
 
@@ -180,6 +191,9 @@ async function useMongoAuthState() {
     // ✅ مفتاح انحذف بالذاكرة وحذفه لسا ما وصل للقاعدة: ما نرجعه من القاعدة
     // (كان يرجع "ميت" من نسخة قديمة وتخرب الجلسة)
     if (dirty.has(id) || inflight.has(id)) return null;
+    // مفتاح غير موجود بالكاش وما اتطرد قبل = غير موجود بالقاعدة. ما نسأل الشبكة
+    // (AUTH_FAST_MISS=0 بمتغيرات البيئة يعطّل هذا الاختصار ويرجع السلوك القديم)
+    if (FAST_MISS && !cacheIncomplete && !evictedIds.has(id)) return null;
     // مو موجود بالكاش (اتطرد قبل كذا لقلة استخدامه، أو أصلاً ما تحمّل) —
     // رحلة شبكة نادرة بس لهالحالة تحديداً، ترجعه من قاعدة البيانات
     try {
@@ -187,6 +201,7 @@ async function useMongoAuthState() {
       if (!doc || doc.value === undefined) return null;
       const value = JSON.parse(doc.value, BufferJSON.reviver);
       cache.set(id, value);
+      evictedIds.delete(id);
       await evictIfNeeded();
       return value;
     } catch (e) {
@@ -195,6 +210,7 @@ async function useMongoAuthState() {
   }
 
   async function writeData(id, data) {
+    evictedIds.delete(id);
     touch(id, data);
     dirty.add(id);
     scheduleFlush();
@@ -202,6 +218,7 @@ async function useMongoAuthState() {
   }
 
   function removeData(id) {
+    evictedIds.delete(id);
     cache.delete(id);
     dirty.add(id);
     scheduleFlush();
@@ -263,13 +280,15 @@ async function useMongoAuthState() {
       keys: {
         get: async (type, ids) => {
           const data = {};
-          for (const id of ids) {
-            let value = await readData(`${type}-${id}`);
+          // بالتوازي (كان بالتسلسل: وحدة وحدة)
+          const values = await Promise.all(ids.map((id) => readData(`${type}-${id}`)));
+          ids.forEach((id, i) => {
+            let value = values[i];
             if (type === "app-state-sync-key" && value) {
               value = proto.Message.AppStateSyncKeyData.fromObject(value);
             }
             data[id] = value;
-          }
+          });
           return data;
         },
         set: async (data) => {
