@@ -342,6 +342,15 @@ async function flushPendingAuth() {
   if (currentFlushNow) await currentFlushNow();
 }
 
+// يسجّل دوال الصيانة (حفظ/تصفير/علاج جلسة) لأي نوع مخزن جلسة — يستخدمها
+// المخزن بالذاكرة (memoryAuthState.js) عشان أوامر .تصفير_التشفير والعلاج
+// التلقائي تشتغل بنفس الطريقة بدون MongoDB
+function setAuthHooks({ flush = null, reset = null, purge = null } = {}) {
+  currentFlushNow = flush;
+  currentReset = reset;
+  currentPurgeUser = purge;
+}
+
 async function purgeUserKeys(userDigits) {
   if (!currentPurgeUser) return 0;
   return currentPurgeUser(userDigits);
@@ -352,4 +361,4 @@ async function resetChatEncryption() {
   return currentReset();
 }
 
-module.exports = { useMongoAuthState, flushPendingAuth, resetChatEncryption, purgeUserKeys };
+module.exports = { useMongoAuthState, flushPendingAuth, resetChatEncryption, purgeUserKeys, setAuthHooks };

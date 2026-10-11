@@ -15,6 +15,9 @@ const templates = require("./templates");
 const db = require("./db");
 const { useMongoAuthState, flushPendingAuth, resetChatEncryption, purgeUserKeys } = require("./mongoAuthState");
 const { createHealer } = require("./sessionHealer");
+const { useMemoryAuthState } = require("./memoryAuthState");
+const adminPoints = require("./adminPoints");
+const { formatSeconds } = require("./utils");
 const sessionHealer = createHealer({ purge: purgeUserKeys });
 const { startHealthServer, setQr, clearQr } = require("./healthServer");
 const dmPermissions = require("./dmPermissions");
@@ -44,6 +47,30 @@ process.on("unhandledRejection", (err) => {
 // ✅ إصلاح تسرّب السوكتات: نحتفظ بمرجع للسوكت الحالي + قفل يمنع أكثر من
 // محاولة اتصال بنفس الوقت. بدون هذا، كل انقطاع كان يبني سوكت جديد بدون
 // ما يقفل القديم (اللي يفضل شغال بالخلفية ويعالج نفس الرسائل مرتين)
+// 🚀 كاش بيانات القروب — اختياري ومطفي افتراضياً (GROUP_CACHE=1 بمتغيرات
+// البيئة يفعّله). بدونه بيليز يرسل طلب "جلب بيانات القروب" لواتساب مع كل
+// رسالة يرسلها البوت لقروب (رحلة شبكة إضافية مع كل إرسال، ويقل بالكاش
+// بين الإجمالي والإرسال). مع الكاش الطلب يصير مرة كل 5 دقايق لكل قروب.
+const GROUP_CACHE = process.env.GROUP_CACHE === "1";
+const groupMetaCache = new Map(); // jid -> { meta, at } — حد أقصى 100 قروب
+const GROUP_META_TTL_MS = 5 * 60 * 1000;
+async function getGroupMeta(jid, getSock) {
+  const hit = groupMetaCache.get(jid);
+  if (hit && Date.now() - hit.at < GROUP_META_TTL_MS) return hit.meta;
+  const sk = getSock();
+  if (!sk) return undefined;
+  try {
+    const meta = await sk.groupMetadata(jid);
+    groupMetaCache.delete(jid);
+    groupMetaCache.set(jid, { meta, at: Date.now() });
+    if (groupMetaCache.size > 100) groupMetaCache.delete(groupMetaCache.keys().next().value);
+    return meta;
+  } catch (e) {
+    return hit ? hit.meta : undefined; // لو فشل الجلب نستخدم آخر نسخة بدل ما نوقف الإرسال
+  }
+}
+
+const SESSION_STORE = (process.env.SESSION_STORE || "memory").toLowerCase();
 let currentSock = null;
 let connecting = false;
 
@@ -130,11 +157,25 @@ function findByName(name) {
 // موجود بالقروب حالياً)، وإلا يدور بالاسم المكتوب بعد الأمر. يرجع
 // { userId } لو لقى واحد بالضبط، أو { error: "none" } لو ما لقى شي، أو
 // { error: "ambiguous", matches } لو فيه أكثر من شخص بنفس الاسم بالضبط
+function toAsciiDigits(str) {
+  return String(str).replace(/[٠-٩]/g, (d) => "٠١٢٣٤٥٦٧٨٩".indexOf(d));
+}
+
 function resolveTarget(msg, trailingText) {
   const mentioned = getMentionedJid(msg);
   if (mentioned) return { userId: mentioned };
   const name = (trailingText || "").trim();
   if (!name) return { error: "none" };
+  // 🔢 رقم التسجيل (نفس ترقيم .تسجيلات): "1" = جوال رقم 1، "1_خارجي" = خارجي رقم 1
+  const numMatch = toAsciiDigits(name).match(/^(\d+)\s*(?:_\s*(خارجي|جوال))?$/);
+  if (numMatch) {
+    const type = numMatch[2] === "خارجي" ? "external" : "mobile";
+    const n = parseInt(numMatch[1], 10);
+    const list = registration.getAllByType(type);
+    if (n >= 1 && list[n - 1]) return { userId: list[n - 1].userId };
+    const label = type === "external" ? "الخارجي" : "الجوالات";
+    return { error: "range", message: `⚠️ ما فيه رقم ${n} بقائمة ${label} (نفس ترقيم .تسجيلات).` };
+  }
   const matches = findByName(name);
   if (matches.length === 1) return { userId: matches[0].userId };
   if (matches.length === 0) return { error: "none" };
@@ -143,6 +184,7 @@ function resolveTarget(msg, trailingText) {
 
 // أوامر إدارية معلّقة بانتظار رد برقم (لما فيه تشابه أسماء ولا فيه منشن
 // متاح) — key = senderId (المالك دايمًا هو المستخدم لهذي الأوامر)
+const pendingPointDeletion = new Map(); // ownerId -> قائمة نقاط معروضة بانتظار أرقام الحذف
 const pendingDisambiguation = new Map(); // senderId -> { matches, onResolved, expiresAt }
 const DISAMBIGUATION_TIMEOUT_MS = 5 * 60 * 1000; // 5 دقايق
 
@@ -154,6 +196,10 @@ async function resolveTargetOrAsk(sock, chatId, msg, senderId, trailingText, usa
   const resolved = resolveTarget(msg, trailingText);
   if (resolved.userId) {
     await onResolved(resolved.userId);
+    return;
+  }
+  if (resolved.error === "range") {
+    await sock.sendMessage(chatId, { text: resolved.message }, { quoted: msg });
     return;
   }
   if (resolved.error === "ambiguous") {
@@ -497,13 +543,20 @@ async function connectSocket() {
   // لو متصلين بقاعدة بيانات، نحفظ جلسة واتساب فيها (تفضل موجودة حتى لو
   // السيرفر أعاد التشغيل أو تغيّر). لو ما فيه اتصال، نستخدم ملفات محلية
   // كخطة احتياطية (يشتغل تمام للتشغيل من جهازك مباشرة)
+  // 💾 نوع حفظ الجلسة (متغير SESSION_STORE بإعدادات الاستضافة):
+  //   memory (الافتراضي) = بدون أي حفظ، الأخف والأسرع — QR جديد بعد كل تشغيل
+  //   mongo              = محفوظة بقاعدة البيانات (تبقى بعد إعادة التشغيل)
+  //   files              = ملفات محلية (auth_info_baileys)
   let authState;
-  if (db.getDb()) {
+  if (SESSION_STORE === "mongo" && db.getDb()) {
     console.log("💾 جلسة واتساب: MongoDB");
     authState = await useMongoAuthState();
-  } else {
+  } else if (SESSION_STORE === "files") {
     console.log("💾 جلسة واتساب: ملفات محلية (auth_info_baileys)");
     authState = await useMultiFileAuthState("auth_info_baileys");
+  } else {
+    console.log("💾 جلسة واتساب: ذاكرة فقط (بدون حفظ) — امسح QR بعد كل تشغيل");
+    authState = await useMemoryAuthState();
   }
   const { state, saveCreds } = authState;
   const { version } = await fetchLatestBaileysVersion();
@@ -511,11 +564,23 @@ async function connectSocket() {
   // ↩️ رجّعنا إعدادات الاتصال لنفس الأصل بالضبط (الافتراضية). كنت أضفت
   // خيارات (تعطيل مزامنة السجل، تجاهل البث، كاش القروب...) وما قدرت أتحقق
   // منها على نسختك الفعلية من المكتبة، والمشكلة ظهرت بعد التحديث
-  const sock = makeWASocket({
+  const sockOptions = {
     auth: state,
     version,
     logger: P({ level: "silent" }),
-  });
+  };
+  // (اختياري) كاش بيانات القروب — شوف GROUP_CACHE فوق
+  if (GROUP_CACHE) sockOptions.cachedGroupMetadata = async (jid) => getGroupMeta(jid, () => sock);
+  const sock = makeWASocket(sockOptions);
+  if (GROUP_CACHE) {
+    // لو تغيّر القروب (أعضاء/إعدادات) نحذف نسخته عشان تنجلب جديدة
+    sock.ev.on("groups.update", (events) => {
+      for (const e of events || []) if (e.id) groupMetaCache.delete(e.id);
+    });
+    sock.ev.on("group-participants.update", (e) => {
+      if (e && e.id) groupMetaCache.delete(e.id);
+    });
+  }
 
   // ✅ هذا الآن هو السوكت "الرسمي" الوحيد — أي سوكت سابق انقفل فعلياً فوق
   currentSock = sock;
@@ -531,8 +596,7 @@ async function connectSocket() {
   // بالضبط بين "كودنا بطيء" و"الإرسال الفعلي بطيء" بدل ما نخمّن
   const rawSendMessage = sock.sendMessage.bind(sock);
   sock.sendMessage = async (...args) => {
-    const t0 = Date.now();
-    try {
+    {
       // ✅ مهلة 40 ثانية: إرسال (خصوصاً رفع صورة) ممكن يعلق للأبد بدون
       // خطأ لو الاتصال بسيرفرات واتساب تدهور — وعندها المسابقة كلها
       // تتجمد لأن الجولة التالية تنتظر هذا الإرسال. مع المهلة يفشل
@@ -545,11 +609,6 @@ async function connectSocket() {
         return await Promise.race([rawSendMessage(...args), timeout]);
       } finally {
         clearTimeout(timer);
-      }
-    } finally {
-      const dt = Date.now() - t0;
-      if (dt > 500) {
-        console.log(`🔍 [بطء إرسال شبكة] sendMessage استغرق ${dt}ms فعليًا (منفصل عن تجهيز الرد).`);
       }
     }
   };
@@ -675,24 +734,7 @@ async function connectSocket() {
           // ✅ خط دفاع ثاني: لو نفس الرسالة (بنفس آيدي واتساب) سبق
           // اتعالجت (من هذا السوكت أو سوكت ثاني)، نتجاهلها هنا نهائياً
           if (alreadyProcessed(msg.key?.id)) return;
-          // 🔍 تشخيص بطء: نقيس كم استغرقت معالجتنا الداخلية كاملة (من
-          // استلام الرسالة لين آخر سطر بـhandleIncoming، شامل أي إرسال
-          // رد فعلي جواها). لو الرقم صغير باستمرار رغم إحساسك بتأخير
-          // فعلي، معناها التأخير مو من كودنا — من واتساب نفسه أو من
-          // ضغط/خنق المعالج بالسيرفر
-          const t0 = Date.now();
           await handleIncoming(sock, msg);
-          const elapsed = Date.now() - t0;
-          // ✅ نتجاهل حساب "تأخير الوصول" لرسائل البوت نفسه (fromMe) —
-          // هذي مجرد "صدى" لرسائل أرسلها البوت، وحساب تأخير عليها رقم
-          // مضلل (مو تأخير وصول حقيقي من مستخدم)، كان يسبب ضوضاء بالسجل
-          const deliveryLag = tsMs && !msg.key?.fromMe ? now - tsMs : null; // فرق بين وقت إرسال الرسالة (حسب واتساب) ووصولها لنا
-          if (elapsed > 500 || (deliveryLag !== null && deliveryLag > 1000)) {
-            console.log(
-              `🔍 [بطء] معالجتنا=${elapsed}ms، تأخير وصول الرسالة لنا=${deliveryLag}ms ` +
-                `(نص: "${(msg.message?.conversation || msg.message?.extendedTextMessage?.text || "").slice(0, 30)}")`
-            );
-          }
         } catch (err) {
           console.error("خطأ بمعالجة الرسالة:", err);
         }
@@ -715,6 +757,9 @@ async function handleIncoming(sock, msg) {
   // بـHORA_CHAT_ID يشتغل بدون ما نضيفه لـallowedChats، وبقية أوامر البوت
   // (مسابقات...) تبقى محصورة بالقروبات المسموحة فقط
   const text = extractText(msg); // مرة وحدة بس لكل رسالة
+  // 🚫 رسالة بحرف واحد (غير رقم): سبام/تشويش ما تحتاج أي معالجة — نتجاهلها
+  // فوراً قبل أي فحص. الأرقام (٠-٩ و0-9) والرسائل بحرفين فأكثر تمر عادي
+  if (text.length === 1 && !/[0-9٠-٩]/.test(text)) return;
   if (isGroupChat(chatId)) {
     if (await handleHoraMessage(sock, msg, text, chatId, senderId)) return;
   }
@@ -794,6 +839,51 @@ async function handleIncoming(sock, msg) {
     }
     // شخص ثاني غير اللي بدأ الأمر — نتجاهل رده بصمت (نسيبه يكمل مساره
     // الطبيعي لو صادف كان شي ثاني، القائمة تفضل معلّقة لصاحبها الأصلي)
+  }
+
+  // 🔢 رد المالك بأرقام النقاط المراد حذفها (بعد .ريسيت نقاط <فقرة> <شخص>).
+  // الفحص الأول (size > 0) يخلي التكلفة صفر تقريباً على كل رسالة عادية
+  if (pendingPointDeletion.size > 0 && isOwner(senderId) && pendingPointDeletion.has(senderId)) {
+    const pending = pendingPointDeletion.get(senderId);
+    if (Date.now() > pending.expiresAt) {
+      pendingPointDeletion.delete(senderId);
+    } else if (/^[\d٠-٩\s,،و]+$/.test(text) && /[\d٠-٩]/.test(text)) {
+      const nums = [...new Set(toAsciiDigits(text).split(/[\s,،و]+/).filter(Boolean).map(Number))];
+      const total = pending.entries.length;
+      if (nums.some((n) => !Number.isInteger(n) || n < 1 || n > total)) {
+        await sock.sendMessage(chatId, { text: `⚠️ الأرقام لازم تكون من 1 إلى ${total} (حسب القائمة).` }, { quoted: msg });
+        return;
+      }
+      pendingPointDeletion.delete(senderId);
+      const selected = nums.map((n) => ({ n, entry: pending.entries[n - 1] }));
+      const { removed, remaining } = adminPoints.deletePoints({
+        leaderboard,
+        personalHistory,
+        poolType: pending.poolType,
+        userId: pending.userId,
+        entries: selected.map((x) => x.entry),
+      });
+      if (removed.length === 0) {
+        await sock.sendMessage(chatId, { text: "⚠️ هذي النقاط انحذفت قبل كذا، ما تغيّر شي." }, { quoted: msg });
+        return;
+      }
+      const removedKeys = new Set(removed.map((e) => `${e.ts}|${e.elapsed}`));
+      const doneLines = selected
+        .filter((x) => removedKeys.has(`${x.entry.ts}|${x.entry.elapsed}`))
+        .map((x) => `${x.n}. ${x.entry.answer} ${formatSeconds(x.entry.elapsed)}`)
+        .join("\n");
+      const best = remaining[0];
+      await sock.sendMessage(
+        chatId,
+        {
+          text:
+            `🗑️ تم حذف ${removed.length} نقطة من نقاط ${pending.shortType} الخاصة بـ ${pending.name} (من .نقاطي ومن التوب):\n${doneLines}` +
+            (best ? `\n\nأفضل نقطة له الحين: ${best.answer} ${formatSeconds(best.elapsed)}` : "\n\nما بقي له نقاط بهذي الفقرة."),
+        },
+        { quoted: msg }
+      );
+      return;
+    }
   }
 
   // 🔢 رد برقم بس لحل تشابه أسماء بأمر إداري معلّق (زي .ريسيت توب J18
@@ -1163,14 +1253,16 @@ if (rejectChangeMatch) {
   // أمر .ريسيت توب أو .ريسيت توب <نوع> [@شخص/اسم]: يصفّر لوحة الصدارة
   // (كلها، أو فقرة وحدة، أو سجل شخص معين بس لو فيه منشن/اسم) — مخصص
   // لصاحب البوت بس
-  const resetTopMatch = text.match(/^\.ريسيت توب(?:\s+(ص|كت|تع|سس|فك|عك|تر|تك))?(?:\s+(.+))?$/);
+  // "كت_3" = بنك الكتابة بعدد كلمات محدد (1 إلى 5) — مستقل تماماً عن "كت" العام
+  const resetTopMatch = text.match(/^\.ريسيت توب(?:\s+(ص|كت_[1-5١-٥]|كت|تع|سس|فك|عك|تر|تك))?(?:\s+(.+))?$/);
   if (resetTopMatch) {
     if (!isOwner(senderId)) {
       await sock.sendMessage(chatId, { text: "⛔ هذا الأمر مخصص لصاحب البوت بس." }, { quoted: msg });
       return;
     }
     const shortType = resetTopMatch[1];
-    const poolType = shortType ? topTypeMap[shortType] : null;
+    const countBoard = shortType && shortType.startsWith("كت_") ? `writing${toAsciiDigits(shortType).slice(-1)}` : null;
+    const poolType = shortType ? (countBoard || topTypeMap[shortType]) : null;
     const trailingText = resetTopMatch[2];
     const mentioned = getMentionedJid(msg);
 
@@ -1179,7 +1271,15 @@ if (rejectChangeMatch) {
     // الاثنين مع بعض). ما فيه نوع محدد (تصفير شامل، بشخص أو بدونه) =
     // .نقاطي ما يتأثر إطلاقاً، يبقى الشخص محتفظ بتاريخه الكامل
     const resetWholePool = async () => {
-      if (poolType) {
+      if (countBoard) {
+        // بنك عدد الكلمات (كت_3...): نصفّر هذا البنك بس
+        leaderboard.reset(countBoard);
+        await sock.sendMessage(
+          chatId,
+          { text: `🗑️ تم تصفير توب الكتابة (${countBoard.slice(-1)} كلمات) بالكامل.` },
+          { quoted: msg }
+        );
+      } else if (poolType) {
         leaderboard.reset(poolType);
         personalHistory.resetAll(poolType);
         await sock.sendMessage(
@@ -1198,18 +1298,37 @@ if (rejectChangeMatch) {
       return;
     }
 
-    await resolveTargetOrAsk(sock, chatId, msg, senderId, trailingText, "⚠️ ما لقيت هذا الشخص. استخدم منشن أو اسمه المسجل بالضبط.", async (target) => {
-      if (poolType) {
-        leaderboard.removeUserFromPool(poolType, target);
-        // ✅ نحذف بس أفضل نتيجة شخصية (اللي كانت مطابقة لسجل .توب)، مو
-        // كل تاريخه. ولو عنده نتيجة ثانية بعدها بـ.نقاطي، ندخلها تلقائياً
-        // بلوحة الصدارة (leaderboard.record يتحقق بنفسه هل تستاهل مركز
-        // فيها ولا لا — نفس منطق أي نتيجة عادية توصل وقت اللعب)
-        const nextBest = personalHistory.removeTopEntry(poolType, target);
-        if (nextBest) leaderboard.record(poolType, nextBest);
+    await resolveTargetOrAsk(sock, chatId, msg, senderId, trailingText, "⚠️ ما لقيت هذا الشخص. استخدم منشن أو اسمه أو رقمه بـ.تسجيلات.", async (target) => {
+      if (countBoard) {
+        // أقوى نقطة للشخص ببنك الكتابة (عدد كلمات محدد) فقط
+        const { removed, next } = adminPoints.removeTopBoardPoint({ leaderboard, personalHistory, board: countBoard, userId: target });
+        const n = countBoard.slice(-1);
+        if (!removed) {
+          await sock.sendMessage(
+            chatId,
+            { text: `⚠️ @${target.split("@")[0]} ما عنده سجل بتوب الكتابة (${n} كلمات).`, mentions: [target] },
+            { quoted: msg }
+          );
+          return;
+        }
+        const info =
+          ` (${removed.answer} ${formatSeconds(removed.elapsed)})` +
+          (next ? `\nصعدت نقطته التالية: ${next.answer} ${formatSeconds(next.elapsed)}` : "");
         await sock.sendMessage(
           chatId,
-          { text: `🗑️ تم حذف سجل @${target.split("@")[0]} من توب فقرة ${poolLabels[poolType]}.`, mentions: [target] },
+          { text: `🗑️ تم حذف أقوى نقطة لـ@${target.split("@")[0]} من توب الكتابة (${n} كلمات)${info}`, mentions: [target] },
+          { quoted: msg }
+        );
+      } else if (poolType) {
+        // يحذف أقوى نقطة من .نقاطي ومن توب هذي الفقرة العام بس (بنوك الكتابة
+        // حسب عدد الكلمات ما تتأثر)، وتصعد نتيجته التالية تلقائياً للتوب لو تستاهل
+        const { removed, next } = adminPoints.removeTopPoint({ leaderboard, personalHistory, poolType, userId: target });
+        const info =
+          (removed ? ` (${removed.answer} ${formatSeconds(removed.elapsed)})` : "") +
+          (next ? `\nصعدت نقطته التالية: ${next.answer} ${formatSeconds(next.elapsed)}` : "");
+        await sock.sendMessage(
+          chatId,
+          { text: `🗑️ تم حذف أفضل نقطة لـ@${target.split("@")[0]} من توب ونقاط فقرة ${poolLabels[poolType]}${info}`, mentions: [target] },
           { quoted: msg }
         );
       } else {
@@ -1237,7 +1356,7 @@ if (rejectChangeMatch) {
       await sock.sendMessage(
         chatId,
         {
-          text: `✅ تم تصفير تشفير المحادثات (${r.inDb} مفتاح من القاعدة).\nالربط محفوظ (بدون QR). نعيد الاتصال خلال ثواني — وأول رسالة من كل محادثة ممكن تتأخر شوي لين يتجدد التشفير.`,
+          text: `✅ تم تصفير تشفير المحادثات (${r.inDb || r.inMemory} مفتاح).\nالربط محفوظ (بدون QR). نعيد الاتصال خلال ثواني — وأول رسالة من كل محادثة ممكن تتأخر شوي لين يتجدد التشفير.`,
         },
         { quoted: msg }
       );
@@ -1323,102 +1442,64 @@ if (rejectChangeMatch) {
     return;
   }
 
-  // أمر .ريسيت سجل [@شخص/اسم/رقم] أو بدون شي: يصفّر السجل التراكمي كامل،
-  // أو سجل شخص معين — مخصص لصاحب البوت بس
-  const resetStandingsMatch = text.match(/^\.ريسيت سجل(?:\s+(.+))?$/);
-  if (resetStandingsMatch) {
+  // ✅ أمر .ريسيت نقاط (مخصص لصاحب البوت بس):
+  //  • .ريسيت نقاط                  → يصفّر كل نقاط كل الأشخاص (.نقاطي + لوحة التوب)
+  //  • .ريسيت نقاط <فقرة> <شخص>     → يعرض نقاط الشخص بالفقرة مرقّمة، وترد
+  //    بأرقام النقاط المراد حذفها (تنحذف من .نقاطي ومن التوب تلقائياً، وتصعد
+  //    نتيجته التالية للتوب لو تستاهل). <شخص> = منشن / اسم / رقم تسجيل
+  //    (1 للجوالات، 1_خارجي للخارجي)
+  const resetPointsMatch = text.match(/^\.ريسيت نقاط(?:\s+(ص|كت|تع|سس|فك|عك|تر|تك))?(?:\s+(.+))?$/);
+  if (resetPointsMatch) {
     if (!isOwner(senderId)) {
       await sock.sendMessage(chatId, { text: "⛔ هذا الأمر مخصص لصاحب البوت بس." }, { quoted: msg });
       return;
     }
-    const trailingText = resetStandingsMatch[1];
+    const shortType = resetPointsMatch[1];
+    const trailingText = resetPointsMatch[2];
     const mentioned = getMentionedJid(msg);
+    pendingPointDeletion.delete(senderId); // أي قائمة سابقة معلّقة تنلغي
 
-    // ✅ لو كتب رقم صرف (بدون منشن)، هذا رقم الموقع بقائمة .سجل نفسها
-    // (نفس ترقيم أمر .حذف سجل بالضبط) — مو اسم ولا رقم تسجيل. أي شي
-    // ثاني (منشن أو اسم مكتوب) يفضل يشتغل بالبحث بالاسم زي ما كان
-    const asNumber = !mentioned && trailingText && /^\d+$/.test(trailingText.trim()) ? parseInt(trailingText.trim(), 10) : null;
-    if (asNumber !== null) {
-      const list = standings.getStandings();
-      const entry = list[asNumber - 1];
-      if (!entry) {
-        await sock.sendMessage(chatId, { text: `⚠️ ما فيه رقم ${asNumber} بالسجل الحالي (نفس ترقيم .سجل).` }, { quoted: msg });
-        return;
-      }
-      standings.removeUser(entry.userId);
+    if (!shortType && !trailingText && !mentioned) {
+      personalHistory.resetAll();
+      leaderboard.reset();
+      await sock.sendMessage(chatId, { text: "🗑️ تم تصفير كل النقاط لكل الأشخاص (.نقاطي + لوحة التوب)." }, { quoted: msg });
+      return;
+    }
+    if (!shortType || (!trailingText && !mentioned)) {
       await sock.sendMessage(
         chatId,
-        { text: `🗑️ تم حذف سجل @${entry.userId.split("@")[0]} (رقم ${asNumber} بالسجل) من السجل التراكمي.`, mentions: [entry.userId] },
+        { text: "استخدم: .ريسيت نقاط <فقرة> <شخص>\nمثال: .ريسيت نقاط كت 1\n(الشخص: منشن، أو اسم، أو رقمه بـ.تسجيلات — 1 للجوالات، 1_خارجي للخارجي)" },
         { quoted: msg }
       );
       return;
     }
-
-    if (mentioned || trailingText) {
-      await resolveTargetOrAsk(sock, chatId, msg, senderId, trailingText, "⚠️ ما لقيت هذا الشخص. استخدم منشن أو اسمه المسجل بالضبط.", async (target) => {
-        standings.removeUser(target);
+    const poolType = topTypeMap[shortType];
+    await resolveTargetOrAsk(sock, chatId, msg, senderId, trailingText, "⚠️ ما لقيت هذا الشخص. استخدم منشن أو اسمه أو رقمه بـ.تسجيلات.", async (target) => {
+      const entries = personalHistory.getTop(target, poolType, 10);
+      if (entries.length === 0) {
         await sock.sendMessage(
           chatId,
-          { text: `🗑️ تم حذف سجل @${target.split("@")[0]} من السجل التراكمي.`, mentions: [target] },
+          { text: `⚠️ @${target.split("@")[0]} ما عنده أي نقاط بفقرة ${shortType} بـ.نقاطي.`, mentions: [target] },
           { quoted: msg }
         );
+        return;
+      }
+      const name = entries[0].displayName || target.split("@")[0];
+      const lines = entries.map((e, i) => `${i + 1}. ${e.answer} ${formatSeconds(e.elapsed)}`).join("\n");
+      pendingPointDeletion.set(senderId, {
+        userId: target,
+        poolType,
+        shortType,
+        name,
+        entries: entries.map((e) => ({ ...e })), // نسخة وقت العرض
+        expiresAt: Date.now() + DISAMBIGUATION_TIMEOUT_MS,
       });
-      return;
-    }
-    standings.reset();
-    await sock.sendMessage(chatId, { text: "🗑️ تم تصفير السجل العام بالكامل." }, { quoted: msg });
-    return;
-  }
-
-  // ✅ أمر .ريسيت نقاط <اختصار الفقرة> <رقم> أو <رقم>_خارجي: يحذف بس
-  // أفضل نتيجة بالفقرة المحددة من سجل .نقاطي الشخصي لصاحب رقم التسجيل
-  // هذا (نفس رقم .تسجيلات — جوال افتراضياً، أو خارجي لو مكتوب "_خارجي").
-  // ما يمس .سجل ولا .توب العام إطلاقاً — بس شخصي. لو عنده نتيجة ثانية
-  // بعدها بنفس الفقرة، تدخل تلقائي بلوحة الصدارة العامة لو تستاهل (نفس
-  // منطق .ريسيت توب <نوع> <شخص> بالضبط)
-  const resetNiqatMatch = text.match(/^\.ريسيت نقاط (ص|كت|تع|سس|فك|عك|تر|تك) (\d+)(_خارجي)?$/);
-  if (resetNiqatMatch) {
-    if (!isOwner(senderId)) {
-      await sock.sendMessage(chatId, { text: "⛔ هذا الأمر مخصص لصاحب البوت بس." }, { quoted: msg });
-      return;
-    }
-    const poolType = topTypeMap[resetNiqatMatch[1]];
-    const regNum = parseInt(resetNiqatMatch[2], 10);
-    const regType = resetNiqatMatch[3] ? "external" : "mobile";
-    const list = registration.getAllByType(regType);
-    const entry = list[regNum - 1];
-    if (!entry) {
-      const typeLabel = regType === "external" ? "الخارجي" : "الجوالات";
       await sock.sendMessage(
         chatId,
-        { text: `⚠️ ما فيه رقم ${regNum} بقائمة ${typeLabel} (نفس ترقيم .تسجيلات).` },
+        { text: `نقاط ${shortType} الخاص بـ ${name}\n${lines}\n\nرد بأرقام النقاط اللي تبي تحذفها (مثال: 1 3) خلال 5 دقايق.` },
         { quoted: msg }
       );
-      return;
-    }
-    const target = entry.userId;
-
-    const top = personalHistory.getTop(target, poolType, 1);
-    if (top.length === 0) {
-      await sock.sendMessage(
-        chatId,
-        { text: `⚠️ @${target.split("@")[0]} ما عنده أي نتيجة بفقرة ${poolLabels[poolType]} بـ.نقاطي.`, mentions: [target] },
-        { quoted: msg }
-      );
-      return;
-    }
-
-    const nextBest = personalHistory.removeTopEntry(poolType, target);
-    if (nextBest) leaderboard.record(poolType, nextBest);
-
-    await sock.sendMessage(
-      chatId,
-      {
-        text: `🗑️ تم حذف أفضل نتيجة لـ@${target.split("@")[0]} بفقرة ${poolLabels[poolType]} من .نقاطي.`,
-        mentions: [target],
-      },
-      { quoted: msg }
-    );
+    });
     return;
   }
 
@@ -1770,6 +1851,7 @@ setInterval(() => {
   for (const [chatId, c] of activeContests) if (!c.active) activeContests.delete(chatId);
   for (const [chatId, p] of pendingPoolSelection) if (now > p.expiresAt) pendingPoolSelection.delete(chatId);
   for (const [id, p] of pendingDisambiguation) if (now > p.expiresAt) pendingDisambiguation.delete(id);
+  for (const [id, p] of pendingPointDeletion) if (now > p.expiresAt) pendingPointDeletion.delete(id);
 }, 5 * 60 * 1000).unref();
 
 // نقطة البداية: نتصل بقاعدة البيانات ونسحب كل البيانات المحفوظة (مرة
@@ -1801,31 +1883,6 @@ async function main() {
   await instanceLock.acquireWithRetry();
   await connectSocket();
 }
-// 📊 مراقبة: سطر ذاكرة كل 5 دقايق (مع الذاكرة الخارجية: صور/بافرات
-// وهي خارج الـHeap وهي اللي تفلت من المراقبة عادة)، وكاشف "تجمّد" المعالج:
-// لو الـevent loop تأخر أكثر من 1.5 ثانية عن موعده، نطبع تحذير — هذا يفرّق
-// بوضوح بين (الكود/المعالج مخنوق) و(الشبكة/واتساب بطيء)
-setInterval(() => {
-  const m = process.memoryUsage();
-  const mb = (n) => (n / 1024 / 1024).toFixed(0);
-  console.log(
-    `📊 الذاكرة: RSS=${mb(m.rss)}MB | Heap=${mb(m.heapUsed)}MB | خارجية=${mb(m.external)}MB | بافرات=${mb(m.arrayBuffers)}MB | مسابقات نشطة=${activeContests.size}`
-  );
-}, 5 * 60 * 1000).unref();
-
-let lastTick = Date.now();
-let lastLagLog = 0;
-setInterval(() => {
-  const now = Date.now();
-  const lag = now - lastTick - 1000;
-  lastTick = now;
-  if (lag > 1500 && now - lastLagLog > 30000) {
-    lastLagLog = now;
-    const m = process.memoryUsage();
-    console.warn(`🐌 تجمّد المعالج ${lag}ms (RSS=${(m.rss / 1048576).toFixed(0)}MB, Heap=${(m.heapUsed / 1048576).toFixed(0)}MB)`);
-  }
-}, 1000).unref();
-
 // ✅ معالج إغلاق واحد موحّد (كان فيه معالجين، أول واحد يخلص يقتل
 // البرنامج قبل ما الثاني يحفظ بياناته). نحفظ كل شي معلّق بالتوازي مع مهلة
 // أمان 10 ثواني عشان ما نعلق

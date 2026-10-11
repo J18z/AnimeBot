@@ -407,7 +407,6 @@ class Contest {
       label, // "الإجابة" اللي تُعرض بلوحة الصدارة
       repeatCounts, // بس لفقرة "تكرار": عدد التكرار المطلوب بالظبط لكل عنصر بـslots
       startTime: Date.now(), // قيمة مؤقتة، تنستبدل تحت بتوقيت واتساب الفعلي
-      createdAt: Date.now(), // لقياس مدة التجهيز+الإرسال (تشخيص فقط)
       finished: false,
       perUser: new Map(), // userId -> Set(فهارس) — مسار كل شخص مستقل تماماً
     };
@@ -469,7 +468,6 @@ class Contest {
     // "زمن شبكة" متغيّر. نعدّل نفس كائن الجولة (مو نستبدله) عشان أي رد
     // وصل بالفترة القصيرة اللي بين التعيين والإرسال يشوف نفس المرجع
     round.startTime = Date.now();
-    round.sendMs = round.startTime - round.createdAt; // تشخيص فقط
 
     // مؤقت حراسة: لو ما صار أي رد (ولا حتى محاولة خطأ) خلال 20 ثانية،
     // على الأغلب الرسالة (سؤال/صورة) ما وصلت فعلياً لواتساب رغم إن سيرفرنا
@@ -684,16 +682,7 @@ class Contest {
     // أدنى إضافي بعد كذا — لو طلعت 0.00 أو قريبة منها فهذا وقت حقيقي
     // (شخص جاوب بسرعة كبيرة فعلاً)، نعرضه زي ما هو بدون تثبيت
     const elapsed = Math.max(0, rawElapsed - NETWORK_OVERHEAD_MS);
-    // 🔍 تشخيص فقط (ما يغيّر أي حساب): نسجل مكونات الوقت لكل إجابة صحيحة،
-    // عشان لو طلع رقم غريب نعرف السبب: مدة إرسال السؤال، وعمر رسالة اللاعب
-    // وقت وصولها للبوت (بالثواني الكاملة من توقيت سيرفر واتساب)
-    try {
-      const ts = Number(msg && msg.messageTimestamp);
-      const ageS = ts ? (Date.now() / 1000 - ts).toFixed(1) : "؟";
-      console.log(`⏱️ [توقيت] خام=${rawElapsed}ms → معروض=${elapsed}ms | إرسال السؤال=${round.sendMs ?? "؟"}ms | عمر رسالة اللاعب≈${ageS}s`);
-    } catch (e) {
-      /* تجاهل */
-    }
+
     const total = this.addPoints(senderId, round.points);
 
     // نسجل هذي النتيجة بلوحة الصدارة (أفضل الأوقات) — إلا لو تقديم بسيط
@@ -712,6 +701,9 @@ class Contest {
           answer: displayAnswer,
           ts: Date.now(),
         };
+        // عدد كلمات الجولة (للكتابة بس): يخلّي أمر الحذف الإداري يعرف يرجّع
+        // أفضل نتيجة تالية للبنك الصحيح (.توب كت 1..5) بعد حذف نتيجة خاطئة
+        if (round.poolType === "writing" && round.required >= 1 && round.required <= 5) entry.wc = round.required;
         leaderboard.record(round.poolType, entry);
         personalHistory.record(round.poolType, entry);
         // ✅ إضافي: لفقرة الكتابة بس، نسجل نفس النتيجة كمان ببنك منفصل

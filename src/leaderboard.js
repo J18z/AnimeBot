@@ -124,6 +124,17 @@ function reset(poolType) {
   }
 }
 
+// يحذف نتيجة شخص بعينها (نفس الوقت ونفس لحظة التسجيل) من فقرة — يُستخدم
+// لحذف نتيجة خاطئة من بنوك الكتابة حسب عدد الكلمات (.توب كت 1..5)
+function removeEntryMatching(poolType, userId, entry) {
+  if (!board[poolType] || !entry) return false;
+  const before = board[poolType].length;
+  board[poolType] = board[poolType].filter((e) => !(e.userId === userId && e.ts === entry.ts && e.elapsed === entry.elapsed));
+  const changed = board[poolType].length !== before;
+  if (changed) persistPool(poolType);
+  return changed;
+}
+
 function removeUserFromPool(poolType, userId) {
   if (!board[poolType]) return false;
   const before = board[poolType].length;
@@ -157,6 +168,7 @@ async function loadFromDb() {
         answer: doc.answer,
         ts: doc.ts,
       };
+      if (doc.wc) entry.wc = doc.wc;
       // تنظيف تكرارات قديمة: شخص واحد = سجل واحد بالفقرة (الأفضل وقتاً)
       const idx = board[doc.poolType].findIndex((e) => e.userId === entry.userId);
       if (idx !== -1) {
@@ -178,4 +190,4 @@ async function loadFromDb() {
   }
 }
 
-module.exports = { record, getTop, getTopFiltered, getAllTypes, reset, removeUser, removeUserFromPool, loadFromDb, flushPending };
+module.exports = { record, getTop, getTopFiltered, getAllTypes, reset, removeUser, removeUserFromPool, removeEntryMatching, loadFromDb, flushPending };

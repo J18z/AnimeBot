@@ -117,6 +117,36 @@ function removeTopEntry(poolType, userId) {
   return bucket[poolType][0] || null;
 }
 
+// يشيل أفضل نتيجة (الأسرع) ويرجّعها مع باقي النتائج — للحذف الإداري
+function popTopEntry(poolType, userId) {
+  const bucket = history.get(userId);
+  if (!bucket || !bucket[poolType] || bucket[poolType].length === 0) return { removed: null, remaining: [] };
+  const removed = bucket[poolType].shift();
+  persistUserPool(userId, poolType);
+  return { removed, remaining: [...bucket[poolType]] };
+}
+
+// يحذف نتيجة بعينها (نفس الوقت ونفس لحظة التسجيل) من تاريخ شخص بفقرة
+function removeEntryMatching(userId, poolType, entry) {
+  const bucket = history.get(userId);
+  if (!bucket || !bucket[poolType] || !entry) return false;
+  const idx = bucket[poolType].findIndex((e) => e.ts === entry.ts && e.elapsed === entry.elapsed);
+  if (idx === -1) return false;
+  bucket[poolType].splice(idx, 1);
+  persistUserPool(userId, poolType);
+  return true;
+}
+
+// يمسح كل نتائج شخص بفقرة وحدة، ويرجع عددها
+function clearPool(userId, poolType) {
+  const bucket = history.get(userId);
+  if (!bucket || !bucket[poolType] || bucket[poolType].length === 0) return 0;
+  const n = bucket[poolType].length;
+  bucket[poolType] = [];
+  persistUserPool(userId, poolType);
+  return n;
+}
+
 // يمسح تاريخ شخص بكل الفقرات (يُستخدم مع .ريسيت توب بدون نوع، أو
 // .ازالة تصفير)
 function removeUser(userId) {
@@ -188,6 +218,7 @@ async function loadFromDb() {
           elapsed: doc.elapsed,
           answer: doc.answer,
           ts: doc.ts,
+          ...(doc.wc ? { wc: doc.wc } : {}),
         });
         count++;
       }
@@ -214,4 +245,4 @@ async function flushPending() {
   await Promise.all([...persistRunning.values()].map((st) => st.promise));
 }
 
-module.exports = { record, getTop, removeUser, removeTopEntry, resetAll, seedFromLeaderboard, loadFromDb, flushPending };
+module.exports = { POOL_TYPES, record, getTop, removeUser, removeTopEntry, popTopEntry, removeEntryMatching, clearPool, resetAll, seedFromLeaderboard, loadFromDb, flushPending };
