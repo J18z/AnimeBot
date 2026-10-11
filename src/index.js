@@ -15,7 +15,7 @@ const templates = require("./templates");
 const db = require("./db");
 const { useMongoAuthState, flushPendingAuth, resetChatEncryption, purgeUserKeys } = require("./mongoAuthState");
 const { createHealer } = require("./sessionHealer");
-const { useMemoryAuthState } = require("./memoryAuthState");
+const { useMemoryAuthState, resetMemoryAuthState } = require("./memoryAuthState");
 const adminPoints = require("./adminPoints");
 const { formatSeconds } = require("./utils");
 const sessionHealer = createHealer({ purge: purgeUserKeys });
@@ -494,6 +494,13 @@ const SLOW_RETRY_MS = 10 * 60 * 1000; // 10 دقايق بين كل محاولة 
 // يمسح جلسة واتساب المخزنة (سواء بقاعدة البيانات أو ملف محلي) — يُستخدم
 // لما تصير الجلسة غير صالحة (تسجيل خروج) عشان نطلب QR جديد بدل ما نعلق
 async function clearAuthSession() {
+  // وضع الذاكرة (الافتراضي): ما فيه شي مخزّن بقاعدة البيانات أو ملفات —
+  // نمسح الجلسة من الذاكرة بس، والاتصال القادم يطلب باركود جديد
+  if (SESSION_STORE !== "mongo" && SESSION_STORE !== "files") {
+    resetMemoryAuthState();
+    console.log("🗑️ مسحنا جلسة واتساب من الذاكرة.");
+    return;
+  }
   if (db.getDb()) {
     try {
       await db.getDb().collection("baileys_auth").deleteMany({});
@@ -591,9 +598,7 @@ async function connectSocket() {
   // القديم محجوز بالذاكرة. الحين نحوّلها للسوكت الجديد فورًا
   for (const c of activeContests.values()) c.client = sock;
 
-  // 🔍 تشخيص دقيق: نلف sock.sendMessage عشان نقيس وقت الإرسال الفعلي
-  // (الشبكة/واتساب) لوحده، منفصل عن وقت تجهيز الرد بكودنا — هذا يفرق
-  // بالضبط بين "كودنا بطيء" و"الإرسال الفعلي بطيء" بدل ما نخمّن
+  // مهلة أمان للإرسال (بدون أي قياس أو طباعة)
   const rawSendMessage = sock.sendMessage.bind(sock);
   sock.sendMessage = async (...args) => {
     {

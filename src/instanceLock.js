@@ -62,7 +62,18 @@ async function tryAcquire() {
       try {
         // نجدد بس لو القفل لسا لنا (فلتر instanceId) — نتفادى نسرق أو
         // نجدد قفل نسخة ثانية بالغلط لو صار تعارض غريب
-        await col.updateOne({ _id: "singleton", instanceId: INSTANCE_ID }, { $set: { heartbeatAt: Date.now() } });
+        const res = await col.updateOne({ _id: "singleton", instanceId: INSTANCE_ID }, { $set: { heartbeatAt: Date.now() } });
+        if (res.matchedCount === 0) {
+          // القفل انحذف من القاعدة (مثلاً حذفته يدوياً) أو أخذته نسخة ثانية.
+          // نحاول نرجّعه؛ لو فيه نسخة ثانية حية ماسكته، نوقف هذي النسخة فوراً —
+          // استمرار نسختين شغالتين بنفس الوقت يعني ردود مكررة وتعارض مع واتساب
+          const regained = await tryAcquire().catch(() => false);
+          if (!regained) {
+            console.error("🛑 فقدنا قفل التشغيل لصالح نسخة ثانية — نوقف هذي النسخة.");
+            process.exit(1);
+          }
+          console.log("🔒 القفل كان مفقود، أخذناه من جديد.");
+        }
       } catch (e) {
         console.error("⚠️ خطأ تجديد قفل النسخة:", e.message);
       }

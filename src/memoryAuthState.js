@@ -5,7 +5,21 @@
 const { proto, initAuthCreds } = require("@whiskeysockets/baileys");
 const { setAuthHooks } = require("./mongoAuthState");
 
+// ⚠️ سبب حلقة الباركود اللي كانت تصير: هذي الدالة تُستدعى مع كل إعادة اتصال
+// (connectSocket)، وكانت تنشئ جلسة فاضية جديدة كل مرة. بعد ما تمسح الباركود
+// واتساب يقفل الاتصال عمداً ويطلب إعادة تشغيل الاتصال (حالة عادية بالربط) —
+// فنرجع نتصل بجلسة فاضية جديدة ← باركود جديد ← وهكذا للأبد. الحل: الجلسة
+// تنخزن بمتغير واحد على مستوى الملف وتنرجّع نفسها لكل اتصال داخل نفس التشغيل
+// (لسا "بالذاكرة فقط": تنمسح مع إعادة تشغيل البرنامج، مو بين الاتصالات)
+let cached = null;
+
+// يمسح الجلسة من الذاكرة (عند تسجيل الخروج) عشان الاتصال القادم يطلب باركود جديد
+function resetMemoryAuthState() {
+  cached = null;
+}
+
 async function useMemoryAuthState() {
+  if (cached) return cached;
   const creds = initAuthCreds();
   const store = new Map(); // "type-id" -> value
 
@@ -63,7 +77,8 @@ async function useMemoryAuthState() {
     },
   });
 
-  return { state: { creds, keys }, saveCreds: async () => {} };
+  cached = { state: { creds, keys }, saveCreds: async () => {} };
+  return cached;
 }
 
-module.exports = { useMemoryAuthState };
+module.exports = { useMemoryAuthState, resetMemoryAuthState };
