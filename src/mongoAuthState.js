@@ -23,6 +23,7 @@ const instanceLock = require("./instanceLock");
 const FAST_MISS = process.env.AUTH_FAST_MISS !== "0";
 let currentFlushNow = null;
 let currentReset = null;
+let currentPurgeUser = null;
 
 async function useMongoAuthState() {
   const db = getDb();
@@ -68,7 +69,7 @@ async function useMongoAuthState() {
   // بس). لو مفتاح قديم غير نشط اتطرد واحتجناه بعدين، نرجعه من قاعدة
   // البيانات (رحلة شبكة، بس نادرة جداً — بس للمفاتيح الخاملة فعلاً، مو
   // للمحادثات النشطة اللي تفضل بالكاش طول الوقت)
-  const MAX_CACHE_SIZE = 8000;
+  const MAX_CACHE_SIZE = Number(process.env.AUTH_CACHE_MAX) || 8000; // (AUTH_CACHE_MAX لتجربة سقف أصغر)
 
   // ينقل مفتاح لآخر ترتيب الـMap (يعني "استُخدم للتو") — الأقدم استخداماً
   // يفضل بأول الـMap دايمًا، وهو اللي نطرده أول لو الكاش امتلأ
@@ -108,16 +109,14 @@ async function useMongoAuthState() {
         continue;
       }
       if (dirty.has(oldestKey)) {
-        // فيه تغيير معلّق ما انكتب لقاعدة البيانات بعد — نضمن نحفظه أول
-        // قبل ما نطرده من الذاكرة، عشان ما نفقد أي بيانات
-        try {
-          const value = JSON.stringify(cache.get(oldestKey), BufferJSON.replacer);
-          await col.updateOne({ _id: oldestKey }, { $set: { value } }, { upsert: true });
-          dirty.delete(oldestKey);
-        } catch (e) {
-          console.error(`⚠️ خطأ حفظ مفتاح قبل طرده من الكاش (${oldestKey}):`, e.message);
-          break; // ما نطرده لو فشل الحفظ — أحسن نحتفظ فيه بالذاكرة مؤقتاً
-        }
+        // ✅ إصلاح سباق: الكود القديم كان يكتب المفتاح للقاعدة بنفسه هنا
+        // (await)، وأثناء انتظار الشبكة ممكن تجي رسالة وتكتب نسخة أحدث من
+        // نفس المفتاح — فبعد الانتظار كنا نمسح علامة "معلّق" ونطرد من الكاش
+        // النسخة الأحدث بالغلط = تضيع = حالة تشفير قديمة (Bad MAC). الحين:
+        // المفتاح المعلّق ما نطرده أبداً — نخليه بالكاش لين يحفظه الفلاش
+        // الدوري (قريب جداً)، ونكمل للمفتاح اللي بعده
+        touch(oldestKey);
+        continue;
       }
       cache.delete(oldestKey);
       evictedIds.add(oldestKey);
@@ -260,6 +259,30 @@ async function useMongoAuthState() {
   // creds والـpre-keys ومفاتيح مزامنة التطبيق — فالبوت يبقى مربوط بدون QR،
   // وكل محادثة تبني تشفيرها من جديد عند أول رسالة
   const isChatKey = (id) => id.startsWith("session-") || id.startsWith("sender-key-");
+  // 🩹 حذف مفاتيح تشفير شخص واحد بس (جلساته الفردية + مفاتيح القروبات الخاصة
+  // به)، بالذاكرة والقاعدة. يُستخدم للعلاج التلقائي لجلسة تالفة بدل ما
+  // نترك libsignal يجرّب فك التشفير عليها مرة بعد مرة (كل محاولة فاشلة
+  // تحسب حتى 2000 خطوة تشفير + تجرّب كل الجلسات القديمة = معالج مخنوق)
+  currentPurgeUser = async function purgeUserKeys(userDigits) {
+    const u = String(userDigits).replace(/\D/g, "");
+    if (!u) return 0;
+    const reSession = new RegExp(`^session-${u}(_\\d+)?\\.\\d+$`);
+    const reSender = new RegExp(`^sender-key-.*::${u}(_\\d+)?::\\d+$`);
+    let n = 0;
+    for (const id of [...cache.keys()]) {
+      if (reSession.test(id) || reSender.test(id)) {
+        cache.delete(id);
+        dirty.delete(id);
+        n++;
+      }
+    }
+    await flushChain.catch(() => {});
+    const res = await col.deleteMany({
+      _id: { $regex: `^(session-${u}(_\\d+)?\\.\\d+|sender-key-.*::${u}(_\\d+)?::\\d+)$` },
+    });
+    return Math.max(n, res.deletedCount || 0);
+  };
+
   currentReset = async function resetChatSessions() {
     let inMemory = 0;
     for (const id of [...cache.keys()]) {
@@ -317,9 +340,14 @@ async function flushPendingAuth() {
   if (currentFlushNow) await currentFlushNow();
 }
 
+async function purgeUserKeys(userDigits) {
+  if (!currentPurgeUser) return 0;
+  return currentPurgeUser(userDigits);
+}
+
 async function resetChatEncryption() {
   if (!currentReset) throw new Error("ما فيه جلسة نشطة.");
   return currentReset();
 }
 
-module.exports = { useMongoAuthState, flushPendingAuth, resetChatEncryption };
+module.exports = { useMongoAuthState, flushPendingAuth, resetChatEncryption, purgeUserKeys };
