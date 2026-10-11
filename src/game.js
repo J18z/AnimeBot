@@ -7,7 +7,6 @@ const standings = require("./standings");
 const moderation = require("./moderation");
 const registration = require("./registration");
 const templates = require("./templates");
-const lagMonitor = require("./lagMonitor");
 let sharp;
 try {
   sharp = require("sharp");
@@ -267,7 +266,6 @@ class Contest {
   // عند انتهاء المسابقة (ما يتراكم شي)
   _planNextRound() {
     if (this.practiceMode || !this.active) return;
-    if (this._plannedPoolType) return; // مخطط أصلاً
     try {
       const nextType = this.pickPoolType();
       this._plannedPoolType = nextType;
@@ -487,9 +485,7 @@ class Contest {
           ).catch((e) => console.error("فشل إرسال تنبيه انتظار السؤال:", e));
         }
       }, 20000); // 20 ثانية
-      // (التجهيز المسبق للصورة التالية ينفّذ من scheduleNextRound — أثناء فترة
-      // الانتظار بين الجولات — مو هنا. هنا نافذة الإجابة شغالة، وأي شغل ثقيل
-      // بالمعالج الحين يؤخر معالجة إجابات اللاعبين ويلخبط الأوقات)
+      this._planNextRound();
     }
   }
 
@@ -694,8 +690,7 @@ class Contest {
     try {
       const ts = Number(msg && msg.messageTimestamp);
       const ageS = ts ? (Date.now() / 1000 - ts).toFixed(1) : "؟";
-      const lagMs = lagMonitor.maxLagSince(round.startTime);
-      console.log(`⏱️ [توقيت] خام=${rawElapsed}ms → معروض=${elapsed}ms | إرسال السؤال=${round.sendMs ?? "؟"}ms | عمر رسالة اللاعب≈${ageS}s | تأخر المعالج بالجولة=${lagMs}ms${lagMs >= 300 ? " ⚠️ الوقت غير موثوق" : ""}`);
+      console.log(`⏱️ [توقيت] خام=${rawElapsed}ms → معروض=${elapsed}ms | إرسال السؤال=${round.sendMs ?? "؟"}ms | عمر رسالة اللاعب≈${ageS}s`);
     } catch (e) {
       /* تجاهل */
     }
@@ -763,10 +758,6 @@ class Contest {
   // الأولى (عطل مؤقت بالشبكة مثلاً)، وتنبيه واضح للقروب لو فشلت الاثنتين
   // — بدل ما تفضل المسابقة "معلّقة" بصمت بدون أي توضيح لأي أحد
   scheduleNextRound(delayMs, context = "الجولة القادمة") {
-    // 🚀 نجهّز صورة الجولة القادمة (لو صور) هنا، أثناء فترة الانتظار بين
-    // الجولتين: خارج نافذة أي إجابة (الجولة السابقة خلصت والقادمة ما بدأت)،
-    // فما يأثر على توقيت أحد، وفي نفس الوقت الصورة تطلع فور بدء الجولة
-    this._planNextRound();
     this.nextRoundTimer = setTimeout(async () => {
       try {
         await this.nextRound();

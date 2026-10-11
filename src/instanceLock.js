@@ -62,14 +62,7 @@ async function tryAcquire() {
       try {
         // نجدد بس لو القفل لسا لنا (فلتر instanceId) — نتفادى نسرق أو
         // نجدد قفل نسخة ثانية بالغلط لو صار تعارض غريب
-        const r = await col.updateOne({ _id: "singleton", instanceId: INSTANCE_ID }, { $set: { heartbeatAt: Date.now() } });
-        // 🛑 لو القفل ما عاد لنا (نسخة ثانية أخذته — مثلاً بعد توقف طويل بالمعالج)،
-        // نوقف فوراً بدون أي حفظ: استمرارنا = نسختين على نفس الجلسة = تلف مفاتيح
-        // التشفير (Bad MAC). Render يعيد تشغيلنا، والنسخة الجديدة تنتظر دورها بالقفل
-        if (r.matchedCount === 0) {
-          console.error("🛑 فقدنا قفل النسخة الوحيدة (نسخة ثانية شغّالة؟) — نوقف هذي النسخة فوراً لحماية الجلسة.");
-          process.exit(1);
-        }
+        await col.updateOne({ _id: "singleton", instanceId: INSTANCE_ID }, { $set: { heartbeatAt: Date.now() } });
       } catch (e) {
         console.error("⚠️ خطأ تجديد قفل النسخة:", e.message);
       }

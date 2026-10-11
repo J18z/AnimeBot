@@ -74,29 +74,18 @@ async function flushPending() {
   await persist();
 }
 
-// ⚡ سقف السجل الخام: قروب الرصد فيه 10 رسائل بالكثير، فنحتفظ بآخر
-// RAW_LOG_MAX رسالة بس (هامش أمان فوق الـ10) — أي شي أقدم يُحذف تلقائياً
-// بعد كل إضافة، فالسجل ما يكبر أبداً. لو يوماً زادت رسائل الأسبوع عن
-// كذا، غيّر هذا الرقم بس (وإلا .رصد_الكل بيحسب من آخر RAW_LOG_MAX فقط)
-const RAW_LOG_MAX = 30;
-
-// سجل خام للرسائل القابلة للرصد فقط (لأجل .رصد_الكل و.رصد) — الدردشة
-// العادية ما تنسجل إطلاقاً (ما لها أي فايدة بإعادة الحساب)
+// سجل خام لكل رسالة تدخل قروب الرصد (لأجل .رصد_الكل و.رصد)
 async function logRawMessage(msgId, senderId, text, timestamp, parsed) {
   const db = getDb();
   if (!db) return;
   try {
-    const col = db.collection("matsuri_rasad_log");
     const doc = { msgId, senderId, text, timestamp, parsed };
     if (msgId) {
       // upsert بالآيدي: نفس الرسالة ما تنكتب مرتين
-      await col.updateOne({ msgId }, { $setOnInsert: doc }, { upsert: true });
+      await db.collection("matsuri_rasad_log").updateOne({ msgId }, { $setOnInsert: doc }, { upsert: true });
     } else {
-      await col.insertOne(doc);
+      await db.collection("matsuri_rasad_log").insertOne(doc);
     }
-    // نقص السجل لآخر RAW_LOG_MAX رسالة
-    const extra = await col.find({}, { projection: { _id: 1 } }).sort({ timestamp: -1 }).skip(RAW_LOG_MAX).toArray();
-    if (extra.length) await col.deleteMany({ _id: { $in: extra.map((d) => d._id) } });
   } catch (err) {
     console.error("خطأ تسجيل رسالة الرصد:", err.message);
   }
@@ -414,9 +403,8 @@ async function handleRasadMessage(sock, msg, text, chatId, senderId) {
     return true;
   }
 
-  // رسالة قابلة للرصد لكن الرصد متوقف: نسجلها (للاستخدام لاحقاً بـ.رصد_الكل).
-  // الدردشة العادية (ما انطابقت مع أي شكل رصد) ما نسجلها أبداً
-  if (entries.length > 0) logRawMessage(msgId, senderId, t, now, false);
+  // رسالة عادية ما انرصدت: نسجلها بالخلفية بدون ما نعطّل بقية المعالجة
+  logRawMessage(msgId, senderId, t, now, false);
 
   return false; // ما رددنا: نسمح لباقي البوت يكمل
 }

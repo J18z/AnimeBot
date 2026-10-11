@@ -69,7 +69,7 @@ async function useMongoAuthState() {
   // بس). لو مفتاح قديم غير نشط اتطرد واحتجناه بعدين، نرجعه من قاعدة
   // البيانات (رحلة شبكة، بس نادرة جداً — بس للمفاتيح الخاملة فعلاً، مو
   // للمحادثات النشطة اللي تفضل بالكاش طول الوقت)
-  const MAX_CACHE_SIZE = Number(process.env.AUTH_CACHE_MAX) || 8000; // (AUTH_CACHE_MAX لتجربة سقف أصغر)
+  const MAX_CACHE_SIZE = 8000;
 
   // ينقل مفتاح لآخر ترتيب الـMap (يعني "استُخدم للتو") — الأقدم استخداماً
   // يفضل بأول الـMap دايمًا، وهو اللي نطرده أول لو الكاش امتلأ
@@ -109,14 +109,16 @@ async function useMongoAuthState() {
         continue;
       }
       if (dirty.has(oldestKey)) {
-        // ✅ إصلاح سباق: الكود القديم كان يكتب المفتاح للقاعدة بنفسه هنا
-        // (await)، وأثناء انتظار الشبكة ممكن تجي رسالة وتكتب نسخة أحدث من
-        // نفس المفتاح — فبعد الانتظار كنا نمسح علامة "معلّق" ونطرد من الكاش
-        // النسخة الأحدث بالغلط = تضيع = حالة تشفير قديمة (Bad MAC). الحين:
-        // المفتاح المعلّق ما نطرده أبداً — نخليه بالكاش لين يحفظه الفلاش
-        // الدوري (قريب جداً)، ونكمل للمفتاح اللي بعده
-        touch(oldestKey);
-        continue;
+        // فيه تغيير معلّق ما انكتب لقاعدة البيانات بعد — نضمن نحفظه أول
+        // قبل ما نطرده من الذاكرة، عشان ما نفقد أي بيانات
+        try {
+          const value = JSON.stringify(cache.get(oldestKey), BufferJSON.replacer);
+          await col.updateOne({ _id: oldestKey }, { $set: { value } }, { upsert: true });
+          dirty.delete(oldestKey);
+        } catch (e) {
+          console.error(`⚠️ خطأ حفظ مفتاح قبل طرده من الكاش (${oldestKey}):`, e.message);
+          break; // ما نطرده لو فشل الحفظ — أحسن نحتفظ فيه بالذاكرة مؤقتاً
+        }
       }
       cache.delete(oldestKey);
       evictedIds.add(oldestKey);

@@ -126,32 +126,15 @@ function findByName(name) {
   return [...map.entries()].map(([userId, displayName]) => ({ userId, displayName }));
 }
 
-// يحدد هدف أمر إداري برقمه بقائمة .تسجيلات بالضبط — "3" يعني ثالث واحد
-// بقائمة الجوالات، "3_خارجي" يعني ثالث واحد بقائمة الخارجي. نفس الترتيب
-// والأرقام المعروضة بأمر .تسجيلات حرفياً (Map بترتيب التسجيل، 1-indexed)
-function resolveTargetByRegNumber(trailingText) {
-  const t = (trailingText || "").trim();
-  const m = t.match(/^(\d+)(_خارجي)?$/);
-  if (!m) return null;
-  const n = parseInt(m[1], 10);
-  if (n < 1) return null;
-  const list = registration.getAllByType(m[2] ? "external" : "mobile");
-  const entry = list[n - 1];
-  return entry ? entry.userId : null;
-}
-
 // يحدد هدف أمر إداري: أولوية للمنشن الفعلي (يشتغل حتى لو الشخص مو
-// موجود بالقروب حالياً)، وإلا رقم من قائمة .تسجيلات (جوال أو _خارجي)،
-// وإلا يدور بالاسم المكتوب بعد الأمر. يرجع { userId } لو لقى واحد
-// بالضبط، أو { error: "none" } لو ما لقى شي، أو { error: "ambiguous",
-// matches } لو فيه أكثر من شخص بنفس الاسم بالضبط
+// موجود بالقروب حالياً)، وإلا يدور بالاسم المكتوب بعد الأمر. يرجع
+// { userId } لو لقى واحد بالضبط، أو { error: "none" } لو ما لقى شي، أو
+// { error: "ambiguous", matches } لو فيه أكثر من شخص بنفس الاسم بالضبط
 function resolveTarget(msg, trailingText) {
   const mentioned = getMentionedJid(msg);
   if (mentioned) return { userId: mentioned };
   const name = (trailingText || "").trim();
   if (!name) return { error: "none" };
-  const byNumber = resolveTargetByRegNumber(name);
-  if (byNumber) return { userId: byNumber };
   const matches = findByName(name);
   if (matches.length === 1) return { userId: matches[0].userId };
   if (matches.length === 0) return { error: "none" };
@@ -532,13 +515,6 @@ async function connectSocket() {
     auth: state,
     version,
     logger: P({ level: "silent" }),
-    // اختياري (مطفي افتراضياً — الاتصال نفسه ما تغيّر): IGNORE_STATUS=1 بمتغيرات
-    // Render يخلي البوت يتجاهل الستوري والقنوات من الأساس قبل ما يحاول يفك
-    // تشفيرها (خيار رسمي بـBaileys). مفيد لو سطر 🩹 باللوق أثبت إن أغلب
-    // فشل فك التشفير جاي من الستوري
-    ...(process.env.IGNORE_STATUS === "1"
-      ? { shouldIgnoreJid: (jid) => !!jid && (jid === "status@broadcast" || jid.endsWith("@newsletter")) }
-      : {}),
   });
 
   // ✅ هذا الآن هو السوكت "الرسمي" الوحيد — أي سوكت سابق انقفل فعلياً فوق
@@ -1222,7 +1198,7 @@ if (rejectChangeMatch) {
       return;
     }
 
-    await resolveTargetOrAsk(sock, chatId, msg, senderId, trailingText, "⚠️ ما لقيت هذا الشخص. استخدم منشن أو اسمه المسجل أو رقمه بـ.تسجيلات (مثلاً 1 أو 1_خارجي).", async (target) => {
+    await resolveTargetOrAsk(sock, chatId, msg, senderId, trailingText, "⚠️ ما لقيت هذا الشخص. استخدم منشن أو اسمه المسجل بالضبط.", async (target) => {
       if (poolType) {
         leaderboard.removeUserFromPool(poolType, target);
         // ✅ نحذف بس أفضل نتيجة شخصية (اللي كانت مطابقة لسجل .توب)، مو
@@ -1245,45 +1221,6 @@ if (rejectChangeMatch) {
         );
       }
     });
-    return;
-  }
-
-  // أمر .ريسيت نقاط [@شخص/اسم/رقم]: يحذف رصيد "النقاط" التراكمي للشخص
-  // بسجل .سجل (ترتيب الفنش والنقاط — standings.js)، منفصل تماماً عن
-  // .ريسيت توب (اللي يتعامل مع أفضل الأوقات بـ.توب و.نقاطي). مفيد لتنظيف
-  // نقاط تراكمت غلط بسبب مسابقات فيها أوقات خاطئة. بدون شخص محدد = تصفير
-  // الجميع. مخصص لصاحب البوت بس
-  const resetPointsMatch = text.match(/^\.ريسيت نقاط(?:\s+(.+))?$/);
-  if (resetPointsMatch) {
-    if (!isOwner(senderId)) {
-      await sock.sendMessage(chatId, { text: "⛔ هذا الأمر مخصص لصاحب البوت بس." }, { quoted: msg });
-      return;
-    }
-    const trailingText = resetPointsMatch[1];
-    const mentioned = getMentionedJid(msg);
-
-    if (!mentioned && !trailingText) {
-      await standings.reset();
-      await sock.sendMessage(chatId, { text: "🗑️ تم تصفير سجل النقاط بالكامل للجميع." }, { quoted: msg });
-      return;
-    }
-
-    await resolveTargetOrAsk(
-      sock,
-      chatId,
-      msg,
-      senderId,
-      trailingText,
-      "⚠️ ما لقيت هذا الشخص. استخدم منشن أو اسمه المسجل أو رقمه بـ.تسجيلات (مثلاً 1 أو 1_خارجي).",
-      async (target) => {
-        standings.removeUser(target);
-        await sock.sendMessage(
-          chatId,
-          { text: `🗑️ تم حذف رصيد نقاط @${target.split("@")[0]} بالكامل من سجل .سجل.`, mentions: [target] },
-          { quoted: msg }
-        );
-      }
-    );
     return;
   }
 
@@ -1386,8 +1323,8 @@ if (rejectChangeMatch) {
     return;
   }
 
-  // أمر .ريسيت سجل [@شخص/اسم]: يصفّر السجل التراكمي كامل، أو سجل شخص
-  // معين بس لو فيه منشن/اسم — مخصص لصاحب البوت بس
+  // أمر .ريسيت سجل [@شخص/اسم/رقم] أو بدون شي: يصفّر السجل التراكمي كامل،
+  // أو سجل شخص معين — مخصص لصاحب البوت بس
   const resetStandingsMatch = text.match(/^\.ريسيت سجل(?:\s+(.+))?$/);
   if (resetStandingsMatch) {
     if (!isOwner(senderId)) {
@@ -1396,6 +1333,27 @@ if (rejectChangeMatch) {
     }
     const trailingText = resetStandingsMatch[1];
     const mentioned = getMentionedJid(msg);
+
+    // ✅ لو كتب رقم صرف (بدون منشن)، هذا رقم الموقع بقائمة .سجل نفسها
+    // (نفس ترقيم أمر .حذف سجل بالضبط) — مو اسم ولا رقم تسجيل. أي شي
+    // ثاني (منشن أو اسم مكتوب) يفضل يشتغل بالبحث بالاسم زي ما كان
+    const asNumber = !mentioned && trailingText && /^\d+$/.test(trailingText.trim()) ? parseInt(trailingText.trim(), 10) : null;
+    if (asNumber !== null) {
+      const list = standings.getStandings();
+      const entry = list[asNumber - 1];
+      if (!entry) {
+        await sock.sendMessage(chatId, { text: `⚠️ ما فيه رقم ${asNumber} بالسجل الحالي (نفس ترقيم .سجل).` }, { quoted: msg });
+        return;
+      }
+      standings.removeUser(entry.userId);
+      await sock.sendMessage(
+        chatId,
+        { text: `🗑️ تم حذف سجل @${entry.userId.split("@")[0]} (رقم ${asNumber} بالسجل) من السجل التراكمي.`, mentions: [entry.userId] },
+        { quoted: msg }
+      );
+      return;
+    }
+
     if (mentioned || trailingText) {
       await resolveTargetOrAsk(sock, chatId, msg, senderId, trailingText, "⚠️ ما لقيت هذا الشخص. استخدم منشن أو اسمه المسجل بالضبط.", async (target) => {
         standings.removeUser(target);
@@ -1409,6 +1367,58 @@ if (rejectChangeMatch) {
     }
     standings.reset();
     await sock.sendMessage(chatId, { text: "🗑️ تم تصفير السجل العام بالكامل." }, { quoted: msg });
+    return;
+  }
+
+  // ✅ أمر .ريسيت نقاط <اختصار الفقرة> <رقم> أو <رقم>_خارجي: يحذف بس
+  // أفضل نتيجة بالفقرة المحددة من سجل .نقاطي الشخصي لصاحب رقم التسجيل
+  // هذا (نفس رقم .تسجيلات — جوال افتراضياً، أو خارجي لو مكتوب "_خارجي").
+  // ما يمس .سجل ولا .توب العام إطلاقاً — بس شخصي. لو عنده نتيجة ثانية
+  // بعدها بنفس الفقرة، تدخل تلقائي بلوحة الصدارة العامة لو تستاهل (نفس
+  // منطق .ريسيت توب <نوع> <شخص> بالضبط)
+  const resetNiqatMatch = text.match(/^\.ريسيت نقاط (ص|كت|تع|سس|فك|عك|تر|تك) (\d+)(_خارجي)?$/);
+  if (resetNiqatMatch) {
+    if (!isOwner(senderId)) {
+      await sock.sendMessage(chatId, { text: "⛔ هذا الأمر مخصص لصاحب البوت بس." }, { quoted: msg });
+      return;
+    }
+    const poolType = topTypeMap[resetNiqatMatch[1]];
+    const regNum = parseInt(resetNiqatMatch[2], 10);
+    const regType = resetNiqatMatch[3] ? "external" : "mobile";
+    const list = registration.getAllByType(regType);
+    const entry = list[regNum - 1];
+    if (!entry) {
+      const typeLabel = regType === "external" ? "الخارجي" : "الجوالات";
+      await sock.sendMessage(
+        chatId,
+        { text: `⚠️ ما فيه رقم ${regNum} بقائمة ${typeLabel} (نفس ترقيم .تسجيلات).` },
+        { quoted: msg }
+      );
+      return;
+    }
+    const target = entry.userId;
+
+    const top = personalHistory.getTop(target, poolType, 1);
+    if (top.length === 0) {
+      await sock.sendMessage(
+        chatId,
+        { text: `⚠️ @${target.split("@")[0]} ما عنده أي نتيجة بفقرة ${poolLabels[poolType]} بـ.نقاطي.`, mentions: [target] },
+        { quoted: msg }
+      );
+      return;
+    }
+
+    const nextBest = personalHistory.removeTopEntry(poolType, target);
+    if (nextBest) leaderboard.record(poolType, nextBest);
+
+    await sock.sendMessage(
+      chatId,
+      {
+        text: `🗑️ تم حذف أفضل نتيجة لـ@${target.split("@")[0]} بفقرة ${poolLabels[poolType]} من .نقاطي.`,
+        mentions: [target],
+      },
+      { quoted: msg }
+    );
     return;
   }
 
@@ -1766,7 +1776,6 @@ setInterval(() => {
 // وحدة بس، مو عند كل إعادة اتصال بواتساب)، وبعدها نشغّل اتصال واتساب
 async function main() {
   require("./versionInfo").logVersions();
-  require("./lagMonitor").start();
   startHealthServer(); // يفتح منفذ HTTP بسيط (يحتاجه Render وأشباهه)
 
   await db.connect(store.getConfig().mongoUri);

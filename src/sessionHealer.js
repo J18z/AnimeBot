@@ -15,31 +15,8 @@ function userOf(jid) {
   return u || null;
 }
 
-// مصدر الرسالة الفاشلة — عشان نعرف من اللوق بالضبط من وين جاي الحمل
-// (ستوري؟ قروبات؟ خاص؟) بدل التخمين، ونقرر هل نفعّل IGNORE_STATUS
-function sourceOf(msg) {
-  const j = (msg && msg.key && msg.key.remoteJid) || "";
-  if (j === "status@broadcast") return "ستوري";
-  if (j.endsWith("@g.us")) return "قروب";
-  if (j.endsWith("@newsletter")) return "قناة";
-  if (j.endsWith("@broadcast")) return "بث";
-  return "خاص";
-}
-
-function createHealer({ purge, log = console.log, now = () => Date.now(), reportEveryMs = 60 * 1000 }) {
+function createHealer({ purge, log = console.log, now = () => Date.now() }) {
   const lastHealed = new Map(); // user -> ts
-  // إحصاء الدقيقة الأخيرة (يتصفّر مع كل تقرير، فما يتراكم شي)
-  let stats = { total: 0, bySource: new Map(), users: new Set(), healed: 0 };
-
-  function report() {
-    if (stats.total === 0) return;
-    const parts = [...stats.bySource].map(([k, n]) => `${k}=${n}`).join(" | ");
-    log(
-      `🩹 فشل فك تشفير آخر دقيقة: ${stats.total} (${parts}) | أشخاص مختلفين=${stats.users.size} | جلسات انعالجت=${stats.healed}`
-    );
-    stats = { total: 0, bySource: new Map(), users: new Set(), healed: 0 };
-  }
-  if (reportEveryMs > 0) setInterval(report, reportEveryMs).unref();
 
   function usersFor(msg) {
     const key = msg.key || {};
@@ -56,10 +33,6 @@ function createHealer({ purge, log = console.log, now = () => Date.now(), report
   async function maybeHeal(msg) {
     try {
       if (!msg || msg.messageStubType !== CIPHERTEXT_STUB || (msg.key && msg.key.fromMe)) return false;
-      stats.total++;
-      const src = sourceOf(msg);
-      stats.bySource.set(src, (stats.bySource.get(src) || 0) + 1);
-      for (const u of usersFor(msg)) stats.users.add(u);
       const params = (msg.messageStubParameters || []).join(" ");
       if (!FAIL_RE.test(params)) return false;
       const t = now();
@@ -70,7 +43,6 @@ function createHealer({ purge, log = console.log, now = () => Date.now(), report
         lastHealed.set(u, t);
         const n = await purge(u);
         healed++;
-        stats.healed++;
         log(`🩹 جلسة تشفير تالفة لـ${u} — حذفنا ${n} مفتاح، تتجدد تلقائياً مع أول رسالة.`);
       }
       // تنظيف دوري للـMap عشان ما يكبر
@@ -82,7 +54,7 @@ function createHealer({ purge, log = console.log, now = () => Date.now(), report
     }
   }
 
-  return { maybeHeal, report };
+  return { maybeHeal };
 }
 
-module.exports = { createHealer, userOf, FAIL_RE, sourceOf };
+module.exports = { createHealer, userOf, FAIL_RE };
