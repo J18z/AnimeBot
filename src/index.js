@@ -13,8 +13,10 @@ const registration = require("./registration");
 const moderation = require("./moderation");
 const templates = require("./templates");
 const db = require("./db");
-const { useMongoAuthState, flushPendingAuth, resetChatEncryption, purgeUserKeys } = require("./mongoAuthState");
+const { useMongoAuthState, flushPendingAuth, resetChatEncryption, purgeUserKeys, getAuthStats } = require("./mongoAuthState");
 const { createHealer } = require("./sessionHealer");
+const { createMaintenance } = require("./maintenance");
+const { buildMemoryReport } = require("./memoryReport");
 const { useMemoryAuthState, resetMemoryAuthState } = require("./memoryAuthState");
 const adminPoints = require("./adminPoints");
 const { formatSeconds } = require("./utils");
@@ -534,7 +536,21 @@ function cleanupSocket(sock) {
   }
 }
 
+// ✅ غلاف أمان: لو صار أي خطأ أثناء بناء الاتصال (قاعدة بيانات، شبكة...) كان
+// الرمز connecting يبقى true للأبد، فكل محاولات إعادة الاتصال القادمة تنرفض
+// ("فيه محاولة اتصال شغالة أصلاً") والبوت يوقف نهائياً بدون أي رسالة. الحين
+// نفكّ القفل ونعيد المحاولة بعد 10 ثواني
 async function connectSocket() {
+  try {
+    await connectSocketInner();
+  } catch (err) {
+    connecting = false;
+    console.error("⚠️ فشل بناء الاتصال، نعيد المحاولة بعد 10 ثواني:", err && err.message);
+    setTimeout(connectSocket, 10000);
+  }
+}
+
+async function connectSocketInner() {
   // ✅ قفل: لو فيه محاولة اتصال شغالة أصلاً، ما ننشئ وحدة ثانية بالتوازي
   // (يحصل لو Baileys بعث أكثر من حدث "close" بلحظات متقاربة)
   if (connecting) {
@@ -630,6 +646,7 @@ async function connectSocket() {
     }
 
     if (connection === "close") {
+      maintenance.noteDisconnected();
       // ✅ mongoAuthState.js صار يستخدم كاش بالذاكرة + حفظ مؤجل (800ms)
       // عشان الأداء (بدل ما كل قراءة/كتابة تضرب MongoDB مباشرة). أي
       // اتصال جديد (connectSocket) يفتح كاش جديد من الصفر من القاعدة،
@@ -693,6 +710,7 @@ async function connectSocket() {
       }
     } else if (connection === "open") {
       console.log("✅ البوت جاهز ومتصل بواتساب!");
+      maintenance.noteConnected();
       lastOpenTime = Date.now();
       consecutiveLogouts = 0; // اتصال ناجح = نصفّر العدادات
       // ✅ إصلاح مهم: ما نصفّر عداد الانقطاعات المتتالية هنا بعد، لأن
@@ -731,6 +749,7 @@ async function connectSocket() {
     const now = Date.now();
     await Promise.all(
       messages.map(async (msg) => {
+        maintenance.noteInbound(msg); // عدّاد خفيف (سليمة/فاشلة) للصيانة التلقائية
         // 🩹 رسالة ما انفكّ تشفيرها: نعالج جلسة صاحبها التالفة (بالخلفية)
         if (msg.messageStubType === 2) sessionHealer.maybeHeal(msg);
         try {
@@ -1348,6 +1367,38 @@ if (rejectChangeMatch) {
     return;
   }
 
+  // أمر .ذاكرة (للمالك): يعرض استهلاك الذاكرة بالتفصيل. ".ذاكرة تنظيف" يشغّل
+  // تنظيف الذاكرة ويعرض الفرق قبل/بعد — لو نزل الرقم معناها كانت قمامة عادية،
+  // ولو ما نزل فهي محجوزة فعلياً (تسرب محتمل)
+  if (text === ".ذاكرة" || text === ".ذاكرة تنظيف") {
+    if (!isOwner(senderId)) {
+      await sock.sendMessage(chatId, { text: "⛔ هذا الأمر مخصص لصاحب البوت بس." }, { quoted: msg });
+      return;
+    }
+    let activeCount = 0;
+    for (const c of activeContests.values()) if (c.active) activeCount++;
+    const snapshot = () =>
+      buildMemoryReport({
+        mem: process.memoryUsage(),
+        stats: getAuthStats(),
+        info: maintenance.info(),
+        activeContests: activeCount,
+        uptimeSec: Math.round(process.uptime()),
+      });
+    let extra = "";
+    if (text === ".ذاكرة تنظيف") {
+      const before = process.memoryUsage();
+      const ran = maintenance.forceGc();
+      const after = process.memoryUsage();
+      const m = (n) => Math.round(n / 1048576);
+      extra = ran
+        ? `\n\n🧹 بعد التنظيف: RSS ${m(before.rss)}→${m(after.rss)}MB | Heap ${m(before.heapUsed)}→${m(after.heapUsed)}MB`
+        : "\n\n⚠️ تعذّر تشغيل التنظيف بهالبيئة.";
+    }
+    await sock.sendMessage(chatId, { text: snapshot() + extra }, { quoted: msg });
+    return;
+  }
+
   // أمر .تصفير_التشفير: يحذف مفاتيح تشفير المحادثات التالفة (Bad MAC /
   // Over 2000 messages into the future) من الذاكرة وقاعدة البيانات، مع
   // إبقاء ربط الجهاز (بدون QR). بعدها نعيد الاتصال تلقائياً. مخصص للمالك
@@ -1887,7 +1938,28 @@ async function main() {
   // أصلاً فيرضي فحص Render الصحي، حتى لو انتظرنا هنا شوي
   await instanceLock.acquireWithRetry();
   await connectSocket();
+  maintenance.start();
 }
+// 🧹 الصيانة التلقائية (شوف maintenance.js): تنظيف الذاكرة، علاج توقف التشفير،
+// وإعادة اتصال خفيفة بنفس الجلسة (بدون QR)
+async function softReconnect() {
+  if (connecting) return;
+  try {
+    await flushPendingAuth();
+  } catch (e) {
+    /* تجاهل */
+  }
+  await connectSocket();
+}
+const maintenance = createMaintenance({
+  reconnect: softReconnect,
+  healEncryption: () => resetChatEncryption(),
+  hasActiveContest: () => {
+    for (const c of activeContests.values()) if (c.active) return true;
+    return false;
+  },
+});
+
 // ✅ معالج إغلاق واحد موحّد (كان فيه معالجين، أول واحد يخلص يقتل
 // البرنامج قبل ما الثاني يحفظ بياناته). نحفظ كل شي معلّق بالتوازي مع مهلة
 // أمان 10 ثواني عشان ما نعلق

@@ -24,6 +24,7 @@ const FAST_MISS = process.env.AUTH_FAST_MISS !== "0";
 let currentFlushNow = null;
 let currentReset = null;
 let currentPurgeUser = null;
+let currentStats = null;
 
 async function useMongoAuthState() {
   const db = getDb();
@@ -285,6 +286,17 @@ async function useMongoAuthState() {
     return Math.max(n, res.deletedCount || 0);
   };
 
+  // إحصائيات للأمر .ذاكرة
+  currentStats = () => {
+    let chatKeys = 0;
+    let otherKeys = 0;
+    for (const k of cache.keys()) {
+      if (k.startsWith("session-") || k.startsWith("sender-key-")) chatKeys++;
+      else otherKeys++;
+    }
+    return { chatKeys, otherKeys, maxChat: MAX_CACHE_SIZE };
+  };
+
   currentReset = async function resetChatSessions() {
     let inMemory = 0;
     for (const id of [...cache.keys()]) {
@@ -345,7 +357,8 @@ async function flushPendingAuth() {
 // يسجّل دوال الصيانة (حفظ/تصفير/علاج جلسة) لأي نوع مخزن جلسة — يستخدمها
 // المخزن بالذاكرة (memoryAuthState.js) عشان أوامر .تصفير_التشفير والعلاج
 // التلقائي تشتغل بنفس الطريقة بدون MongoDB
-function setAuthHooks({ flush = null, reset = null, purge = null } = {}) {
+function setAuthHooks({ flush = null, reset = null, purge = null, stats = null } = {}) {
+  currentStats = stats;
   currentFlushNow = flush;
   currentReset = reset;
   currentPurgeUser = purge;
@@ -356,9 +369,13 @@ async function purgeUserKeys(userDigits) {
   return currentPurgeUser(userDigits);
 }
 
+function getAuthStats() {
+  return currentStats ? currentStats() : null;
+}
+
 async function resetChatEncryption() {
   if (!currentReset) throw new Error("ما فيه جلسة نشطة.");
   return currentReset();
 }
 
-module.exports = { useMongoAuthState, flushPendingAuth, resetChatEncryption, purgeUserKeys, setAuthHooks };
+module.exports = { useMongoAuthState, flushPendingAuth, resetChatEncryption, purgeUserKeys, setAuthHooks, getAuthStats };

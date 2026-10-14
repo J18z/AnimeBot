@@ -18,16 +18,36 @@ function resetMemoryAuthState() {
   cached = null;
 }
 
+// سقف عدد مفاتيح المحادثات (جلسات + مفاتيح قروبات) بالذاكرة: لو تعدّى، نشيل
+// الأقدم استخدامًا (LRU). بدون هذا السقف كل شخص/جهاز يتعامل معه البوت
+// يبقى مفتاحه بالذاكرة للأبد وتكبر الذاكرة مع الأيام. المحذوف غالباً أجهزة
+// ما كلمت البوت من فترة طويلة، وإن رجعت تبني جلسة جديدة تلقائياً
+const MAX_CHAT_KEYS = Number(process.env.MAX_CHAT_KEYS) || 5000;
+const isChatType = (type) => type === "session" || type === "sender-key";
+
 async function useMemoryAuthState() {
   if (cached) return cached;
   const creds = initAuthCreds();
-  const store = new Map(); // "type-id" -> value
+  const chat = new Map(); // "session-…" / "sender-key-…" — مرتّبة بآخر استخدام (LRU)
+  const other = new Map(); // pre-key, app-state…, sender-key-memory… (ما تنطرد)
 
   const keys = {
     get: async (type, ids) => {
       const data = {};
+      const isChat = isChatType(type);
       for (const id of ids) {
-        let value = store.get(`${type}-${id}`) ?? null;
+        const k = `${type}-${id}`;
+        let value;
+        if (isChat) {
+          value = chat.get(k);
+          if (value !== undefined) {
+            chat.delete(k); // نحرّكه لآخر القائمة = "استُخدم الحين"
+            chat.set(k, value);
+          }
+        } else {
+          value = other.get(k);
+        }
+        value = value ?? null;
         if (type === "app-state-sync-key" && value) {
           value = proto.Message.AppStateSyncKeyData.fromObject(value);
         }
@@ -37,25 +57,33 @@ async function useMemoryAuthState() {
     },
     set: async (data) => {
       for (const type in data) {
+        const isChat = isChatType(type);
+        const target = isChat ? chat : other;
         for (const id in data[type]) {
           const value = data[type][id];
           const k = `${type}-${id}`;
-          if (value) store.set(k, value);
-          else store.delete(k);
+          if (value) {
+            if (isChat) target.delete(k);
+            target.set(k, value);
+          } else {
+            target.delete(k);
+          }
         }
       }
+      while (chat.size > MAX_CHAT_KEYS) chat.delete(chat.keys().next().value);
     },
   };
 
   // نفس أدوات الصيانة اللي للمخزن الآخر: .تصفير_التشفير والعلاج التلقائي
-  const isChatKey = (id) => id.startsWith("session-") || id.startsWith("sender-key-");
   setAuthHooks({
     flush: null,
+    stats: () => ({ chatKeys: chat.size, otherKeys: other.size, maxChat: MAX_CHAT_KEYS }),
     reset: async () => {
-      let n = 0;
-      for (const k of [...store.keys()]) {
-        if (isChatKey(k)) {
-          store.delete(k);
+      let n = chat.size;
+      chat.clear();
+      for (const k of [...other.keys()]) {
+        if (k.startsWith("sender-key-memory-")) {
+          other.delete(k);
           n++;
         }
       }
@@ -67,9 +95,9 @@ async function useMemoryAuthState() {
       const reSession = new RegExp(`^session-${u}(_\\d+)?\\.\\d+$`);
       const reSender = new RegExp(`^sender-key-.*::${u}(_\\d+)?::\\d+$`);
       let n = 0;
-      for (const k of [...store.keys()]) {
+      for (const k of [...chat.keys()]) {
         if (reSession.test(k) || reSender.test(k)) {
-          store.delete(k);
+          chat.delete(k);
           n++;
         }
       }
