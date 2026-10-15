@@ -2,7 +2,7 @@
 // البيانات أو الملفات إطلاقاً — أخف وأسرع شكل ممكن. الثمن: الجلسة تنمسح مع
 // أي إعادة تشغيل للبرنامج، ولازم تمسح QR من جديد (صفحة /qr).
 
-const { proto, initAuthCreds } = require("@whiskeysockets/baileys");
+const { baileys } = require("./baileysLoader");
 const { setAuthHooks } = require("./mongoAuthState");
 
 // ⚠️ سبب حلقة الباركود اللي كانت تصير: هذي الدالة تُستدعى مع كل إعادة اتصال
@@ -27,6 +27,7 @@ const isChatType = (type) => type === "session" || type === "sender-key";
 
 async function useMemoryAuthState() {
   if (cached) return cached;
+  const { proto, initAuthCreds } = baileys(); // تُحمَّل بأول main (شوف baileysLoader)
   const creds = initAuthCreds();
   const chat = new Map(); // "session-…" / "sender-key-…" — مرتّبة بآخر استخدام (LRU)
   const other = new Map(); // pre-key, app-state…, sender-key-memory… (ما تنطرد)
@@ -49,7 +50,8 @@ async function useMemoryAuthState() {
         }
         value = value ?? null;
         if (type === "app-state-sync-key" && value) {
-          value = proto.Message.AppStateSyncKeyData.fromObject(value);
+          // v7: create بدل fromObject
+          value = typeof proto.Message.AppStateSyncKeyData.create === "function" ? proto.Message.AppStateSyncKeyData.create(value) : proto.Message.AppStateSyncKeyData.fromObject(value);
         }
         data[id] = value;
       }

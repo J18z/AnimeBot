@@ -3,7 +3,7 @@
 // التشغيل)، تحفظ كل شي بـ MongoDB — عشان الجلسة تفضل موجودة مهما صار
 // للسيرفر (نوم، إعادة تشغيل، انتقال لسيرفر ثاني تماماً)
 
-const { proto, initAuthCreds, BufferJSON } = require("@whiskeysockets/baileys");
+const { baileys } = require("./baileysLoader");
 const { getDb } = require("./db");
 const instanceLock = require("./instanceLock");
 
@@ -27,6 +27,7 @@ let currentPurgeUser = null;
 let currentStats = null;
 
 async function useMongoAuthState() {
+  const { proto, initAuthCreds, BufferJSON } = baileys(); // تُحمَّل بأول main (شوف baileysLoader)
   const db = getDb();
   if (!db) {
     throw new Error("ما فيه اتصال بقاعدة بيانات، ما نقدر نحفظ جلسة واتساب فيها.");
@@ -322,7 +323,8 @@ async function useMongoAuthState() {
           ids.forEach((id, i) => {
             let value = values[i];
             if (type === "app-state-sync-key" && value) {
-              value = proto.Message.AppStateSyncKeyData.fromObject(value);
+              // v7: create بدل fromObject
+              value = typeof proto.Message.AppStateSyncKeyData.create === "function" ? proto.Message.AppStateSyncKeyData.create(value) : proto.Message.AppStateSyncKeyData.fromObject(value);
             }
             data[id] = value;
           });

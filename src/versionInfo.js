@@ -19,6 +19,13 @@ function pkgVersion(name) {
       dir = up;
     }
   } catch (e) {
+    /* ننتقل للمحاولة الثانية */
+  }
+  try {
+    // مكتبات ESM فقط (Baileys 7) ما ينفع معها require.resolve — نقرأ ملفها مباشرة
+    const f = path.join(process.cwd(), "node_modules", name, "package.json");
+    return JSON.parse(fs.readFileSync(f, "utf8")).version || "؟";
+  } catch (e) {
     /* تجاهل */
   }
   return "؟";

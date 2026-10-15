@@ -1,5 +1,7 @@
 require("./signalNoise").install(); // أول شي: يكتم سيل أخطاء التشفير قبل ما تُحمَّل أي مكتبة
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion } = require("@whiskeysockets/baileys");
+const { loadBaileys } = require("./baileysLoader");
+// تتعبّى بأول main() بعد تحميل المكتبة (تدعم Baileys 6 و7 — شوف baileysLoader.js)
+let makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion;
 const { Boom } = require("@hapi/boom");
 const P = require("pino");
 const fs = require("fs");
@@ -16,6 +18,7 @@ const db = require("./db");
 const { useMongoAuthState, flushPendingAuth, resetChatEncryption, purgeUserKeys, getAuthStats } = require("./mongoAuthState");
 const { createHealer } = require("./sessionHealer");
 const { createMaintenance } = require("./maintenance");
+const usedStore = require("./usedStore");
 const { buildMemoryReport } = require("./memoryReport");
 const { useMemoryAuthState, resetMemoryAuthState } = require("./memoryAuthState");
 const adminPoints = require("./adminPoints");
@@ -73,6 +76,7 @@ async function getGroupMeta(jid, getSock) {
 }
 
 const SESSION_STORE = (process.env.SESSION_STORE || "memory").toLowerCase();
+let memorySessionLogged = false;
 let currentSock = null;
 let connecting = false;
 
@@ -578,18 +582,26 @@ async function connectSocketInner() {
     console.log("💾 جلسة واتساب: ملفات محلية (auth_info_baileys)");
     authState = await useMultiFileAuthState("auth_info_baileys");
   } else {
-    console.log("💾 جلسة واتساب: ذاكرة فقط (بدون حفظ) — امسح QR بعد كل تشغيل");
+    if (!memorySessionLogged) {
+      memorySessionLogged = true; // نطبعها مرة وحدة (ما نكررها مع كل إعادة اتصال خفيفة)
+      console.log("💾 جلسة واتساب: ذاكرة فقط (بدون حفظ) — امسح QR بعد كل تشغيل");
+    }
     authState = await useMemoryAuthState();
   }
   const { state, saveCreds } = authState;
-  const { version } = await fetchLatestBaileysVersion();
+  let version;
+  try {
+    if (fetchLatestBaileysVersion) ({ version } = await fetchLatestBaileysVersion());
+  } catch (e) {
+    /* نستخدم نسخة المكتبة الافتراضية */
+  }
 
   // ↩️ رجّعنا إعدادات الاتصال لنفس الأصل بالضبط (الافتراضية). كنت أضفت
   // خيارات (تعطيل مزامنة السجل، تجاهل البث، كاش القروب...) وما قدرت أتحقق
   // منها على نسختك الفعلية من المكتبة، والمشكلة ظهرت بعد التحديث
   const sockOptions = {
     auth: state,
-    version,
+    ...(version ? { version } : {}),
     logger: P({ level: "silent" }),
   };
   // (اختياري) كاش بيانات القروب — شوف GROUP_CACHE فوق
@@ -1913,11 +1925,13 @@ setInterval(() => {
 // نقطة البداية: نتصل بقاعدة البيانات ونسحب كل البيانات المحفوظة (مرة
 // وحدة بس، مو عند كل إعادة اتصال بواتساب)، وبعدها نشغّل اتصال واتساب
 async function main() {
+  ({ makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion } = await loadBaileys());
   require("./versionInfo").logVersions();
   startHealthServer(); // يفتح منفذ HTTP بسيط (يحتاجه Render وأشباهه)
 
   await db.connect(store.getConfig().mongoUri);
   await Promise.all([
+    usedStore.loadFromDb(),
     leaderboard.loadFromDb(),
     personalHistory.loadFromDb(),
     standings.loadFromDb(),
@@ -1951,6 +1965,12 @@ async function softReconnect() {
   }
   await connectSocket();
 }
+// ملخص كل 10 دقايق (فقط لو فيه رسائل فشل تشفيرها) بدل سطر لكل رسالة
+setInterval(() => {
+  const summary = sessionHealer.takeSummary();
+  if (summary) console.log(summary);
+}, 10 * 60 * 1000).unref();
+
 const maintenance = createMaintenance({
   reconnect: softReconnect,
   healEncryption: () => resetChatEncryption(),
@@ -1977,6 +1997,7 @@ async function shutdown(signal) {
     step("جلسة واتساب", flushPendingAuth),
     step("السجل الشخصي", () => personalHistory.flushPending()),
     step("لوحة الصدارة", () => leaderboard.flushPending()),
+    step("قفل التكرار", () => usedStore.flushPending()),
     step("الرصد", () => rasad.flushPending()),
   ]);
   await step("قفل النسخة", () => instanceLock.release());

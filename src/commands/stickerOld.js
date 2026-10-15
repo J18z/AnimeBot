@@ -2,7 +2,7 @@
 // الستيكر (../stickerMakerOld) بدل الجديدة. الاثنين مطلوبين مع بعض بنفس
 // البوت (بطلب المستخدم)، فخليناهم بملفين منفصلين تماماً عشان أي تعديل
 // على وحدة مستقبلاً ما يأثر على الثانية.
-const { downloadContentFromMessage } = require("@whiskeysockets/baileys");
+const downloadContentFromMessage = (...args) => require("../baileysLoader").baileys().downloadContentFromMessage(...args);
 const { streamToBuffer } = require("../mediaUtil");
 const { createSticker, createAnimatedSticker } = require("../stickerMakerOld");
 

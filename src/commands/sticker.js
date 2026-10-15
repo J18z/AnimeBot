@@ -1,7 +1,7 @@
 // أمر .ستيكر — يحوّل صورة/فيديو/ستيكر مردود عليه لستيكر واتساب بحقوق
 // (pack/author) مخصصة. ميزة مستقلة تمامًا عن منطق المسابقات، فُصلت هنا
 // عشان index.js يفضل مركّز على التوزيع بس، مو تفاصيل تنفيذ كل أمر.
-const { downloadContentFromMessage } = require("@whiskeysockets/baileys");
+const downloadContentFromMessage = (...args) => require("../baileysLoader").baileys().downloadContentFromMessage(...args);
 const { streamToBuffer } = require("../mediaUtil");
 const { createSticker, createAnimatedSticker } = require("../stickerMaker");
 

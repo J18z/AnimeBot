@@ -1,4 +1,6 @@
 const fs = require("fs");
+const usedStore = require("./usedStore");
+const { imageKeyFn } = require("./answerGroups");
 const { pickRandom, shuffle, formatSeconds, prepareSlots, findAllMatchesPrepared, parseHamzaPattern, unwrapHamza } = require("./utils");
 const store = require("./dataStore");
 const leaderboard = require("./leaderboard");
@@ -22,16 +24,6 @@ try {
 // ويعتمد على، بدل ما يتقلب حسب سرعة السيرفر اللحظية (خصوصاً بسيرفرات
 // مجانية زي Render ممكن تتأخر لحظياً وتشوّه أي تخمين ديناميكي)
 const NETWORK_OVERHEAD_MS = 400;
-
-// اختيار عشوائي بسيط (كل عنصر بنفس الاحتمالية بالضبط) من بين عناصر مو
-// مستبعدة. نستخدمها بدل نظام الوزن المتناقص القديم (اتشال بناءً على طلب
-// صريح) — الاستبعاد الصارم لكل مسابقة (usedIds/usedSingleWords بكل
-// Contest) هو الميكانيزم الوحيد المتبقي لمنع التكرار
-function pickRandomExcluding(pool, keyFn, excludeSet) {
-  const candidates = excludeSet ? pool.filter((it) => !excludeSet.has(keyFn(it))) : pool;
-  if (candidates.length === 0) return null;
-  return pickRandom(candidates);
-}
 
 // أنواع الفقرات المدعومة
 const POOL_TYPES = ["writing", "images", "questions", "counts"];
@@ -77,12 +69,10 @@ class Contest {
     return this.contestType;
   }
 
-  // يجيب عنصر من مجموعة بيانات (صور/أسئلة/تعداد). فيه طبقتين:
-  // 1) استبعاد صارم على مستوى هذي المسابقة بالذات (usedIds) — نفس العنصر
-  //    ما يتكرر إطلاقاً طول عمر هذي المسابقة، وينتهي تلقائياً مع نهايتها
-  //    (كائن Contest جديد = usedIds فاضية من جديد)
-  // 2) بين المرشحين المتبقين بعد الاستبعاد، اختيار عشوائي بسيط (كل عنصر
-  //    بنفس الاحتمالية بالضبط — بدون أي نظام وزن أو تناقص احتمالية)
+  // يجيب عنصر من مجموعة بيانات (صور/أسئلة/تعداد) بقفل تكرار عالمي
+  // (usedStore): أي سؤال انرسل بأي مسابقة/قروب ما يتكرر إلا لما تخلص كل
+  // أسئلة الفقرة، وقتها تبدأ دورة جديدة عشوائية. الصور مقفولة "حسب الإجابة"
+  // (صور مختلفة بنفس الإجابة = سؤال واحد، شوف answerGroups.js)
   pickItem(poolType) {
     let pool;
     if (poolType === "images") pool = store.getImages();
@@ -90,21 +80,8 @@ class Contest {
     else if (poolType === "counts") pool = store.getCounts();
 
     if (!pool || pool.length === 0) return null;
-
-    if (!this.usedIds) this.usedIds = {};
-    if (!this.usedIds[poolType]) this.usedIds[poolType] = new Set();
-    const usedSet = this.usedIds[poolType];
-
-    let item = pickRandomExcluding(pool, (it) => it.id, usedSet);
-    if (!item && usedSet.size > 0) {
-      // خلص البنك كامل بهذي المسابقة بالذات (بنك صغير قياساً لطول
-      // المسابقة، أو مسابقة مستمرة طالت) — دورة جديدة لهذي المسابقة بس،
-      // بدل ما تعلق المسابقة بدون أسئلة
-      usedSet.clear();
-      item = pickRandomExcluding(pool, (it) => it.id, usedSet);
-    }
-    if (item) usedSet.add(item.id);
-    return item;
+    const keyFn = poolType === "images" ? imageKeyFn(pool) : (it) => it.id;
+    return usedStore.pick(poolType, pool, keyFn);
   }
 
   // فقرة الكتابة: يسحب 1-3 كلمات من بنك كلمات واحد بنفس نظام الوزن
@@ -120,35 +97,22 @@ class Contest {
     const pool = store.getWords(); // array of { word: ["لوفي","luffy", ...] }
     if (!pool || pool.length === 0) return null;
 
-    // مفتاح ثابت لكل كلمة: أول صيغة (aliases[0])، وهي عمليًا فريدة عبر
-    // بنك الكلمات (اسم الشخصية الأساسي بالعربي)
+    // مفتاح ثابت لكل كلمة: أول صيغة (aliases[0])
     const keyFn = (it) => it.word[0];
 
     const desired = forcedCount || Math.floor(Math.random() * 3) + 1;
     const count = Math.min(desired, pool.length);
-    const isSingleWordRound = count === 1;
 
-    if (isSingleWordRound && !this.usedSingleWords) this.usedSingleWords = new Set();
-    const chosenKeys = isSingleWordRound ? new Set(this.usedSingleWords) : new Set();
-
+    // كل كلمة تنسحب تنقفل عالمياً (فقرة "writing")، وchosen يمنع تكرارها
+    // داخل نفس الجولة حتى لو بدأت دورة جديدة بنصف الجولة
+    const chosen = new Set();
     const result = [];
     for (let i = 0; i < count; i++) {
-      let item = pickRandomExcluding(pool, keyFn, chosenKeys);
-      if (!item && isSingleWordRound && this.usedSingleWords.size > 0) {
-        // خلصت كل كلمات البنك (كواحدة مفردة) بهذي المسابقة — دورة جديدة
-        this.usedSingleWords.clear();
-        chosenKeys.clear();
-        item = pickRandomExcluding(pool, keyFn, chosenKeys);
-      }
+      const item = usedStore.pick("writing", pool, keyFn, chosen);
       if (!item) break;
-      chosenKeys.add(keyFn(item));
+      chosen.add(keyFn(item));
       result.push(item.word);
     }
-
-    if (isSingleWordRound && result.length > 0) {
-      this.usedSingleWords.add(keyFn({ word: result[0] }));
-    }
-
     return result.length > 0 ? result : null; // مصفوفة مصفوفات (slots)
   }
 
@@ -168,7 +132,7 @@ class Contest {
     const chosenKeys = new Set();
     const result = [];
     for (let i = 0; i < count; i++) {
-      const item = pickRandomExcluding(pool, keyFn, chosenKeys);
+      const item = usedStore.pick("repeat", pool, keyFn, chosenKeys);
       if (!item) break;
       chosenKeys.add(keyFn(item));
       const repeatCount = Math.floor(Math.random() * 4) + 2; // 2..5
@@ -284,6 +248,12 @@ class Contest {
   }
 
   _clearPlanned() {
+    // صورة انحجزت للجولة القادمة ولا انرسلت (انتهت/انلغت المسابقة): نفك قفلها
+    // عشان ما تنحسب مستخدمة وهي ما ظهرت لأحد
+    if (this._plannedImageItem) {
+      const imgs = store.getImages();
+      if (imgs && imgs.length) usedStore.release("images", imageKeyFn(imgs)(this._plannedImageItem));
+    }
     this._plannedPoolType = null;
     this._plannedImageItem = null;
     this._prefetched = null;
@@ -327,15 +297,8 @@ class Contest {
         await this.sendChat(`⚠️ ما فيه كلمات بملف data/words.json. أضف كلمات أول.`);
         return;
       }
-      if (!this.usedIds) this.usedIds = {};
-      if (!this.usedIds[poolType]) this.usedIds[poolType] = new Set();
-      const usedSet = this.usedIds[poolType];
-      let wordItem = pickRandomExcluding(wordPool, (it) => it.word[0], usedSet);
-      if (!wordItem && usedSet.size > 0) {
-        usedSet.clear();
-        wordItem = pickRandomExcluding(wordPool, (it) => it.word[0], usedSet);
-      }
-      usedSet.add(wordItem.word[0]);
+      // قفل تكرار عالمي لكل فقرة من الثلاث (شوف usedStore.js)
+      const wordItem = usedStore.pick(poolType, wordPool, (it) => it.word[0]);
       const rawWord = wordItem.word[0].replace(/\s+/g, ""); // نشيل المسافات (لو الاسم أكثر من كلمة) عشان الفقرات الثلاث تشتغل على كلمة مصمتة
       points = 1;
       required = 1;

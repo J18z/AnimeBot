@@ -17,6 +17,9 @@ function userOf(jid) {
 
 function createHealer({ purge, log = console.log, now = () => Date.now() }) {
   const lastHealed = new Map(); // user -> ts
+  // عدّاد فشل لكل مستخدم (لملخص دوري بدل سطر مع كل رسالة). محدود بـ300 مستخدم
+  const failCounts = new Map();
+  let failTotal = 0;
 
   function usersFor(msg) {
     const key = msg.key || {};
@@ -37,13 +40,22 @@ function createHealer({ purge, log = console.log, now = () => Date.now() }) {
       if (!FAIL_RE.test(params)) return false;
       const t = now();
       let healed = 0;
+      failTotal++;
       for (const u of usersFor(msg)) {
+        if (failCounts.has(u) || failCounts.size < 300) failCounts.set(u, (failCounts.get(u) || 0) + 1);
         const last = lastHealed.get(u);
         if (last !== undefined && t - last < COOLDOWN_MS) continue;
         lastHealed.set(u, t);
         const n = await purge(u);
-        healed++;
-        log(`🩹 جلسة تشفير تالفة لـ${u} — حذفنا ${n} مفتاح، تتجدد تلقائياً مع أول رسالة.`);
+        if (n > 0) {
+          healed++;
+          log(`🩹 جلسة تشفير تالفة لـ${u} — حذفنا ${n} مفتاح، تتجدد تلقائياً مع أول رسالة.`);
+        } else {
+          // ما عندنا أي مفتاح لهذا الشخص = العطل مو بمفاتيحنا (غالباً جلسته هو
+          // على جواله مو متزامنة مع جهازنا). ما فيه شي نحذفه ولا نطبع له سطر،
+          // ونمدّد التهدئة له 10 دقايق (يظهر بالملخص الدوري)
+          lastHealed.set(u, t + 9 * 60 * 1000);
+        }
       }
       // تنظيف دوري للـMap عشان ما يكبر
       if (lastHealed.size > 500) for (const [u, ts] of lastHealed) if (t - ts > 10 * 60 * 1000) lastHealed.delete(u);
@@ -54,7 +66,22 @@ function createHealer({ purge, log = console.log, now = () => Date.now() }) {
     }
   }
 
-  return { maybeHeal };
+  // ملخص دوري (يُستدعى كل 10 دقايق): كم رسالة فشلت ومن أكثر الأشخاص. يرجع
+  // null لو ما فيه شي، ويصفّر العدّادات
+  function takeSummary() {
+    if (failTotal === 0) return null;
+    const top = [...failCounts.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 3)
+      .map(([u, c]) => `${u} (${c})`)
+      .join("، ");
+    const text = `🔐 رسائل ما انفك تشفيرها آخر 10 دقايق: ${failTotal} من ${failCounts.size} مستخدم — الأكثر: ${top}`;
+    failCounts.clear();
+    failTotal = 0;
+    return text;
+  }
+
+  return { maybeHeal, takeSummary };
 }
 
 module.exports = { createHealer, userOf, FAIL_RE };
