@@ -57,6 +57,9 @@ process.on("unhandledRejection", (err) => {
 // رسالة يرسلها البوت لقروب (رحلة شبكة إضافية مع كل إرسال، ويقل بالكاش
 // بين الإجمالي والإرسال). مع الكاش الطلب يصير مرة كل 5 دقايق لكل قروب.
 const GROUP_CACHE = process.env.GROUP_CACHE === "1";
+// ⏱️ تشخيص البطء (اختياري، TIMING_LOG=1): يطبع باللوقز أي إرسال أبطأ من ثانية ونصف،
+// وأي رسالة وصلت متأخرة أكثر من ثانيتين عن وقت إرسالها (دقة الثواني). ما يغيّر أي سلوك
+const TIMING_LOG = process.env.TIMING_LOG === "1";
 const groupMetaCache = new Map(); // jid -> { meta, at } — حد أقصى 100 قروب
 const GROUP_META_TTL_MS = 5 * 60 * 1000;
 async function getGroupMeta(jid, getSock) {
@@ -607,6 +610,18 @@ async function connectSocketInner() {
   // (اختياري) كاش بيانات القروب — شوف GROUP_CACHE فوق
   if (GROUP_CACHE) sockOptions.cachedGroupMetadata = async (jid) => getGroupMeta(jid, () => sock);
   const sock = makeWASocket(sockOptions);
+  if (TIMING_LOG) {
+    const origSend = sock.sendMessage.bind(sock);
+    sock.sendMessage = async (jid, content, opts) => {
+      const t0 = Date.now();
+      try {
+        return await origSend(jid, content, opts);
+      } finally {
+        const dt = Date.now() - t0;
+        if (dt > 1500) console.log(`⏱️ إرسال بطيء: ${dt}ms (${Object.keys(content || {})[0]}) → ${String(jid).slice(0, 14)}`);
+      }
+    };
+  }
   if (GROUP_CACHE) {
     // لو تغيّر القروب (أعضاء/إعدادات) نحذف نسخته عشان تنجلب جديدة
     sock.ev.on("groups.update", (events) => {
@@ -787,6 +802,10 @@ async function handleIncoming(sock, msg) {
 
   const chatId = msg.key.remoteJid;
   if (!chatId || chatId === "status@broadcast") return;
+  if (TIMING_LOG && msg.messageTimestamp) {
+    const lag = Date.now() - Number(msg.messageTimestamp) * 1000;
+    if (lag > 2000) console.log(`⏱️ رسالة وصلت متأخرة ~${Math.round(lag / 1000)}ث (من واتساب للبوت)`);
+  }
   // بالقروبات: participant هو آيدي الشخص الفعلي. بالخاص: remoteJid هو نفسه
   const senderId = msg.key.participant || msg.key.remoteJid;
   // 🩸 استمارات نقابة هورا — قبل بوابة allowedChats عمداً: قروب هورا المحدد
