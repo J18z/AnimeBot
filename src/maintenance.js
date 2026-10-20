@@ -104,12 +104,17 @@ function createMaintenance({
       const rssMb = m.rss / MB;
       const extMb = (m.external + m.arrayBuffers) / MB;
       const g = gc();
-      if (g && (rssMb > SOFT_MB * 0.7 || extMb > 60) && t - lastGcAt > 60 * 1000) {
+      // ✅ التنظيف القسري (gc) يوقف المعالج لحظات (جزء من الثانية) — أثناء مسابقة نشطة
+      // هذا يظهر كتذبذب بالتوقيت. نأجّله لين تخلص المسابقة، إلا لو الذاكرة تعدّت الحد
+      if (g && (rssMb > SOFT_MB * 0.7 || extMb > 60) && t - lastGcAt > 60 * 1000 && (!hasActiveContest() || rssMb > SOFT_MB)) {
         g();
         lastGcAt = t;
         m = memory();
       }
-      if (m.rss / MB > SOFT_MB) {
+      // ✅ أثناء مسابقة نشطة ما نقطع الاتصال لمجرد تعدّي الحد "الناعم" — إعادة الاتصال
+      // تضيّع رسائل لثواني، ولو الذاكرة ثابتة فوق الحد ما تنزّلها أصلاً. نأجّلها
+      // لين تخلص المسابقة، إلا لو الذاكرة صارت قريبة جداً من حد السيرفر (90%)
+      if (m.rss / MB > SOFT_MB && (!hasActiveContest() || m.rss / MB > LIMIT_MB * 0.9)) {
         const done = await doReconnect(`الذاكرة عالية RSS=${Math.round(m.rss / MB)}MB > ${SOFT_MB}MB`, 20 * 60 * 1000);
         if (done) return;
       }

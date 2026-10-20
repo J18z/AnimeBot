@@ -158,6 +158,8 @@ function parseMessage(text) {
   const lines = String(text || "").split("\n");
   const results = [];
   for (const line of lines) {
+    // أسطر الرصد الحقيقية قصيرة. سطر ضخم جداً يخلي الـregex يتعثر (تجمّد) فنتجاهله
+    if (line.length > 1500) continue;
     const found = parseLine(line);
     if (found) results.push(...found);
   }

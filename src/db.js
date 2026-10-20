@@ -13,18 +13,29 @@ async function connect(uri) {
     );
     return null;
   }
-  try {
-    client = new MongoClient(uri);
-    await client.connect();
-    db = client.db("anime_quiz_bot");
-    console.log("✅ اتصل بقاعدة بيانات MongoDB بنجاح.");
-    return db;
-  } catch (e) {
-    console.error("❌ فشل الاتصال بـ MongoDB:", e.message);
-    console.log("⚠️ البوت بيكمل يشتغل بالذاكرة بس (بدون حفظ دائم) لحد ما تصلّح الاتصال.");
-    db = null;
-    return null;
+  // ✅ 3 محاولات: قبل كذا لو فشلت أول محاولة (تعثر شبكة لحظي وقت الإقلاع) يشتغل
+  // البوت بالذاكرة بس طول عمره لين تعيد التشغيل، وتضيع كل النقاط عند أي إعادة تشغيل
+  const ATTEMPTS = 3;
+  for (let i = 1; i <= ATTEMPTS; i++) {
+    try {
+      client = new MongoClient(uri);
+      await client.connect();
+      db = client.db("anime_quiz_bot");
+      console.log("✅ اتصل بقاعدة بيانات MongoDB بنجاح.");
+      return db;
+    } catch (e) {
+      console.error(`❌ فشل الاتصال بـ MongoDB (محاولة ${i}/${ATTEMPTS}):`, e.message);
+      try {
+        await client.close();
+      } catch (_) {
+        /* تجاهل */
+      }
+      if (i < ATTEMPTS) await new Promise((r) => setTimeout(r, 3000));
+    }
   }
+  console.log("⚠️ البوت بيكمل يشتغل بالذاكرة بس (بدون حفظ دائم) لحد ما تصلّح الاتصال وتعيد التشغيل.");
+  db = null;
+  return null;
 }
 
 function getDb() {

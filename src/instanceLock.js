@@ -89,7 +89,16 @@ async function tryAcquire() {
 async function acquireWithRetry() {
   let warned = false;
   while (true) {
-    const got = await tryAcquire();
+    let got;
+    try {
+      got = await tryAcquire();
+    } catch (e) {
+      // ✅ خطأ عابر بالاتصال بقاعدة البيانات (مو تعارض نسخ): قبل كذا كان يطلع خطأ
+      // من main() وما يتصل البوت بواتساب أبداً بصمت. الحين نعيد المحاولة
+      console.error("⚠️ تعذّر فحص قفل النسخة (مشكلة اتصال بقاعدة البيانات؟) — نعيد المحاولة بعد 15 ثانية:", e && e.message);
+      await new Promise((r) => setTimeout(r, 15000));
+      continue;
+    }
     if (got) {
       console.log(`🔒 قفلنا التشغيل لهذي النسخة (instanceId=${INSTANCE_ID}).`);
       return;

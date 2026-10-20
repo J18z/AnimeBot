@@ -4,6 +4,7 @@
 // على وحدة مستقبلاً ما يأثر على الثانية.
 const downloadContentFromMessage = (...args) => require("../baileysLoader").baileys().downloadContentFromMessage(...args);
 const { streamToBuffer } = require("../mediaUtil");
+const { runHeavy } = require("../heavyQueue");
 const { createSticker, createAnimatedSticker } = require("../stickerMakerOld");
 
 // يرجع true لو تكفل بالرسالة (أمر .ستكر فعلاً)، و false لو مالها علاقة
@@ -47,22 +48,31 @@ async function handleStickerOldCommand(sock, msg, text, chatId) {
   }
 
   try {
-    let buffer = null;
-    let isVideo = false;
+    // ✅ التحميل + التحويل داخل طابور (مهمة ثقيلة وحدة بنفس الوقت) — شوف heavyQueue.js
+    const stickerBuffer = await runHeavy(async () => {
+      let buffer = null;
+      let isVideo = false;
 
-    if (quoted.imageMessage) {
-      const stream = await downloadContentFromMessage(quoted.imageMessage, "image");
-      buffer = await streamToBuffer(stream);
-    } else if (quoted.stickerMessage) {
-      const stream = await downloadContentFromMessage(quoted.stickerMessage, "image");
-      buffer = await streamToBuffer(stream);
-    } else if (quoted.videoMessage) {
-      const stream = await downloadContentFromMessage(quoted.videoMessage, "video");
-      buffer = await streamToBuffer(stream);
-      isVideo = true;
-    }
+      if (quoted.imageMessage) {
+        const stream = await downloadContentFromMessage(quoted.imageMessage, "image");
+        buffer = await streamToBuffer(stream);
+      } else if (quoted.stickerMessage) {
+        const stream = await downloadContentFromMessage(quoted.stickerMessage, "image");
+        buffer = await streamToBuffer(stream);
+      } else if (quoted.videoMessage) {
+        const stream = await downloadContentFromMessage(quoted.videoMessage, "video");
+        buffer = await streamToBuffer(stream);
+        isVideo = true;
+      }
 
-    if (!buffer || buffer.length === 0) {
+      if (!buffer || buffer.length === 0) return null;
+
+      return isVideo
+        ? await createAnimatedSticker(buffer, pack, author)
+        : await createSticker(buffer, pack, author);
+    });
+
+    if (!stickerBuffer) {
       await sock.sendMessage(
         chatId,
         { text: "⚠️ ما قدرت أحمل الملف. جرب صورة/فيديو/ستيكر ثاني." },
@@ -70,10 +80,6 @@ async function handleStickerOldCommand(sock, msg, text, chatId) {
       );
       return true;
     }
-
-    const stickerBuffer = isVideo
-      ? await createAnimatedSticker(buffer, pack, author)
-      : await createSticker(buffer, pack, author);
 
     await sock.sendMessage(
       chatId,

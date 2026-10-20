@@ -13,6 +13,8 @@ ffmpeg.setFfmpegPath(ffmpegPath);
 // أي فايدة فعلية. نطفّيه كليًا
 sharp.cache(false);
 
+// ⏱️ مهلة قصوى لتحويل الفيديو (لو علّق ffmpeg نقتله بدل ما يحجز المعالج للأبد)
+const FFMPEG_TIMEOUT_MS = 60 * 1000;
 const MAX_VIDEO_DURATION = 6; // ثواني — حد واتساب للستيكر المتحرك
 
 function cleanup(...files) {
@@ -108,7 +110,7 @@ async function createSticker(imageBuffer, pack, author) {
 
   // صورة ثابتة → webp
   const MAX = 512;
-  const webpBuffer = await sharp(imageBuffer)
+  const webpBuffer = await sharp(imageBuffer, { limitInputPixels: 40000000 })
     .resize(MAX, MAX, { fit: "inside", background: { r: 0, g: 0, b: 0, alpha: 0 } })
     .webp({ quality: 80, effort: 4, lossless: false })
     .toBuffer();
@@ -140,7 +142,8 @@ async function createAnimatedSticker(videoBuffer, pack, author) {
 
     // تحويل الفيديو لـ animated webp
     await new Promise((resolve, reject) => {
-      ffmpeg(inputPath)
+      let killer = null; // نعرّفه قبل السلسلة عشان أي حدث مبكر ما يلقاه غير معرّف
+      const cmd = ffmpeg(inputPath)
         .outputOptions([
           // نقص المربع النص من الفيديو ونكبّره لـ512×512 بالضبط — واتساب
           // يشترط هذا المقاس تحديداً للستيكر المتحرك. جربنا قبل نحافظ على
@@ -156,12 +159,22 @@ async function createAnimatedSticker(videoBuffer, pack, author) {
           '-loop', '0',
           '-preset', 'picture',
           '-an', // بدون صوت
-          '-vsync', '0'
+          '-vsync', '0',
+          '-threads', '1' // خيط واحد: ما يخنق المعالج الضئيل
         ])
         .toFormat('webp')
         .save(outputPath)
-        .on('end', resolve)
-        .on('error', reject);
+        .on('end', () => {
+          clearTimeout(killer);
+          resolve();
+        })
+        .on('error', (e) => {
+          clearTimeout(killer);
+          reject(e);
+        });
+      killer = setTimeout(() => {
+        try { cmd.kill('SIGKILL'); } catch (e) {}
+      }, FFMPEG_TIMEOUT_MS);
     });
 
     const webpBuffer = await fs.promises.readFile(outputPath);

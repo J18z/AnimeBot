@@ -25,7 +25,15 @@ function startHealthServer() {
   const port = process.env.PORT || 3000;
   http
     .createServer(async (req, res) => {
-      if (req.url === "/qr") {
+      const [pathname, query = ""] = String(req.url || "").split("?");
+      if (pathname === "/qr") {
+        // 🔐 اختياري: لو ضبطت QR_TOKEN بمتغيرات البيئة، صفحة QR ما تنفتح إلا بـ /qr?key=<القيمة>.
+        // بدونه أي أحد يعرف الرابط يقدر يمسح الكود ويربط رقم البوت بجهازه
+        if (process.env.QR_TOKEN && new URLSearchParams(query).get("key") !== process.env.QR_TOKEN) {
+          res.writeHead(403, { "Content-Type": "text/plain; charset=utf-8" });
+          res.end("403");
+          return;
+        }
         if (!latestQr) {
           res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
           res.end("<h2>ما فيه كود QR بالوقت الحالي — إما البوت متصل أصلاً، أو لسا يجهّز.</h2>");
@@ -50,7 +58,7 @@ function startHealthServer() {
         return;
       }
 
-      if (req.url === "/memory") {
+      if (pathname === "/memory") {
         const m = process.memoryUsage();
         const mb = (n) => (n / 1024 / 1024).toFixed(1) + " MB";
         res.writeHead(200, { "Content-Type": "text/plain; charset=utf-8" });

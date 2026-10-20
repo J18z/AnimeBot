@@ -25,6 +25,15 @@ let startedAt = null;
 async function loadFromDb() {
   const db = getDb();
   if (!db) return;
+  // ✅ فهارس للسجل الخام: كل رسالة بالقروب تسوي upsert بالآيدي، وبدون فهرس كل وحدة
+  // تمسح المجموعة كاملة (تبطئ قاعدة Atlas المجانية كل ما كبر السجل خلال الأسبوع)
+  try {
+    const logCol = db.collection("matsuri_rasad_log");
+    await logCol.createIndex({ msgId: 1 });
+    await logCol.createIndex({ timestamp: 1 });
+  } catch (err) {
+    console.error("خطأ إنشاء فهارس سجل الرصد:", err.message);
+  }
   try {
     const doc = await db.collection("matsuri_rasad").findOne({ _id: "state" });
     if (doc) {

@@ -1,9 +1,7 @@
 // ═══════════════════════════════════════════════════════════════════
 // وحدة استمارات نقابة هورا 🩸 — مجلد مستقل تماماً عن ماتسوري ومنطق المسابقات.
-// تشتغل فقط داخل القروبات المحددة بـ horaChatId (متغير البيئة HORA_CHAT_ID
+// تشتغل فقط داخل القروب المحدد بـ horaChatId (متغير البيئة HORA_CHAT_ID
 // أو حقل horaChatId بـ data/config.json) — أي شات ثاني يتجاهلها بصمت.
-// يدعم أكثر من قروب بنفس الوقت: افصل آيديات القروبات بفاصلة، مثال:
-//   HORA_CHAT_ID=120363XXXXXXXXXX@g.us,120363YYYYYYYYYY@g.us
 //
 // الأوامر (تُكتب نفس ما هي، رسالة كاملة بدون زيادة):
 //   .هورا   → القائمة الرئيسية
@@ -63,7 +61,6 @@ const COMMANDS = [
   { names: ["متجر"], file: "forms/admin/store.txt" },
   { names: ["يومي"], file: "forms/admin/daily.txt" },
   // قسم الفعاليات
-  { names: ["ديث نوت"], file: "forms/events/deathnote.txt" },
   { names: ["ابراج"], file: "forms/events/towers.txt" },
   { names: ["قلوب"], file: "forms/events/hearts.txt" },
   { names: ["مسابقة"], file: "forms/events/contest.txt" },
@@ -76,11 +73,6 @@ const COMMANDS = [
   { names: ["عنكبوت"], file: "forms/events/spider.txt" },
   { names: ["لعنات"], file: "forms/events/curses.txt" },
   { names: ["شموع"], file: "forms/events/candles.txt" },
-  { names: ["سؤال سهل"], file: "forms/events/question_e.txt" },
-  { names: ["سؤال متوسط"], file: "forms/events/question_m.txt" },
-  { names: ["سؤال صعب"], file: "forms/events/question_h.txt" },
-  { names: ["فردية"], file: "forms/events/oneonone.txt" },
-  { names: ["فرديه"], file: "forms/events/oneonone.txt" },
 ];
 
 // القوائم: اسم الأمر → ملف القائمة
@@ -107,30 +99,13 @@ function cleanChatId(raw) {
   return id;
 }
 
-// ✅ يدعم أكثر من قروب هورا بنفس المتغير — تفصل آيديات القروبات بفاصلة
-// (مثال: HORA_CHAT_ID="1111@g.us,2222@g.us") بدل متغير بيئة منفصل لكل
-// قروب. نرجعها كـMap لسرعة الفحص (بدل .includes على مصفوفة كل رسالة)
-let configuredChatIdsCache = null;
-let configuredChatIdsCacheRaw = null;
-function configuredChatIds() {
-  const raw = store.getConfig().horaChatId;
-  // ✅ كاش بسيط: نعيد الحساب بس لو القيمة الخام تغيّرت (نادر)، بدل ما
-  // نعيد split/map/trim على كل رسالة توصل لأي قروب
-  if (configuredChatIdsCache && raw === configuredChatIdsCacheRaw) {
-    return configuredChatIdsCache;
-  }
-  configuredChatIdsCacheRaw = raw;
-  const ids = String(raw || "")
-    .split(",")
-    .map((s) => cleanChatId(s))
-    .filter(Boolean);
-  configuredChatIdsCache = new Set(ids);
-  return configuredChatIdsCache;
+function configuredChatId() {
+  return cleanChatId(store.getConfig().horaChatId);
 }
 
 function isHoraChat(chatId) {
-  const configured = configuredChatIds();
-  return configured.size > 0 && configured.has(cleanChatId(chatId));
+  const configured = configuredChatId();
+  return !!configured && cleanChatId(chatId) === configured;
 }
 
 // نقطة الدخول الوحيدة — تُستدعى من index.js لكل رسالة قروب.

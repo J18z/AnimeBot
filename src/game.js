@@ -9,6 +9,7 @@ const standings = require("./standings");
 const moderation = require("./moderation");
 const registration = require("./registration");
 const templates = require("./templates");
+const topLock = require("./topLock");
 let sharp;
 try {
   sharp = require("sharp");
@@ -24,6 +25,31 @@ try {
 // ويعتمد على، بدل ما يتقلب حسب سرعة السيرفر اللحظية (خصوصاً بسيرفرات
 // مجانية زي Render ممكن تتأخر لحظياً وتشوّه أي تخمين ديناميكي)
 const NETWORK_OVERHEAD_MS = 400;
+
+// ⏳ أقصى انتظار لرسالة تأكيد الإجابة قبل ما نكمل للسؤال التالي. السؤال التالي
+// كان ينتظر وصول رسالة التأكيد (وممكن تعلق لين 40 ثانية لو شبكة واتساب تدهورت)،
+// فكل المسابقة تتجمد. بالوضع الطبيعي الرسالة توصل بأقل من ثانية والسلوك ما يتغيّر
+const CONFIRM_WAIT_MS = 4000;
+
+// ⏹️ إنهاء تلقائي: لو السؤال الحالي مرّ عليه دقيقتين بدون أي إجابة صحيحة (ولا جزء منها)
+// تنتهي المسابقة وتنعرض النتيجة — عشان ما تبقى مسابقة منسية شغالة. تنطبق على كل
+// الأنواع (فنش/مستمرة/عدد أسئلة...) ما عدا التقديم البسيط. قابل للتغيير بمتغير IDLE_END_MS
+const IDLE_END_MS = Number(process.env.IDLE_END_MS) > 0 ? Number(process.env.IDLE_END_MS) : 2 * 60 * 1000;
+function waitAtMost(promise, ms) {
+  let timer;
+  let timedOut = false;
+  const timeout = new Promise((resolve) => {
+    timer = setTimeout(() => {
+      timedOut = true;
+      resolve();
+    }, ms);
+  });
+  // لو فشل الإرسال بعد انتهاء المهلة، نسجله بس (ما يصير unhandledRejection)
+  promise.catch((e) => {
+    if (timedOut) console.error("⚠️ فشل إرسال متأخر (بعد انتهاء مهلة الانتظار):", e && e.message);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
 
 // أنواع الفقرات المدعومة
 const POOL_TYPES = ["writing", "images", "questions", "counts"];
@@ -48,6 +74,7 @@ class Contest {
     this.roundsTarget = options.roundsTarget || null; // عدد أسئلة إجمالي تنتهي عنده المسابقة (بغض النظر مين جاوب)
     this.roundsCompleted = 0; // عدّاد الأسئلة اللي خلصت (إجابة صحيحة أو سكب)
     this.nextRoundTimer = null; // ✅ حفظ رقم Timer عشان نلغيه لاحقاً
+    this.idleTimer = null; // مؤقت الإنهاء التلقائي لو ما أحد جاوب
     this.roundWatchdog = null; // مؤقت حراسة: ينبّه لو سؤال "علق" بدون أي رد لفترة طويلة
     // 🔤 وضع الهمزات الإلزامي (.فنش 20 همزات وأمثالها): أول محاولة إجابة
     // من كل شخص بكل جولة لازم تكون بإطار همزات محدد (يحدده اللي بدأ
@@ -447,11 +474,39 @@ class Contest {
         }
       }, 20000); // 20 ثانية
       this._planNextRound();
+      this._armIdleTimer();
     }
+  }
+
+  // (يعيد) تشغيل مؤقت الإنهاء التلقائي — يُنادى لما يبدأ سؤال، ولما أحد يحقق تقدم بالإجابة
+  _armIdleTimer() {
+    if (this.idleTimer) clearTimeout(this.idleTimer);
+    this.idleTimer = setTimeout(() => {
+      this.idleTimer = null;
+      this._autoEndIdle().catch((e) => console.error("⚠️ خطأ بالإنهاء التلقائي:", e));
+    }, IDLE_END_MS);
+    if (this.idleTimer.unref) this.idleTimer.unref();
+  }
+
+  async _autoEndIdle() {
+    const round = this.currentRound;
+    if (!this.active || !round || round.finished) return;
+    round.finished = true; // يمنع أي إجابة متأخرة تتداخل مع الإنهاء
+    console.log(`⏹️ إنهاء تلقائي للمسابقة بالقروب ${this.chatId} (بدون إجابات)`);
+    try {
+      await this.sendChat("⏹️ تم إنهاء المسابقة تلقائياً لأنه ما أحد جاوب لمدة دقيقتين.");
+    } catch (e) {
+      console.error("فشل إرسال رسالة الإنهاء التلقائي:", e && e.message);
+    }
+    await this.endContest();
   }
 
   // يلغي مؤقت الحراسة الحالي (لو موجود) — يُستدعى كل ما جولة تخلص/تُسكب/تنتهي المسابقة
   clearRoundWatchdog() {
+    if (this.idleTimer) {
+      clearTimeout(this.idleTimer);
+      this.idleTimer = null;
+    }
     if (this.roundWatchdog) {
       clearTimeout(this.roundWatchdog);
       this.roundWatchdog = null;
@@ -610,6 +665,7 @@ class Contest {
     if (newlyClaimed.length === 0) return;
 
     for (const idx of newlyClaimed) userSet.add(idx);
+    if (!this.practiceMode && userSet.size < round.required) this._armIdleTimer(); // فيه تقدم: نعيد العدّ
 
     if (userSet.size >= round.required) {
       await this.completeRound(msg, senderId, text);
@@ -632,7 +688,8 @@ class Contest {
     // ضد أي قيمة غير طبيعية (NaN/undefined/سالب) لو صار خلل غير متوقع —
     // بدل ما يطلع وقت "مقلتش" غريب للمستخدم، نرجع لقيمة آمنة (0) ونسجل
     // تحذير بالـ Logs عشان نلاحظه ونحقق فيه، بدون ما نغيّر شكل الحساب
-    let rawElapsed = Date.now() - round.startTime;
+    const arrivedAt = (msg && msg._recvAt) || Date.now();
+    let rawElapsed = arrivedAt - round.startTime;
     if (!Number.isFinite(rawElapsed)) {
       console.warn(
         `⚠️ قيمة وقت غير طبيعية بجولة ${round.poolType} (startTime=${round.startTime}) — استخدمنا 0 كقيمة آمنة.`
@@ -645,13 +702,20 @@ class Contest {
     // أدنى إضافي بعد كذا — لو طلعت 0.00 أو قريبة منها فهذا وقت حقيقي
     // (شخص جاوب بسرعة كبيرة فعلاً)، نعرضه زي ما هو بدون تثبيت
     const elapsed = Math.max(0, rawElapsed - NETWORK_OVERHEAD_MS);
+    if (process.env.TIMING_LOG === "1") {
+      const lag = msg && msg.messageTimestamp ? Date.now() - Number(msg.messageTimestamp) * 1000 : null;
+      console.log(
+        `⏱️ جولة ${round.poolType}: خام=${rawElapsed}ms | داخل البوت=${Date.now() - arrivedAt}ms | عمر الرسالة بواتساب≈${lag === null ? "؟" : Math.round(lag / 1000) + "ث"}`
+      );
+    }
 
     const total = this.addPoints(senderId, round.points);
 
     // نسجل هذي النتيجة بلوحة الصدارة (أفضل الأوقات) — إلا لو تقديم بسيط
     // (تجربة/معاينة)، ما نحسبها بالمنافسة الرسمية. محاطة بحماية عشان لو
     // فشل التسجيل لأي سبب (مشكلة قاعدة بيانات لحظية)، ما توقف تقدم الجولة
-    if (!this.practiceMode) {
+    // 🔒 لو التوب مقفول (.قفل توب)، ما نسجل النتيجة بـ.توب ولا .نقاطي لين يتفتح
+    if (!this.practiceMode && !topLock.isLocked()) {
       try {
         // ✅ للتعداد بس: بدل ما نعرض بلوحة الصدارة كل الإجابات المقبولة
         // مجمّعة (ممكن توصل 9+ عنصر وتشوّه شكل الرسالة)، نعرض نص رسالة
@@ -696,10 +760,7 @@ class Contest {
       // التقديم البسيط: مهمته يرسل الفقرة بس، بدون أي رد أو رسالة تأكيد
       // إجابة إطلاقاً (لا وقت ولا نقاط ولا حتى "إجابة صحيحة")
       if (!this.practiceMode) {
-        await this.replyTo(
-          msg,
-          `🎉 ${resultLabel}!\n\n⏱️ الوقت: ${formatSeconds(elapsed)} ثانية\n\n⭐ +${round.points} نقطة\n(المجموع: ${total})`
-        );
+        await waitAtMost(this.replyTo(msg, `🎉 ${resultLabel}!\n\n⏱️ الوقت: ${formatSeconds(elapsed)} ثانية\n\n⭐ +${round.points} نقطة\n(المجموع: ${total})`), CONFIRM_WAIT_MS);
       }
     } catch (e) {
       console.error("⚠️ فشل إرسال رسالة الإجابة الصحيحة (تجاهلناه، الجولة تكمل عادي):", e);
@@ -749,7 +810,7 @@ class Contest {
     // ✅ نفس إصلاح completeRound: فشل رسالة "تم سكب السؤال" ما لازم يوقف
     // انتقال المسابقة للسؤال التالي
     try {
-      await this.replyTo(msg, `⏭️ تم سكب السؤال.\n📝 الإجابة كانت: ${round.label}`);
+      await waitAtMost(this.replyTo(msg, `⏭️ تم سكب السؤال.\n📝 الإجابة كانت: ${round.label}`), CONFIRM_WAIT_MS);
     } catch (e) {
       console.error("⚠️ فشل إرسال رسالة السكب (تجاهلناه، ننتقل للسؤال التالي عادي):", e);
     }

@@ -26,6 +26,7 @@ const { formatSeconds } = require("./utils");
 const sessionHealer = createHealer({ purge: purgeUserKeys });
 const { startHealthServer, setQr, clearQr } = require("./healthServer");
 const dmPermissions = require("./dmPermissions");
+const topLock = require("./topLock");
 const instanceLock = require("./instanceLock");
 const CONFIG = store.getConfig(); // ✅ نقرأ config مرة وحدة عند التشغيل
 const { handleMatsuriMessage } = require("../matsuri/matsuri");
@@ -60,6 +61,54 @@ const GROUP_CACHE = process.env.GROUP_CACHE === "1";
 // ⏱️ تشخيص البطء (اختياري، TIMING_LOG=1): يطبع باللوقز أي إرسال أبطأ من ثانية ونصف،
 // وأي رسالة وصلت متأخرة أكثر من ثانيتين عن وقت إرسالها (دقة الثواني). ما يغيّر أي سلوك
 const TIMING_LOG = process.env.TIMING_LOG === "1";
+
+// 🧠 مراقب صحة البرنامج (يشتغل فقط مع TIMING_LOG=1، ما يغيّر أي سلوك): يقيس "تأخر حلقة الأحداث"
+// (لو كبير = البرنامج نفسه مشغول/متقطع: تنظيف ذاكرة أو شغل ثقيل. لو صغير والإرسال بطيء =
+// المشكلة بالشبكة/المكتبة/السيرفر) + وقت تنظيف الذاكرة (GC) + استهلاك الذاكرة.
+// يطبع فقط لما يصير تأخر ملحوظ، ومرة كل 5 دقائق كسطر حالة عشان نشوف الذاكرة تكبر ولا لا
+if (TIMING_LOG) {
+  try {
+    const { monitorEventLoopDelay, PerformanceObserver } = require("perf_hooks");
+    const v8 = require("v8");
+    const h = monitorEventLoopDelay({ resolution: 20 });
+    h.enable();
+    let gcMax = 0;
+    let gcCount = 0;
+    let gcTotal = 0;
+    try {
+      new PerformanceObserver((list) => {
+        for (const e of list.getEntries()) {
+          gcCount++;
+          gcTotal += e.duration;
+          if (e.duration > gcMax) gcMax = e.duration;
+        }
+      }).observe({ entryTypes: ["gc"] });
+    } catch (_) {
+      /* GC observer مو متوفر — نكمل بدونه */
+    }
+    const MB = (n) => Math.round(n / 1048576);
+    let tick = 0;
+    setInterval(() => {
+      tick++;
+      const maxMs = h.max / 1e6;
+      const p99Ms = h.percentile(99) / 1e6;
+      const bad = maxMs > 300 || gcMax > 100;
+      if (bad || tick % 10 === 0) {
+        const m = process.memoryUsage();
+        const lim = v8.getHeapStatistics().heap_size_limit;
+        console.log(
+          `🧠 ${bad ? "تأخر" : "حالة"} | حلقة الأحداث: أقصى=${Math.round(maxMs)}ms p99=${Math.round(p99Ms)}ms | GC: ${gcCount}× مجموع=${Math.round(gcTotal)}ms أكبر=${Math.round(gcMax)}ms | heap=${MB(m.heapUsed)}/${MB(lim)}MB rss=${MB(m.rss)}MB external=${MB(m.external)}MB buffers=${MB(m.arrayBuffers)}MB`
+        );
+      }
+      h.reset();
+      gcMax = 0;
+      gcCount = 0;
+      gcTotal = 0;
+    }, 30 * 1000).unref();
+  } catch (e) {
+    console.log("⚠️ مراقب الصحة ما اشتغل:", e && e.message);
+  }
+}
 const groupMetaCache = new Map(); // jid -> { meta, at } — حد أقصى 100 قروب
 const GROUP_META_TTL_MS = 5 * 60 * 1000;
 async function getGroupMeta(jid, getSock) {
@@ -82,6 +131,24 @@ const SESSION_STORE = (process.env.SESSION_STORE || "memory").toLowerCase();
 let memorySessionLogged = false;
 let currentSock = null;
 let connecting = false;
+
+// ⏳ يحدّد مهلة لأي وعد (لو علّق نكمل بدل ما نوقف كل شي)
+function withTimeout(promise, ms) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`timeout (${ms}ms)`)), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
+// 🔁 مؤقت إعادة اتصال واحد بس: قبل كذا لو انقطع الاتصال وبنفس الوقت اشتغلت
+// صيانة الذاكرة، يتجدولان محاولتان — الثانية تقفل السوكت السليم اللي
+// بنته الأولى وتسبب انقطاع إضافي بدون سبب. الحين أي جدولة جديدة تلغي القديمة
+let reconnectTimer = null;
+function scheduleReconnect(ms) {
+  clearTimeout(reconnectTimer);
+  reconnectTimer = setTimeout(connectSocket, ms);
+}
 
 // ✅ حماية إضافية (خط دفاع ثاني): نتجاهل أي رسالة سبق نعالجها فعلاً حسب
 // آيدي الرسالة (msg.key.id)، حتى لو وصلت من أكثر من سوكت أو تكررت لأي
@@ -107,6 +174,12 @@ const activeContests = new Map(); // chatId -> Contest
 // طلبات تغيير نوع التسجيل المعلّقة، بانتظار موافقة صاحب البوت
 // userId -> "mobile" | "external"
 const pendingChangeRequests = new Map();
+const pendingChangeTimers = new Map(); // userId -> مؤقت الحذف التلقائي (واحد لكل شخص)
+function clearPendingChange(userId) {
+  pendingChangeRequests.delete(userId);
+  clearTimeout(pendingChangeTimers.get(userId));
+  pendingChangeTimers.delete(userId);
+}
 
 // ✅ صاحب البوت مسموح له بأي محادثة دايمًا، حتى لو ما كانت ضمن
 // allowedChats — عشان ما ينحظر عن بوته بالغلط لو نسى يضيف آيدي محادثة
@@ -257,9 +330,18 @@ async function safeStartFirstRound(chatId, sock, contest) {
 // يزيل لاحقة " همزات" من نهاية أمر بدء مسابقة (لو موجودة) — يرجع النص
 // بدونها + علامة إذا كان وضع الهمزات الإلزامي مطلوب. مثال: ".فنش 20 همزات"
 function stripHamzaSuffix(text) {
-  const m = text.match(/^(.*?)\s+همزات$/);
-  if (m) return { text: m[1], hamzaMode: true };
-  return { text, hamzaMode: false };
+  // ✅ نفس نتيجة الـregex القديم (/^(.*?)\s+همزات$/) بالضبط، بس بدون regex:
+  // رسالة طويلة فيها مسافات كثيرة كانت تخلّي الـregex يتعثر (ثواني تجمّد
+  // للبوت كامل)، وهذي الدالة تُنادى 3 مرات مع كل رسالة عادية
+  const SUFFIX = "همزات";
+  if (!text.endsWith(SUFFIX)) return { text, hamzaMode: false };
+  const head = text.slice(0, text.length - SUFFIX.length);
+  let end = head.length;
+  while (end > 0 && /\s/.test(head[end - 1])) end--;
+  if (end === head.length) return { text, hamzaMode: false }; // لازم مسافة وحدة على الأقل قبل الكلمة
+  const prefix = head.slice(0, end);
+  if (/[\n\r\u2028\u2029]/.test(prefix)) return { text, hamzaMode: false }; // الـ"." بالـregex القديم ما كانت تعدّي سطر جديد
+  return { text: prefix, hamzaMode: true };
 }
 
 // يبدأ المسابقة فعليًا — لو وضع الهمزات مفعّل، يطلب أول من اللي بدأ
@@ -553,7 +635,7 @@ async function connectSocket() {
   } catch (err) {
     connecting = false;
     console.error("⚠️ فشل بناء الاتصال، نعيد المحاولة بعد 10 ثواني:", err && err.message);
-    setTimeout(connectSocket, 10000);
+    scheduleReconnect(10000);
   }
 }
 
@@ -565,6 +647,8 @@ async function connectSocketInner() {
     return;
   }
   connecting = true;
+  clearTimeout(reconnectTimer); // أي محاولة مجدولة صارت بلا لزوم
+  reconnectTimer = null;
 
   // ✅ ننظف السوكت القديم (لو موجود) قبل ما ننشئ سوكت جديد بالكامل
   cleanupSocket(currentSock);
@@ -594,7 +678,9 @@ async function connectSocketInner() {
   const { state, saveCreds } = authState;
   let version;
   try {
-    if (fetchLatestBaileysVersion) ({ version } = await fetchLatestBaileysVersion());
+    // ✅ بمهلة 8 ثواني: لو الطلب علّق، كان قفل الاتصال (connecting) يبقى true للأبد
+    // وما تصير أي إعادة اتصال بعدها
+    if (fetchLatestBaileysVersion) ({ version } = await withTimeout(fetchLatestBaileysVersion(), 8000));
   } catch (e) {
     /* نستخدم نسخة المكتبة الافتراضية */
   }
@@ -680,7 +766,12 @@ async function connectSocketInner() {
       // فلازم نضمن كل تغيير معلّق انكتب فعلياً قبل هذا التبديل — نادي
       // الحفظ الفوري هنا كتحوط، حتى إن التأخير بالأسفل (5 أو 8 ثواني)
       // أطول أصلاً من مهلة التأجيل نفسها
-      await flushPendingAuth();
+      try {
+        await withTimeout(flushPendingAuth(), 8000);
+      } catch (e) {
+        // بدون هذا الحماية: خطأ أو تعليق هنا يوقف الدالة كلها قبل ما نجدول إعادة الاتصال
+        console.error("⚠️ تعذّر حفظ الجلسة قبل إعادة الاتصال (نكمل):", e && e.message);
+      }
       // ✅ نلغي مؤقت "تثبيت الاتصال" المعلّق — لو كان الاتصال انقطع قبل
       // لا يوصل لـ30 ثانية، ما نبيه يصفّر عداد الانقطاعات لاحقًا بالغلط
       clearTimeout(stableConnectionTimer);
@@ -707,10 +798,10 @@ async function connectSocketInner() {
             `🛑 انقطاعات متكررة (${consecutiveCloses} مرة خلال دقايق، آخر سبب: ${statusCode ?? "؟"}) — على الأغلب قيد مؤقت من واتساب أو تعارض جلسات. ` +
               `نبطّئ لمحاولة كل ${SLOW_RETRY_MS / 60000} دقايق بدل ما نستمر نقصف بسرعة.`
           );
-          setTimeout(connectSocket, SLOW_RETRY_MS);
+          scheduleReconnect(SLOW_RETRY_MS);
         } else {
           console.log("⚠️ انقطع الاتصال. إعادة محاولة خلال 5 ثواني...");
-          setTimeout(connectSocket, 5000);
+          scheduleReconnect(5000);
         }
       } else {
         // ✅ عداد "تسجيل خروج متتالي": لو صار 3 مرات خلال 5 دقائق، نوقف
@@ -733,7 +824,7 @@ async function connectSocketInner() {
 
         console.log("⚠️ تم تسجيل الخروج من واتساب. نمسح الجلسة القديمة ونطلب QR جديد خلال 8 ثواني...");
         await clearAuthSession();
-        setTimeout(connectSocket, 8000);
+        scheduleReconnect(8000);
       }
     } else if (connection === "open") {
       console.log("✅ البوت جاهز ومتصل بواتساب!");
@@ -776,6 +867,9 @@ async function connectSocketInner() {
     const now = Date.now();
     await Promise.all(
       messages.map(async (msg) => {
+        // ⏱️ لحظة وصول الرسالة للكود — أول سطر عمداً. نستخدمها بحساب وقت الإجابة
+        // (game.js) بدل لحظة انتهاء المعالجة، فأي تأخير داخلي ما ينحسب على اللاعب
+        msg._recvAt = Date.now();
         maintenance.noteInbound(msg); // عدّاد خفيف (سليمة/فاشلة) للصيانة التلقائية
         // 🩹 رسالة ما انفكّ تشفيرها: نعالج جلسة صاحبها التالفة (بالخلفية)
         if (msg.messageStubType === 2) sessionHealer.maybeHeal(msg);
@@ -1052,12 +1146,16 @@ if (changeMatch) {
   }
 
   pendingChangeRequests.set(senderId, requestedType);
-  // حذف تلقائي بعد 24 ساعة لو ما تم الرد
-setTimeout(() => {
-  if (pendingChangeRequests.has(senderId)) {
-    pendingChangeRequests.delete(senderId);
-  }
-}, 24 * 60 * 60 * 1000);
+  // حذف تلقائي بعد 24 ساعة لو ما تم الرد — مؤقت واحد لكل شخص والجديد يلغي القديم
+  // (قبل كذا كل طلب يضيف مؤقت جديد يبقى 24 ساعة، والقديم كان يمسح الطلب الجديد بدري)
+  clearTimeout(pendingChangeTimers.get(senderId));
+  pendingChangeTimers.set(
+    senderId,
+    setTimeout(() => {
+      pendingChangeRequests.delete(senderId);
+      pendingChangeTimers.delete(senderId);
+    }, 24 * 60 * 60 * 1000).unref()
+  );
   await sock.sendMessage(
     chatId,
     {
@@ -1083,7 +1181,7 @@ if (acceptChangeMatch) {
       return;
     }
     await registration.register(target, requestedType);
-    pendingChangeRequests.delete(target);
+    clearPendingChange(target);
     const label = requestedType === "mobile" ? "جوال 📱" : "خارجي 💻";
     await sock.sendMessage(
       chatId,
@@ -1105,7 +1203,7 @@ if (rejectChangeMatch) {
       await sock.sendMessage(chatId, { text: "ما فيه طلب تغيير معلّق لهذا الشخص." }, { quoted: msg });
       return;
     }
-    pendingChangeRequests.delete(target);
+    clearPendingChange(target);
     await sock.sendMessage(
       chatId,
       { text: `🚫 تم رفض طلب تغيير تسجيل @${target.split("@")[0]}.`, mentions: [target] },
@@ -1216,6 +1314,27 @@ if (rejectChangeMatch) {
       dmPermissions.disallow(target);
       await sock.sendMessage(chatId, { text: "🚫 تم إلغاء سماحه باستخدام البوت بالخاص.", mentions: [target] }, { quoted: msg });
     });
+    return;
+  }
+
+  // 🔒 .قفل توب / .فتح توب — للمالك بس. لما يكون مقفول، كل أوامر .توب
+  // (.توب، .توب <نوع>، .توب جوالات، .توب <نوع> جوال، .توب كت <رقم>) ترفضها للجميع عدا المالك
+  if (text === ".قفل توب" || text === ".فتح توب") {
+    if (!isOwner(senderId)) {
+      await sock.sendMessage(chatId, { text: "⛔ هذا الأمر مخصص لصاحب البوت بس." }, { quoted: msg });
+      return;
+    }
+    const lock = text === ".قفل توب";
+    await topLock.setLocked(lock);
+    await sock.sendMessage(
+      chatId,
+      { text: lock ? "🔒 تم قفل أوامر التوب و.نقاطي، ولا تنحسب نتائج جديدة بالتوب لين تفتحه." : "🔓 تم فتح أوامر التوب للجميع." },
+      { quoted: msg }
+    );
+    return;
+  }
+  if (topLock.isLocked() && !isOwner(senderId) && (/^\.توب(\s|$)/.test(text) || text === ".نقاطي")) {
+    await sock.sendMessage(chatId, { text: "🔒 أوامر التوب والنقاط مقفولة حالياً." }, { quoted: msg });
     return;
   }
 
@@ -1957,6 +2076,7 @@ async function main() {
     registration.loadFromDb(),
     moderation.loadFromDb(),
     dmPermissions.loadFromDb(),
+    topLock.loadFromDb(),
     roulette.loadFromDb(),
     rasad.loadFromDb(),
   ]);
@@ -2025,4 +2145,9 @@ async function shutdown(signal) {
 process.on("SIGTERM", () => shutdown("SIGTERM"));
 process.on("SIGINT", () => shutdown("SIGINT"));
 
-main();
+main().catch((err) => {
+  // بدون هذا: أي خطأ بالتشغيل الأول يتحول لتحذير وبس، والبرنامج يفضل شغال
+  // (فحص Render الصحي يمر) لكن البوت ما يتصل بواتساب أبداً لين تعيد النشر يدوياً
+  console.error("🛑 فشل تشغيل البوت:", err);
+  setTimeout(() => process.exit(1), 500);
+});
