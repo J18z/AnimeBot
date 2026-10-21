@@ -10,6 +10,7 @@ const moderation = require("./moderation");
 const registration = require("./registration");
 const templates = require("./templates");
 const topLock = require("./topLock");
+const loopGuard = require("./loopGuard");
 let sharp;
 try {
   sharp = require("sharp");
@@ -24,12 +25,22 @@ try {
 // إنه رقم ثابت صغير (مو تخمين ديناميكي) عشان يبقى الوقت المعروض ثابت
 // ويعتمد على، بدل ما يتقلب حسب سرعة السيرفر اللحظية (خصوصاً بسيرفرات
 // مجانية زي Render ممكن تتأخر لحظياً وتشوّه أي تخمين ديناميكي)
-const NETWORK_OVERHEAD_MS = 500;
+const NETWORK_OVERHEAD_MS = 400;
 
 // ⏳ أقصى انتظار لرسالة تأكيد الإجابة قبل ما نكمل للسؤال التالي. السؤال التالي
 // كان ينتظر وصول رسالة التأكيد (وممكن تعلق لين 40 ثانية لو شبكة واتساب تدهورت)،
 // فكل المسابقة تتجمد. بالوضع الطبيعي الرسالة توصل بأقل من ثانية والسلوك ما يتغيّر
 const CONFIRM_WAIT_MS = 4000;
+// أقل وقت (الظاهر للاعب، بعد الخصم) نعتبره واقعي لإنسان — أقل منه ما يتسجل بالتوب. يختلف حسب الفقرة
+const MIN_PLAUSIBLE_ELAPSED_MS = {
+  writing: 500, // الكتابة
+  images: 600, // الصور
+  questions: 600, // الأسئلة
+  counts: 1000, // التعداد
+  dismantle: 700, // التفكيك
+  // بقية الفقرات (عكس، ترتيب، تكرار)
+  default: 600,
+};
 
 // ⏹️ إنهاء تلقائي: لو السؤال الحالي مرّ عليه دقيقتين بدون أي إجابة صحيحة (ولا جزء منها)
 // تنتهي المسابقة وتنعرض النتيجة — عشان ما تبقى مسابقة منسية شغالة. تنطبق على كل
@@ -458,6 +469,7 @@ class Contest {
     // "زمن شبكة" متغيّر. نعدّل نفس كائن الجولة (مو نستبدله) عشان أي رد
     // وصل بالفترة القصيرة اللي بين التعيين والإرسال يشوف نفس المرجع
     round.startTime = Date.now();
+    round.startStall = loopGuard.stallEndingAt(round.startTime); // لو البوت تجمّد قبل هذا الختم مباشرة
 
     // مؤقت حراسة: لو ما صار أي رد (ولا حتى محاولة خطأ) خلال 20 ثانية،
     // على الأغلب الرسالة (سؤال/صورة) ما وصلت فعلياً لواتساب رغم إن سيرفرنا
@@ -696,12 +708,34 @@ class Contest {
       );
       rawElapsed = 0;
     }
+    // 🛡️ تصحيح التجمّد: لو البوت تجمّد (GC/ضغط معالج) حول ختم البداية أو ختم وصول الرد،
+    // الاثنين ينهارون على بعض ويطلع وقت وهمي (0.00). نصحّحه بتقدير ونعلّمها "مشكوك فيها"
+    let stallMs = 0;
+    try {
+      const adj = loopGuard.adjustedElapsed(round.startTime, round.startStall, arrivedAt, msg && msg._recvStall);
+      if (adj.stallMs > 0 && Number.isFinite(adj.raw)) {
+        rawElapsed = adj.raw;
+        stallMs = adj.stallMs;
+      }
+    } catch (e) {
+      /* لو صار أي خلل نرجع للحساب القديم */
+    }
+    const arrivedBeforeStart = rawElapsed < 0; // الرد وصل قبل ختم البداية: مستحيل بدون تجمّد/تأخر ختم
     rawElapsed = Math.max(0, rawElapsed);
     // ننزل هامش ثابت وصغير بس (300 ملي ثانية) — تعويض بسيط لزمن وصول
     // رسالة السؤال، بدون أي تخمين متغيّر يقدر يشوّه الرقم. ما فيه حد
     // أدنى إضافي بعد كذا — لو طلعت 0.00 أو قريبة منها فهذا وقت حقيقي
     // (شخص جاوب بسرعة كبيرة فعلاً)، نعرضه زي ما هو بدون تثبيت
     const elapsed = Math.max(0, rawElapsed - NETWORK_OVERHEAD_MS);
+    // ⚠️ نتيجة غير موثوقة للتسجيل بالتوب: متأثرة بتجمّد، أو وصلت قبل بداية السؤال، أو أسرع من
+    // أي إنسان (أقل من الحد الأدنى لهذي الفقرة). تنحسب النقطة وتظهر للاعب عادي، بس ما تدخل لوحة
+    // الصدارة ولا .نقاطي عشان ما يتلوث التوب بوقت وهمي
+    const unreliable = stallMs > 0 || arrivedBeforeStart || elapsed < (MIN_PLAUSIBLE_ELAPSED_MS[round.poolType] ?? MIN_PLAUSIBLE_ELAPSED_MS.default);
+    if (unreliable) {
+      console.warn(
+        `⚠️ نتيجة وقت غير موثوقة (جولة ${round.poolType}): ${formatSeconds(elapsed)}ث | تجمّد=${Math.round(stallMs)}ms | وصل قبل البداية=${arrivedBeforeStart} — انحسبت النقطة بدون تسجيل بالتوب.`
+      );
+    }
     if (process.env.TIMING_LOG === "1") {
       const lag = msg && msg.messageTimestamp ? Date.now() - Number(msg.messageTimestamp) * 1000 : null;
       console.log(
@@ -715,7 +749,7 @@ class Contest {
     // (تجربة/معاينة)، ما نحسبها بالمنافسة الرسمية. محاطة بحماية عشان لو
     // فشل التسجيل لأي سبب (مشكلة قاعدة بيانات لحظية)، ما توقف تقدم الجولة
     // 🔒 لو التوب مقفول (.قفل توب)، ما نسجل النتيجة بـ.توب ولا .نقاطي لين يتفتح
-    if (!this.practiceMode && !topLock.isLocked()) {
+    if (!this.practiceMode && !topLock.isLocked() && !unreliable) {
       try {
         // ✅ للتعداد بس: بدل ما نعرض بلوحة الصدارة كل الإجابات المقبولة
         // مجمّعة (ممكن توصل 9+ عنصر وتشوّه شكل الرسالة)، نعرض نص رسالة

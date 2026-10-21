@@ -27,6 +27,7 @@ const sessionHealer = createHealer({ purge: purgeUserKeys });
 const { startHealthServer, setQr, clearQr } = require("./healthServer");
 const dmPermissions = require("./dmPermissions");
 const topLock = require("./topLock");
+const loopGuard = require("./loopGuard");
 const instanceLock = require("./instanceLock");
 const CONFIG = store.getConfig(); // ✅ نقرأ config مرة وحدة عند التشغيل
 const { handleMatsuriMessage } = require("../matsuri/matsuri");
@@ -537,7 +538,7 @@ function isMobileEligible(userId) {
 
 // أسماء عرض الفقرات + اختصاراتها (نفس اختصارات أوامر البدء بدون نقطة/ف)
 const poolLabels = { writing: "كتابة", images: "صور", questions: "أسئلة", counts: "تعداد", dismantle: "تفكيك", reverse: "عكس", scramble: "ترتيب", repeat: "تكرار" };
-const topTypeMap = { ص: "images", كت: "writing", تع: "counts", سس: "questions", فك: "dismantle", عك: "reverse", تر: "scramble", تك: "repeat" };
+const topTypeMap = { ص: "images", كت: "writing", تع: "counts", سس: "questions", فك: "dismantle", تف: "dismantle", عك: "reverse", تر: "scramble", تك: "repeat" };
 
 // يرسل قائمة سجل تراكمي مزخرفة (يستخدمها .سجل و.سجل جوالات)
 async function sendStandingsList(sock, chatId, msg, list, subtitle) {
@@ -870,6 +871,7 @@ async function connectSocketInner() {
         // ⏱️ لحظة وصول الرسالة للكود — أول سطر عمداً. نستخدمها بحساب وقت الإجابة
         // (game.js) بدل لحظة انتهاء المعالجة، فأي تأخير داخلي ما ينحسب على اللاعب
         msg._recvAt = Date.now();
+        msg._recvStall = loopGuard.stallEndingAt(msg._recvAt); // هل البوت كان متجمّد قبل هذي اللحظة؟ (يصحح الوقت)
         maintenance.noteInbound(msg); // عدّاد خفيف (سليمة/فاشلة) للصيانة التلقائية
         // 🩹 رسالة ما انفكّ تشفيرها: نعالج جلسة صاحبها التالفة (بالخلفية)
         if (msg.messageStubType === 2) sessionHealer.maybeHeal(msg);
@@ -1339,7 +1341,7 @@ if (rejectChangeMatch) {
   }
 
   // أمر .توب أو .توب <نوع>: يعرض أفضل الأوقات (3 لكل الفقرات، أو 5 لفقرة محددة)
-  const topMatch = text.match(/^\.توب(?:\s+(ص|كت|تع|سس|فك|عك|تر|تك))?$/);
+  const topMatch = text.match(/^\.توب(?:\s+(ص|كت|تع|سس|فك|تف|عك|تر|تك))?$/);
   if (topMatch) {
     const shortType = topMatch[1];
     let out, mentions;
@@ -1393,7 +1395,7 @@ if (rejectChangeMatch) {
   }
 
   // أمر .توب <نوع> جوال: زي .توب <نوع> بس بس الأشخاص المسجلين كجوال
-  const topMobileMatch = text.match(/^\.توب (ص|كت|تع|سس|فك|عك|تر|تك) جوال$/);
+  const topMobileMatch = text.match(/^\.توب (ص|كت|تع|سس|فك|تف|عك|تر|تك) جوال$/);
   if (topMobileMatch) {
     const poolType = topTypeMap[topMobileMatch[1]];
     const entries = leaderboard.getTopFiltered(poolType, 5, (e) => isMobileEligible(e.userId));
@@ -1428,7 +1430,7 @@ if (rejectChangeMatch) {
   // (كلها، أو فقرة وحدة، أو سجل شخص معين بس لو فيه منشن/اسم) — مخصص
   // لصاحب البوت بس
   // "كت_3" = بنك الكتابة بعدد كلمات محدد (1 إلى 5) — مستقل تماماً عن "كت" العام
-  const resetTopMatch = text.match(/^\.ريسيت توب(?:\s+(ص|كت_[1-5١-٥]|كت|تع|سس|فك|عك|تر|تك))?(?:\s+(.+))?$/);
+  const resetTopMatch = text.match(/^\.ريسيت توب(?:\s+(ص|كت_[1-5١-٥]|كت|تع|سس|فك|تف|عك|تر|تك))?(?:\s+(.+))?$/);
   if (resetTopMatch) {
     if (!isOwner(senderId)) {
       await sock.sendMessage(chatId, { text: "⛔ هذا الأمر مخصص لصاحب البوت بس." }, { quoted: msg });
@@ -1654,7 +1656,7 @@ if (rejectChangeMatch) {
   //    بأرقام النقاط المراد حذفها (تنحذف من .نقاطي ومن التوب تلقائياً، وتصعد
   //    نتيجته التالية للتوب لو تستاهل). <شخص> = منشن / اسم / رقم تسجيل
   //    (1 للجوالات، 1_خارجي للخارجي)
-  const resetPointsMatch = text.match(/^\.ريسيت نقاط(?:\s+(ص|كت|تع|سس|فك|عك|تر|تك))?(?:\s+(.+))?$/);
+  const resetPointsMatch = text.match(/^\.ريسيت نقاط(?:\s+(ص|كت|تع|سس|فك|تف|عك|تر|تك))?(?:\s+(.+))?$/);
   if (resetPointsMatch) {
     if (!isOwner(senderId)) {
       await sock.sendMessage(chatId, { text: "⛔ هذا الأمر مخصص لصاحب البوت بس." }, { quoted: msg });
@@ -2063,6 +2065,7 @@ setInterval(() => {
 // نقطة البداية: نتصل بقاعدة البيانات ونسحب كل البيانات المحفوظة (مرة
 // وحدة بس، مو عند كل إعادة اتصال بواتساب)، وبعدها نشغّل اتصال واتساب
 async function main() {
+  loopGuard.start();
   ({ makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion } = await loadBaileys());
   require("./versionInfo").logVersions();
   startHealthServer(); // يفتح منفذ HTTP بسيط (يحتاجه Render وأشباهه)
