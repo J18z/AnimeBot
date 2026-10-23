@@ -28,6 +28,7 @@ const { startHealthServer, setQr, clearQr } = require("./healthServer");
 const dmPermissions = require("./dmPermissions");
 const topLock = require("./topLock");
 const loopGuard = require("./loopGuard");
+const mediaHealth = require("./mediaHealth");
 const instanceLock = require("./instanceLock");
 const CONFIG = store.getConfig(); // ✅ نقرأ config مرة وحدة عند التشغيل
 const { handleMatsuriMessage } = require("../matsuri/matsuri");
@@ -829,6 +830,7 @@ async function connectSocketInner() {
       }
     } else if (connection === "open") {
       console.log("✅ البوت جاهز ومتصل بواتساب!");
+      mediaHealth.notifyOpen();
       maintenance.noteConnected();
       lastOpenTime = Date.now();
       consecutiveLogouts = 0; // اتصال ناجح = نصفّر العدادات
@@ -2066,6 +2068,7 @@ setInterval(() => {
 // وحدة بس، مو عند كل إعادة اتصال بواتساب)، وبعدها نشغّل اتصال واتساب
 async function main() {
   loopGuard.start();
+  mediaHealth.setReconnect(() => softReconnect()); // إصلاح تلقائي لو الصور علقت (راجع mediaHealth.js)
   ({ makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion } = await loadBaileys());
   require("./versionInfo").logVersions();
   startHealthServer(); // يفتح منفذ HTTP بسيط (يحتاجه Render وأشباهه)

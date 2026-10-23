@@ -11,6 +11,7 @@ const registration = require("./registration");
 const templates = require("./templates");
 const topLock = require("./topLock");
 const loopGuard = require("./loopGuard");
+const mediaHealth = require("./mediaHealth");
 let sharp;
 try {
   sharp = require("sharp");
@@ -25,7 +26,7 @@ try {
 // إنه رقم ثابت صغير (مو تخمين ديناميكي) عشان يبقى الوقت المعروض ثابت
 // ويعتمد على، بدل ما يتقلب حسب سرعة السيرفر اللحظية (خصوصاً بسيرفرات
 // مجانية زي Render ممكن تتأخر لحظياً وتشوّه أي تخمين ديناميكي)
-const NETWORK_OVERHEAD_MS = 400;
+const NETWORK_OVERHEAD_MS = 500;
 
 // ⏳ أقصى انتظار لرسالة تأكيد الإجابة قبل ما نكمل للسؤال التالي. السؤال التالي
 // كان ينتظر وصول رسالة التأكيد (وممكن تعلق لين 40 ثانية لو شبكة واتساب تدهورت)،
@@ -251,14 +252,35 @@ class Contest {
     }
 
     let lastErr;
-    for (let attempt = 1; attempt <= 3; attempt++) {
+    const trySend = async (attempt) => {
       try {
-        return await this.client.sendMessage(this.chatId, content);
+        return { ok: true, res: await this.client.sendMessage(this.chatId, content) };
       } catch (err) {
         lastErr = err;
-        console.error(`⚠️ إرسال ${file} فشل (محاولة ${attempt}/3):`, err.message);
-        if (attempt < 3) await new Promise((r) => setTimeout(r, 1500 * attempt));
+        // نطبع تفاصيل السبب الحقيقي (كان يطبع الرسالة بس) عشان نعرف وش اللي يفشل بالضبط
+        const extra = [
+          err && err.code ? `code=${err.code}` : "",
+          err && err.output && err.output.statusCode ? `status=${err.output.statusCode}` : "",
+          err && err.cause && err.cause.message ? `cause=${err.cause.message}` : "",
+        ]
+          .filter(Boolean)
+          .join(" ");
+        console.error(`⚠️ إرسال ${file} فشل (محاولة ${attempt}/3):`, err && err.message, extra);
+        return { ok: false };
       }
+    };
+
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      const r = await trySend(attempt);
+      if (r.ok) return r.res;
+      if (attempt < 2) await new Promise((res) => setTimeout(res, 1500));
+    }
+    // محاولتين فشلوا: غالباً رفع الميديا عالق بالسوكت (النصوص تمشي والصور لا) — نعيد الاتصال
+    // تلقائياً (نفس الجلسة) ونحاول مرة أخيرة بالسوكت الجديد. شوف mediaHealth.js
+    const recovered = await mediaHealth.requestRecovery(file).catch(() => false);
+    if (recovered && this.active) {
+      const r = await trySend(3);
+      if (r.ok) return r.res;
     }
     throw tag("send", lastErr);
   }
