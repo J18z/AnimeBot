@@ -1784,6 +1784,53 @@ if (rejectChangeMatch) {
     return;
   }
 
+  // 🏁 .بدء_فنش <العدد> (أو .بدء_فنش ج <العدد> للجوالات): فنش بدون حساب وقت ولا تسجيل
+  // بـ.توب/.سجل. بعد كل سؤال يرد بقائمة النقاط. الفقرات: كتابة (3 كلمات) / صور / سستع
+  // (أسئلة+تعداد بالتناوب) وتتبدل تلقائياً حسب النقاط (شوف game.js _finishAfterWin)
+  const finishStartMatch = hamzaCheckMain.text.trim().replace(/\s+/g, " ").match(/^\.بدء[_ ]فنش(?: (ج))? ?(\d+)$/);
+  if (finishStartMatch) {
+    const finishTarget = parseInt(finishStartMatch[2], 10);
+    if (finishTarget < 3) {
+      await sock.sendMessage(chatId, { text: "⚠️ أقل هدف للفنش 3 نقاط." }, { quoted: msg });
+      return;
+    }
+    if (hasBlockingContest(chatId)) {
+      await sock.sendMessage(
+        chatId,
+        { text: "⚠️ فيه مسابقة شغالة بالفعل بهذي المحادثة. اكتب: .انهاء عشان تنهيها." },
+        { quoted: msg }
+      );
+      return;
+    }
+    if (pendingPoolSelection.has(chatId)) {
+      await sock.sendMessage(
+        chatId,
+        { text: "⚠️ فيه طلب اختيار فقرات معلّق أصلاً بهذي المحادثة. انتظر صاحبه يختار، أو اكتب .الغاء عشان تلغيه وتقدر تبدأ من جديد." },
+        { quoted: msg }
+      );
+      return;
+    }
+    clearStalePracticeContest(chatId);
+    const finishMobileOnly = finishStartMatch[1] === "ج";
+    const contest = new Contest(chatId, sock, "general", finishTarget, {
+      mobileOnly: finishMobileOnly,
+      hamzaMode: hamzaCheckMain.hamzaMode,
+      allowedPoolTypes: ["writing", "images", "questions", "counts"],
+      fixedWordCount: 3,
+      finishMode: true,
+    });
+    activeContests.set(chatId, contest);
+    try {
+      await sock.sendMessage(chatId, {
+        text: `🏁 بدأ فنش *بدون توقيت*${finishMobileOnly ? " 📱 (جوالات بس)" : ""}!\nالنقاط المطلوبة للفوز: ${finishTarget}\nالفقرات: كتابة، صور، سستع (أسئلة + تعداد) — وتتبدل تلقائياً.\nبالتوفيق للجميع 🍀`,
+      });
+    } catch (e) {
+      console.error("⚠️ فشل إرسال رسالة بدء الفنش (نكمل لبدء السؤال الأول):", e);
+    }
+    await beginContest(chatId, sock, contest, senderId);
+    return;
+  }
+
   // أمر .مسابقة <رقم> أو .مسابقة ج <رقم>: فقرات منوعة، تنتهي لما مجموع
   // عدد الأسئلة الكلي (بغض النظر مين جاوب) يوصل الرقم — مو أول شخص يوصل
   // هدف. نفس قائمة اختيار الفقرات

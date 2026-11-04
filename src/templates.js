@@ -103,6 +103,15 @@ function formatStandingsList(list, subtitle = TOP_SUBTITLE_ALL) {
 }
 
 // رسالة نهاية مسابقة (الترتيب النهائي)، بدون حد أقصى
+// 🏁 قائمة نقاط وضع .بدء_فنش (بدون وقت). winnerId = اللي وصل الهدف (يطلع جنبه "فـنـش")
+function formatFinishBoard({ target, mobileOnly, entries, winnerId }) {
+  let out = `> فـنـش ${target} ${mobileOnly ? "جـوالات" : "الـكـل"}`;
+  for (const e of entries) {
+    out += `\n- ${isolate(e.displayName)} ${e.points}${winnerId && e.userId === winnerId ? " فـنـش" : ""}`;
+  }
+  return out;
+}
+
 function formatContestEnd(ranking) {
   let out = `${TOP_HEADER}\n${TOP_DIVIDER}\n◞نـهـايـة الـمـسـابـقـة╎˼‏🏆˹⤹◜\n ◝الـتـرتـيـب الـنـهـائي⇆🎖️◟\n${TOP_DIVIDER2}\n`;
   if (ranking.length === 0) {
@@ -198,6 +207,7 @@ function formatMyPoints(entriesByType, displayName, userId) {
 
 module.exports = {
   isolate,
+  formatFinishBoard,
   TOP_HEADER,
   TOP_DIVIDER,
   TOP_SUBTITLE_ALL,

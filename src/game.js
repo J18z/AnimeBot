@@ -63,6 +63,19 @@ function waitAtMost(promise, ms) {
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
+// 🏁 وضع .بدء_فنش: فقرات الدورة (كتابة، صور، سستع = أسئلة+تعداد بالتناوب)
+const FINISH_SECTIONS = ["writing", "images", "mix"];
+const FINISH_SECTION_LABELS = { writing: "كتابة", images: "صور", mix: "سستع" };
+
+// يوزّع الهدف على الفقرات: كل فقرة round(الهدف/عدد الفقرات) والأخيرة تاخذ الباقي
+// (مثال 20 على 3 = 7,7,6) ثم يخلطها عشوائياً على الفقرات
+function splitFinishShares(target, sections) {
+  const base = Math.max(1, Math.round(target / sections));
+  const shares = Array(sections - 1).fill(base);
+  shares.push(Math.max(1, target - base * (sections - 1)));
+  return shuffle(shares);
+}
+
 // أنواع الفقرات المدعومة
 const POOL_TYPES = ["writing", "images", "questions", "counts"];
 
@@ -79,6 +92,7 @@ class Contest {
     this.remindedUsers = new Set(); // شخوص ذكّرناهم بالتسجيل (مرة وحدة بس)
     this.remindedMobileOnly = new Set(); // شخوص حذّرناهم إنها مسابقة جوالات بس (مرة وحدة بس)
     // خيارات خاصة:
+    this.finishMode = !!options.finishMode; // 🏁 .بدء_فنش: بدون وقت ولا تسجيل، قائمة نقاط بعد كل سؤال، فقرات تتبدل تلقائياً
     this.practiceMode = !!options.practiceMode; // تقديم بسيط، جولة وحدة، بدون تسجيل بـ.توب/.سجل
     this.endless = !!options.endless; // مسابقة مستمرة، ما تتوقف تلقائياً عند الهدف
     this.mobileOnly = !!options.mobileOnly; // بس المسجلين كجوال يقدرون يشاركون
@@ -99,18 +113,20 @@ class Contest {
     // التقليدية) — لو موجودة، pickPoolType يختار عشوائي من هذي القائمة
     // بس بدل POOL_TYPES الافتراضية
     this.allowedPoolTypes = options.allowedPoolTypes || null;
+    if (this.finishMode) this._finishStartCycle(true);
   }
 
   pickPoolType() {
+    if (this.finishMode) return this._finishPoolType();
     if (this.contestType === "general") {
       return pickRandom(this.allowedPoolTypes || POOL_TYPES);
     }
     return this.contestType;
   }
 
-  // يجيب عنصر من مجموعة بيانات (صور/أسئلة/تعداد) بقفل تكرار عالمي
-  // (usedStore): أي سؤال انرسل بأي مسابقة/قروب ما يتكرر إلا لما تخلص كل
-  // أسئلة الفقرة، وقتها تبدأ دورة جديدة عشوائية. الصور مقفولة "حسب الإجابة"
+  // يجيب عنصر من مجموعة بيانات (صور/أسئلة/تعداد) بقفل تكرار لكل قروب على حدى
+  // (usedStore): أي سؤال انرسل بهذا القروب ما يتكرر فيه إلا لما تخلص كل
+  // أسئلة الفقرة، وقتها تبدأ له دورة جديدة عشوائية (القروبات الثانية ما تتأثر). الصور مقفولة "حسب الإجابة"
   // (صور مختلفة بنفس الإجابة = سؤال واحد، شوف answerGroups.js)
   pickItem(poolType) {
     let pool;
@@ -120,7 +136,7 @@ class Contest {
 
     if (!pool || pool.length === 0) return null;
     const keyFn = poolType === "images" ? imageKeyFn(pool) : (it) => it.id;
-    return usedStore.pick(poolType, pool, keyFn);
+    return usedStore.pick(poolType, pool, keyFn, undefined, this.chatId); // قفل لهذا القروب بس
   }
 
   // فقرة الكتابة: يسحب 1-3 كلمات من بنك كلمات واحد بنفس نظام الوزن
@@ -147,7 +163,7 @@ class Contest {
     const chosen = new Set();
     const result = [];
     for (let i = 0; i < count; i++) {
-      const item = usedStore.pick("writing", pool, keyFn, chosen);
+      const item = usedStore.pick("writing", pool, keyFn, chosen, this.chatId);
       if (!item) break;
       chosen.add(keyFn(item));
       result.push(item.word);
@@ -171,7 +187,7 @@ class Contest {
     const chosenKeys = new Set();
     const result = [];
     for (let i = 0; i < count; i++) {
-      const item = usedStore.pick("repeat", pool, keyFn, chosenKeys);
+      const item = usedStore.pick("repeat", pool, keyFn, chosenKeys, this.chatId);
       if (!item) break;
       chosenKeys.add(keyFn(item));
       const repeatCount = Math.floor(Math.random() * 4) + 2; // 2..5
@@ -289,7 +305,7 @@ class Contest {
   // بالخلفية. نحتفظ بصورة وحدة بس كحد أقصى، وتنمسح فور استخدامها أو
   // عند انتهاء المسابقة (ما يتراكم شي)
   _planNextRound() {
-    if (this.practiceMode || !this.active) return;
+    if (this.practiceMode || this.finishMode || !this.active) return;
     try {
       const nextType = this.pickPoolType();
       this._plannedPoolType = nextType;
@@ -312,7 +328,7 @@ class Contest {
     // عشان ما تنحسب مستخدمة وهي ما ظهرت لأحد
     if (this._plannedImageItem) {
       const imgs = store.getImages();
-      if (imgs && imgs.length) usedStore.release("images", imageKeyFn(imgs)(this._plannedImageItem));
+      if (imgs && imgs.length) usedStore.release("images", imageKeyFn(imgs)(this._plannedImageItem), this.chatId);
     }
     this._plannedPoolType = null;
     this._plannedImageItem = null;
@@ -322,6 +338,17 @@ class Contest {
   // يبدأ جولة جديدة
   async nextRound() {
     if (!this.active) return;
+
+    // 🏁 إعلان اسم الفقرة (*كتابة* / *صور* / *سستع*) قبل أول سؤال منها
+    if (this.finishMode && this.fm.announce) {
+      this.fm.announce = false;
+      try {
+        await this.sendChat(`*${FINISH_SECTION_LABELS[this.fm.order[this.fm.idx]]}*`);
+      } catch (e) {
+        console.error("⚠️ فشل إرسال اسم الفقرة (نكمل):", e && e.message);
+      }
+      if (!this.active) return;
+    }
 
     const poolType = this._plannedPoolType || this.pickPoolType();
     this._plannedPoolType = null;
@@ -357,8 +384,8 @@ class Contest {
         await this.sendChat(`⚠️ ما فيه كلمات بملف data/words.json. أضف كلمات أول.`);
         return;
       }
-      // قفل تكرار عالمي لكل فقرة من الثلاث (شوف usedStore.js)
-      const wordItem = usedStore.pick(poolType, wordPool, (it) => it.word[0]);
+      // قفل تكرار لكل قروب على حدى لكل فقرة من الثلاث (شوف usedStore.js)
+      const wordItem = usedStore.pick(poolType, wordPool, (it) => it.word[0], undefined, this.chatId);
       const rawWord = wordItem.word[0].replace(/\s+/g, ""); // نشيل المسافات (لو الاسم أكثر من كلمة) عشان الفقرات الثلاث تشتغل على كلمة مصمتة
       points = 1;
       required = 1;
@@ -771,7 +798,7 @@ class Contest {
     // (تجربة/معاينة)، ما نحسبها بالمنافسة الرسمية. محاطة بحماية عشان لو
     // فشل التسجيل لأي سبب (مشكلة قاعدة بيانات لحظية)، ما توقف تقدم الجولة
     // 🔒 لو التوب مقفول (.قفل توب)، ما نسجل النتيجة بـ.توب ولا .نقاطي لين يتفتح
-    if (!this.practiceMode && !topLock.isLocked() && !unreliable) {
+    if (!this.practiceMode && !this.finishMode && !topLock.isLocked() && !unreliable) {
       try {
         // ✅ للتعداد بس: بدل ما نعرض بلوحة الصدارة كل الإجابات المقبولة
         // مجمّعة (ممكن توصل 9+ عنصر وتشوّه شكل الرسالة)، نعرض نص رسالة
@@ -816,7 +843,7 @@ class Contest {
       // التقديم البسيط: مهمته يرسل الفقرة بس، بدون أي رد أو رسالة تأكيد
       // إجابة إطلاقاً (لا وقت ولا نقاط ولا حتى "إجابة صحيحة")
       if (!this.practiceMode) {
-        await waitAtMost(this.replyTo(msg, `🎉 ${resultLabel}!\n\n⏱️ الوقت: ${formatSeconds(elapsed)} ثانية\n\n⭐ +${round.points} نقطة\n(المجموع: ${total})`), CONFIRM_WAIT_MS);
+        await waitAtMost(this.replyTo(msg, this.finishMode ? this._finishBoardText(senderId, total >= this.target) : `🎉 ${resultLabel}!\n\n⏱️ الوقت: ${formatSeconds(elapsed)} ثانية\n\n⭐ +${round.points} نقطة\n(المجموع: ${total})`), CONFIRM_WAIT_MS);
       }
     } catch (e) {
       console.error("⚠️ فشل إرسال رسالة الإجابة الصحيحة (تجاهلناه، الجولة تكمل عادي):", e);
@@ -904,11 +931,81 @@ class Contest {
       await this.endContest();
       return;
     }
+    if (this.finishMode) this._finishAfterWin();
     const cfg = store.getConfig();
     this.scheduleNextRound(cfg.nextQuestionDelayMs || 1000, "الجولة القادمة");
   }
 
   // يعرض اسم العرض المخزن (لو موجود) وإلا رقم الشخص فقط
+  // ═══ 🏁 وضع .بدء_فنش ═══
+  // دورة = كل الفقرات (كتابة، صور، سستع) بترتيب عشوائي، كل وحدة مرة. الانتقال لفقرة ثانية
+  // يصير لما: (1) أحد المشاركين نقاطه (من بداية الدورة) توصل الحد التراكمي للفقرة (7 ثم 14 ثم 20
+  // مثلاً لفنش 20)، أو (2) مجموع النقاط الموزعة بهذي الفقرة يوصل حد الفقرة (فنش 20 = 12).
+  // بعد آخر فقرة والفنش ما انتهى: دورة جديدة وكل الحدود تنصّف (تقريب لفوق عند .5)
+  _finishStartCycle(first = false) {
+    if (first) {
+      this.fm = { cycle: 1, order: [], idx: 0, shares: [], cum: [], cap: 0, baseline: new Map(), sectionPoints: 0, announce: true, lastSection: null, mixNext: Math.random() < 0.5 ? "questions" : "counts" };
+    } else {
+      this.fm.cycle += 1;
+    }
+    const fm = this.fm;
+    let order = shuffle([...FINISH_SECTIONS]);
+    // ما نبدأ الدورة الجديدة بنفس الفقرة اللي انتهت فيها الدورة السابقة
+    if (fm.lastSection && order[0] === fm.lastSection) order.push(order.shift());
+    fm.order = order;
+    fm.idx = 0;
+    const scale = 2 ** (fm.cycle - 1);
+    fm.shares = splitFinishShares(this.target, order.length).map((s) => Math.max(1, Math.round(s / scale)));
+    fm.cum = [];
+    let run = 0;
+    for (const s of fm.shares) fm.cum.push((run += s));
+    fm.cap = Math.max(1, Math.round(Math.round(this.target / 2 + 2) / scale));
+    fm.baseline = new Map(this.scores); // لقطة نقاط الكل بداية الدورة
+    fm.sectionPoints = 0;
+    fm.announce = true;
+  }
+
+  _finishPoolType() {
+    const sec = this.fm.order[this.fm.idx];
+    if (sec === "writing") return "writing";
+    if (sec === "images") return "images";
+    const t = this.fm.mixNext; // سستع: مرة سؤال ومرة تعداد
+    this.fm.mixNext = t === "questions" ? "counts" : "questions";
+    return t;
+  }
+
+  _finishAfterWin() {
+    const fm = this.fm;
+    const round = this.currentRound;
+    fm.sectionPoints += (round && round.points) || 0;
+    const i = fm.idx;
+    let reason = null;
+    if (fm.sectionPoints >= fm.cap) {
+      reason = `حد الفقرة (${fm.sectionPoints}/${fm.cap})`;
+    } else {
+      for (const [uid, pts] of this.scores) {
+        if (pts - (fm.baseline.get(uid) || 0) >= fm.cum[i]) {
+          reason = `وصل مشارك لحد النقاط (${fm.cum[i]})`;
+          break;
+        }
+      }
+    }
+    if (!reason) return;
+    console.log(`🏁 فنش ${this.chatId}: انتقال من فقرة ${FINISH_SECTION_LABELS[fm.order[i]]} — ${reason}`);
+    fm.lastSection = fm.order[i];
+    fm.idx += 1;
+    fm.sectionPoints = 0;
+    if (fm.idx >= fm.order.length) this._finishStartCycle(false);
+    else fm.announce = true;
+  }
+
+  _finishBoardText(winnerId, reached) {
+    const entries = [...this.scores.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .map(([userId, points]) => ({ userId, displayName: this.displayNameFor(userId), points }));
+    return templates.formatFinishBoard({ target: this.target, mobileOnly: this.mobileOnly, entries, winnerId: reached ? winnerId : null });
+  }
+
   displayNameFor(userId) {
     return this.nameCache.get(userId) || userId.split("@")[0];
   }
@@ -941,10 +1038,20 @@ class Contest {
     // نضيف نتيجة هذي المسابقة للسجل التراكمي (بس لو فيه مشاركين كافيين)
     // countWin: فوز "فنش" يُحسب بس بالمسابقات اللي مو مستمرة (فنش رسمي أو
     // مسابقة بعدد أسئلة محدد) — المستمرة (.مسص/.مسس/.متع/.مسكت) ما تُحسب
-    standings.addContestResult(this.scores, this.nameCache, { countWin: !this.endless });
+    // 🏁 فنش بدون تسجيل: ما يدخل السجل التراكمي (.سجل)
+    if (!this.finishMode) standings.addContestResult(this.scores, this.nameCache, { countWin: !this.endless });
 
     if (ranking.length === 0) {
       await this.sendChat("انتهت المسابقة بدون فائزين 😅");
+      return;
+    }
+
+    if (this.finishMode) {
+      // لو أحد وصل الهدف، آخر قائمة (اللي جنب اسمه فـنـش) هي النتيجة النهائية.
+      // لو انتهت يدوياً (.انهاء) أو لخمول، نرسل القائمة الحالية كنتيجة
+      if (!ranking.some(([, p]) => p >= this.target)) {
+        await this.sendChat(this._finishBoardText(null, false));
+      }
       return;
     }
 
