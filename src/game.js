@@ -78,7 +78,7 @@ function splitFinishShares(target, sections) {
 
 // ⏱️ توقيتات وضع .بدء_فنش
 const FINISH_STEP_DELAY_MS = 2000; // انتظار بعد اسم الفقرة / بعد قائمة النتائج / بعد السكب قبل الرسالة اللي بعدها
-const FINISH_SKIP_MS = 10 * 1000; // بدون أي إجابة: سكب تلقائي
+const FINISH_SKIP_MS = 7 * 1000; // بدون أي إجابة: سكب تلقائي
 const FINISH_END_MS = 2 * 60 * 1000; // دقيقتين بدون أي إجابة: إنهاء تلقائي
 const FINISH_MAX_SKIPS = 4; // 4 سكبات ورا بعض (بدون أي إجابة بينها): إنهاء تلقائي
 
@@ -142,6 +142,21 @@ class Contest {
 
     if (!pool || pool.length === 0) return null;
     const keyFn = poolType === "images" ? imageKeyFn(pool) : (it) => it.id;
+    if (this.finishMode) {
+      // 🏁 بالفنش: صورة/سؤال/تعداد ما يتكرر أبداً داخل نفس الفنش بنفس القروب. القفل العادي لحاله ما يضمن هذا:
+      // لو خلص البنك بنص الفنش ينصفّر القفل ويقدر يرجع شي انعرض قبل. فنتذكر اللي طلع بهذا الفنش ونستبعده
+      const seenAll = this._finishSeen || (this._finishSeen = {});
+      const seen = seenAll[poolType] || (seenAll[poolType] = new Set());
+      let item = usedStore.pick(poolType, pool, keyFn, seen, this.chatId);
+      if (!item) {
+        // البنك كله طلع بهذا الفنش (البنك أصغر من طول الفنش) — ما فيه حل غير نبدأ دورة جديدة
+        console.log(`🔁 فنش: انعرض كل بنك (${poolType}) بالقروب ${this.chatId} — دورة جديدة للضرورة.`);
+        seen.clear();
+        item = usedStore.pick(poolType, pool, keyFn, undefined, this.chatId);
+      }
+      if (item) seen.add(keyFn(item));
+      return item;
+    }
     return usedStore.pick(poolType, pool, keyFn, undefined, this.chatId); // قفل لهذا القروب بس
   }
 
@@ -1105,8 +1120,8 @@ class Contest {
     const mentions = [];
     for (const [userId, points] of ranking) {
       const title = registration.getTitle(userId);
-      text += `${this.displayNameFor(userId)} (${title || "@" + userId.split("@")[0]}) — ${points}\n`;
-      if (!title) mentions.push(userId);
+      text += `${title || this.displayNameFor(userId)} (@${userId.split("@")[0]}) — ${points}\n`;
+      mentions.push(userId);
     }
     await this.client.sendMessage(this.chatId, { text, mentions });
   }

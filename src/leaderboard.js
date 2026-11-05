@@ -2,6 +2,7 @@
 // بالخلفية بقاعدة البيانات (لو متوفرة)
 
 const { getDb } = require("./db");
+const registration = require("./registration"); // الخاملين (dormant) يتخفّون من العرض بس بياناتهم محفوظة
 
 // ✅ "writing1".."writing5" بنوك إضافية منفصلة تماماً عن "writing" الأصلية
 // (اللي ما اتغيرت ولا اتلمست) — تتبع أفضل وقت لكل عدد كلمات بالضبط (1
@@ -101,11 +102,11 @@ function record(poolType, entry) {
 }
 
 function getTop(poolType, n = DISPLAY_CAP) {
-  return (board[poolType] || []).slice(0, n);
+  return (board[poolType] || []).filter((e) => !registration.isDormant(e.userId)).slice(0, n);
 }
 
 function getTopFiltered(poolType, n, predicate) {
-  return (board[poolType] || []).filter(predicate).slice(0, n);
+  return (board[poolType] || []).filter((e) => !registration.isDormant(e.userId) && predicate(e)).slice(0, n);
 }
 
 function getAllTypes() {

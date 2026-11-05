@@ -9,10 +9,14 @@ function isolate(name) {
   return `${ISOLATE_START}${name}${ISOLATE_END}`;
 }
 
-// 🏷️ لو الشخص عنده لقب يطلع اللقب مكان المنشن، وإلا يبقى المنشن (@الرقم)
+// المنشن (@الرقم) دايماً بالخانة الثانية
 function who(userId) {
-  const t = registration.getTitle(userId);
-  return t ? isolate(t) : "@" + userId.split("@")[0];
+  return "@" + userId.split("@")[0];
+}
+
+// 🏷️ خانة الاسم (الأولى): لو الشخص عنده لقب يطلع اللقب، وإلا اسمه المسجل
+function nameOf(userId, displayName) {
+  return isolate(registration.getTitle(userId) || displayName);
 }
 
 const TOP_HEADER = "˼‏⬩بــوت ريــم • レム┊🤖˹";
@@ -53,7 +57,7 @@ const TOP_ORDER = ["writing", "images", "questions", "counts", "dismantle", "rev
 
 // سطرين لعنصر ترتيب وحد بلوحة صدارة الأوقات (اسم+منشن ثم إجابة+وقت)
 function formatEntryLines(numOrMedal, e) {
-  let out = `˼‏${numOrMedal}╎${isolate(e.displayName)} + ${who(e.userId)} ⤹\n`;
+  let out = `˼‏${numOrMedal}╎${nameOf(e.userId, e.displayName)} + ${who(e.userId)} ⤹\n`;
   out += `˼‏${e.answer}˹﹝${(e.elapsed / 1000).toFixed(2)} ثانية﹞⋄◟\n\n`;
   return out;
 }
@@ -100,7 +104,7 @@ function formatStandingsList(list, subtitle = TOP_SUBTITLE_ALL) {
     out += "ما فيه سجل بعد.\n";
   } else {
     list.forEach((e, i) => {
-      out += `˼‏${numFor(i)}╎${isolate(e.displayName)} ⇆ ${who(e.userId)} ⤹\n`;
+      out += `˼‏${numFor(i)}╎${nameOf(e.userId, e.displayName)} ⇆ ${who(e.userId)} ⤹\n`;
       out += `˼‏الـفـنـش˹ ﹝${e.wins || 0}﹞⋄🏅◟\n`;
       out += `˼‏الـنـقـاط˹﹝${e.points}﹞⋄🔢◟\n\n`;
     });
@@ -111,10 +115,17 @@ function formatStandingsList(list, subtitle = TOP_SUBTITLE_ALL) {
 
 // رسالة نهاية مسابقة (الترتيب النهائي)، بدون حد أقصى
 // 🏁 قائمة نقاط وضع .بدء_فنش (بدون وقت). winnerId = اللي وصل الهدف (يطلع جنبه "فـنـش")
+// ملاحظة التنسيق: ما نستخدم isolate() هنا. علامات العزل (FSI/PDI) تظهر "مسافة" قبل الاسم وتخلي السطر
+// ينحاز لليسار (لأن العزل يخفي الحرف العربي عن تحديد اتجاه السطر). بدلها نحط RLM (علامة اتجاه
+// يمين، بدون عرض ظاهر) بعد "- " مباشرة وبعد الاسم: السطر يبقى من اليمين، والاسم الإنجليزي
+// يبقى بمكانه (الاسم يمين والنقاط يسار) بدون أي مسافة زايدة
+const RLM = "\u200F";
+const BIDI_STRIP = /[\u200b-\u200f\u202a-\u202e\u2066-\u2069]/g;
 function formatFinishBoard({ target, mobileOnly, entries, winnerId }) {
   let out = `> فـنـش ${target} ${mobileOnly ? "جـوالات" : "الـكـل"}`;
   for (const e of entries) {
-    out += `\n- ${isolate(e.displayName)} ${e.points}${winnerId && e.userId === winnerId ? " فـنـش" : ""}`;
+    const name = String(e.displayName || "").replace(BIDI_STRIP, "").trim();
+    out += `\n- ${RLM}${name}${RLM} ${e.points}${winnerId && e.userId === winnerId ? " فـنـش" : ""}`;
   }
   return out;
 }
@@ -125,7 +136,7 @@ function formatContestEnd(ranking) {
     out += "انتهت المسابقة بدون فائزين.\n";
   } else {
     ranking.forEach((e, i) => {
-      out += `˼‏${numFor(i)}╎${isolate(e.displayName)} ⇆ ${who(e.userId)} ⤹\n`;
+      out += `˼‏${numFor(i)}╎${nameOf(e.userId, e.displayName)} ⇆ ${who(e.userId)} ⤹\n`;
       out += `˼‏الـنـقـاط˹﹝${e.points}﹞⋄◟\n\n`;
     });
   }
@@ -141,7 +152,7 @@ function formatMemberList(externals, mobiles) {
     out += "ما فيه أعضاء مسجلين.\n\n";
   } else {
     externals.forEach((e, i) => {
-      out += `˼‏${numFor(i)}╎${isolate(e.displayName)} ⇆ ${who(e.userId)} ⋄◟\n`;
+      out += `˼‏${numFor(i)}╎${nameOf(e.userId, e.displayName)} ⇆ ${who(e.userId)} ⋄◟\n`;
     });
     out += "\n";
   }
@@ -150,7 +161,7 @@ function formatMemberList(externals, mobiles) {
     out += "ما فيه أعضاء مسجلين.\n\n";
   } else {
     mobiles.forEach((e, i) => {
-      out += `˼‏${numFor(i)}╎${isolate(e.displayName)} ⇆ ${who(e.userId)} ⋄◟\n`;
+      out += `˼‏${numFor(i)}╎${nameOf(e.userId, e.displayName)} ⇆ ${who(e.userId)} ⋄◟\n`;
     });
   }
   out += TOP_DIVIDER;
@@ -194,7 +205,7 @@ function formatQuestionsList(items) {
 // رسالة .نقاطي — أفضل 5 نتائج شخصية (تاريخ الشخص نفسه، مو التنافسي العام)
 // لكل فقرة، لنفس الشخص اللي طلب الأمر
 function formatMyPoints(entriesByType, displayName, userId) {
-  let out = `${TOP_HEADER}\n${TOP_DIVIDER}\n◞تــوب الـنـقـاط╎˼‏🔝˹⤹◜\n     ◝${isolate(displayName)}⇆${who(userId)}◟\n`;
+  let out = `${TOP_HEADER}\n${TOP_DIVIDER}\n◞تــوب الـنـقـاط╎˼‏🔝˹⤹◜\n     ◝${nameOf(userId, displayName)}⇆${who(userId)}◟\n`;
   TOP_ORDER.forEach((poolType) => {
     const { compact, icon } = topTitles[poolType];
     out += `${TOP_DIVIDER2}\n*✠ تــوب 5 ${compact} • ${icon}◜*\n\n`;
