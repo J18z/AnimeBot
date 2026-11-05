@@ -29,6 +29,7 @@ const dmPermissions = require("./dmPermissions");
 const topLock = require("./topLock");
 const loopGuard = require("./loopGuard");
 const mediaHealth = require("./mediaHealth");
+const changeRequests = require("./changeRequests");
 const instanceLock = require("./instanceLock");
 const CONFIG = store.getConfig(); // ✅ نقرأ config مرة وحدة عند التشغيل
 const { handleMatsuriMessage } = require("../matsuri/matsuri");
@@ -173,14 +174,73 @@ function alreadyProcessed(id) {
 // كل محادثة (قروب أو خاص) عندها مسابقة مستقلة
 const activeContests = new Map(); // chatId -> Contest
 
-// طلبات تغيير نوع التسجيل المعلّقة، بانتظار موافقة صاحب البوت
-// userId -> "mobile" | "external"
-const pendingChangeRequests = new Map();
-const pendingChangeTimers = new Map(); // userId -> مؤقت الحذف التلقائي (واحد لكل شخص)
-function clearPendingChange(userId) {
-  pendingChangeRequests.delete(userId);
-  clearTimeout(pendingChangeTimers.get(userId));
-  pendingChangeTimers.delete(userId);
+// ─────────── طلبات تحتاج موافقة صاحب البوت (تغيير نوع التسجيل / تغيير اللقب) ───────────
+// الطلب يوصل لصاحب البوت بالخاص برقم، ويرد بـ .قبول <رقم> أو .رفض <رقم> (أو يرد على رسالة الطلب
+// بـ .قبول / .رفض). تفاصيلها بـ changeRequests.js
+const TYPE_LABELS = { mobile: "جوال 📱", external: "خارجي 💻" };
+
+function ownerJid() {
+  return CONFIG.ownerId || store.getConfig().ownerId || null;
+}
+
+// يرسل الطلب لخاص صاحب البوت. يرجع true لو انرسل
+async function sendOwnerRequest(sock, r, pushName) {
+  const jid = ownerJid();
+  if (!jid) return false;
+  const num = r.userId.split("@")[0];
+  let body;
+  if (r.kind === "type") {
+    const old = registration.getLastType(r.userId);
+    body = `📋 *طلب تغيير تسجيل* #${r.id}\n👤 ${pushName || num} (@${num})\n🔄 ${old ? TYPE_LABELS[old] : "—"} ← ${TYPE_LABELS[r.value]}`;
+  } else {
+    const old = registration.getTitle(r.userId);
+    body = `🏷️ *طلب تغيير لقب* #${r.id}\n👤 ${pushName || num} (@${num})\n🔄 ${old ? `«${old}»` : "—"} ← «${r.value}»`;
+  }
+  body += `\n\nللموافقة: .قبول ${r.id}\nللرفض: .رفض ${r.id}\n(أو رد على هذي الرسالة بـ .قبول / .رفض)`;
+  try {
+    const sent = await sock.sendMessage(jid, { text: body, mentions: [r.userId] });
+    changeRequests.setOwnerMsgId(r.id, sent && sent.key && sent.key.id);
+    return true;
+  } catch (e) {
+    console.error("⚠️ فشل إرسال الطلب لخاص صاحب البوت:", e && e.message);
+    return false;
+  }
+}
+
+// ينفّذ قرار صاحب البوت على طلب، ويبلّغ صاحب الطلب بمحادثته. يرجع نص مختصر لصاحب البوت
+async function decideRequest(sock, r, accept) {
+  await changeRequests.remove(r.id);
+  const num = r.userId.split("@")[0];
+  let userText;
+  let ownerText;
+  if (r.kind === "type") {
+    if (accept) {
+      await registration.register(r.userId, r.value);
+      userText = `✅ @${num} تم قبول طلبك، تسجيلك صار: ${TYPE_LABELS[r.value]}`;
+      ownerText = `✅ تم قبول الطلب #${r.id} (تسجيل @${num} صار ${TYPE_LABELS[r.value]}).`;
+    } else {
+      userText = `🚫 @${num} تم رفض طلب تغيير تسجيلك.`;
+      ownerText = `🚫 تم رفض الطلب #${r.id}.`;
+    }
+  } else if (accept) {
+    const res = await registration.setTitle(r.userId, r.value);
+    if (res.ok) {
+      userText = `✅ @${num} تم قبول طلبك، لقبك صار: ${res.title}`;
+      ownerText = `✅ تم قبول الطلب #${r.id} (لقب @${num} صار «${res.title}»).`;
+    } else {
+      userText = `🚫 @${num} تعذّر تطبيق اللقب: ${res.reason}`;
+      ownerText = `⚠️ ما قدرت أطبق الطلب #${r.id}: ${res.reason}`;
+    }
+  } else {
+    userText = `🚫 @${num} تم رفض طلب تغيير لقبك.`;
+    ownerText = `🚫 تم رفض الطلب #${r.id}.`;
+  }
+  try {
+    await sock.sendMessage(r.chatId, { text: userText, mentions: [r.userId] });
+  } catch (e) {
+    console.error("⚠️ فشل إبلاغ صاحب الطلب:", e && e.message);
+  }
+  return ownerText;
 }
 
 // ✅ صاحب البوت مسموح له بأي محادثة دايمًا، حتى لو ما كانت ضمن
@@ -553,7 +613,7 @@ async function sendStandingsList(sock, chatId, msg, list, subtitle) {
   }
   const out = templates.formatStandingsList(list, subtitle);
   const mentions = list.map((e) => e.userId);
-  await sock.sendMessage(chatId, { text: out, mentions }, { quoted: msg });
+  await sock.sendMessage(chatId, { text: out, mentions: registration.mentionable(mentions) }, { quoted: msg });
 }
 
 // ✅ حماية من "عاصفة" إعادة اتصال سريعة: لو واتساب رفض الجلسة (تسجيل خروج)
@@ -927,6 +987,8 @@ async function handleIncoming(sock, msg) {
     return;
   }
 
+  if (text.startsWith(".")) registration.touch(senderId); // أي أمر = نشاط (للتنظيف التلقائي للخاملين)
+
   // 🎯 رد على قائمة اختيار الفقرات المعلّقة (بعد .فنش أو .مسابقة) — لازم
   // يكون نفس الشخص اللي كتب أمر البدء. لو رد بشي مو رقم صالح، نتجاهله
   // بصمت تام (بدون رسالة تنبيه) وننتظر رد صحيح. أي حد (مو بس اللي بدأ)
@@ -1084,18 +1146,47 @@ async function handleIncoming(sock, msg) {
   // أمر .ستكر — نفس الفكرة بس بالطريقة القديمة لصنع الستيكر: commands/stickerOld.js
   if (await handleStickerOldCommand(sock, msg, text, chatId)) return;
 
-// أمر .تسجيل جوال / .تسجيل خارجي: يحدد نوع جهاز الشخص (بالثقة، بدون تحقق تقني)
+// أمر .تسجيل جوال / .تسجيل خارجي [لقب]: يحدد نوع جهاز الشخص (بالثقة، بدون تحقق تقني)
 // — مقفول بمجرد ما يسجل الشخص أول مرة، ما يقدر يغيّر نوعه مباشرة بعدها
 // (حتى لو ألغى تسجيله)، لازم يمر بأمر .تغيير تسجيل (يحتاج موافقة المالك)
-if (text === ".تسجيل جوال" || text === ".تسجيل خارجي") {
-  const type = text === ".تسجيل جوال" ? "mobile" : "external";
+// 🏷️ اللقب (اختياري): يطلع مكان المنشن بالقوائم، مميز لشخص واحد، وتغييره يحتاج موافقة المالك
+const regMatch = text.match(/^\.تسجيل (جوال|خارجي)(?: (.+))?$/);
+if (regMatch) {
+  const type = regMatch[1] === "جوال" ? "mobile" : "external";
   const typeLabel = type === "mobile" ? "جوال 📱" : "خارجي (كيبورد/لابتوب) 💻";
   const currentType = registration.getType(senderId);
   const lastType = registration.getLastType(senderId);
 
+  // اللقب (لو انكتب): نتحقق منه أول، وما نسجل أصلاً لو فيه مشكلة
+  let titleToSet = null;
+  if (regMatch[2]) {
+    const v = registration.validateTitle(regMatch[2]);
+    if (!v.ok) {
+      await sock.sendMessage(chatId, { text: `🚫 ${v.reason}` }, { quoted: msg });
+      return;
+    }
+    if (!registration.isTitleAvailable(v.title, senderId)) {
+      await sock.sendMessage(chatId, { text: `🚫 اللقب «${v.title}» محجوز لشخص ثاني، اختر لقب ثاني.` }, { quoted: msg });
+      return;
+    }
+    titleToSet = v.title;
+  }
+  const existingTitle = registration.getTitle(senderId);
+
   if (currentType) {
     if (currentType === type) {
-      await sock.sendMessage(chatId, { text: `أنت مسجل بالفعل كـ${typeLabel}.` }, { quoted: msg });
+      if (titleToSet && !existingTitle) {
+        await registration.setTitle(senderId, titleToSet);
+        await sock.sendMessage(chatId, { text: `✅ تم تسجيل لقبك: ${titleToSet}` }, { quoted: msg });
+      } else if (titleToSet) {
+        await sock.sendMessage(
+          chatId,
+          { text: `عندك لقب (${existingTitle}). لتغييره: .تغيير لقب ${titleToSet} (يحتاج موافقة صاحب البوت).` },
+          { quoted: msg }
+        );
+      } else {
+        await sock.sendMessage(chatId, { text: `أنت مسجل بالفعل كـ${typeLabel}.` }, { quoted: msg });
+      }
     } else {
       const otherLabel = type === "mobile" ? "جوال" : "خارجي";
       await sock.sendMessage(
@@ -1122,16 +1213,92 @@ if (text === ".تسجيل جوال" || text === ".تسجيل خارجي") {
     return;
   }
 
-  await registration.register(senderId, type, msg.pushName);
-  await sock.sendMessage(chatId, { text: `✅ تم تسجيلك كـ: ${typeLabel}` }, { quoted: msg });
+  await registration.register(senderId, type, msg.pushName, titleToSet);
+  const finalTitle = registration.getTitle(senderId);
+  await sock.sendMessage(
+    chatId,
+    { text: `✅ تم تسجيلك كـ: ${typeLabel}${finalTitle ? `\n🏷️ لقبك: ${finalTitle}` : ""}` },
+    { quoted: msg }
+  );
   return;
 }
 
-// أمر .تغيير تسجيل جوال/خارجي: يرسل طلب تغيير لصاحب البوت (يحتاج موافقته)
+// أمر .لقب <اللقب>: يضبط لقبك (لو ما عندك لقب). تغييره بعدين: .تغيير لقب
+const titleCmd = text.match(/^\.لقب (.+)$/);
+if (titleCmd) {
+  if (!registration.getType(senderId)) {
+    await sock.sendMessage(chatId, { text: "سجّل أول: .تسجيل جوال <لقبك> أو .تسجيل خارجي <لقبك>" }, { quoted: msg });
+    return;
+  }
+  const v = registration.validateTitle(titleCmd[1]);
+  if (!v.ok) {
+    await sock.sendMessage(chatId, { text: `🚫 ${v.reason}` }, { quoted: msg });
+    return;
+  }
+  const existingTitle = registration.getTitle(senderId);
+  if (existingTitle) {
+    const same = registration.titleOwner(v.title) === senderId;
+    await sock.sendMessage(
+      chatId,
+      { text: same ? `هذا لقبك الحالي (${existingTitle}).` : `عندك لقب (${existingTitle}). لتغييره: .تغيير لقب ${v.title} (يحتاج موافقة صاحب البوت).` },
+      { quoted: msg }
+    );
+    return;
+  }
+  if (!registration.isTitleAvailable(v.title, senderId)) {
+    await sock.sendMessage(chatId, { text: `🚫 اللقب «${v.title}» محجوز لشخص ثاني، اختر لقب ثاني.` }, { quoted: msg });
+    return;
+  }
+  await registration.setTitle(senderId, v.title);
+  await sock.sendMessage(chatId, { text: `✅ تم تسجيل لقبك: ${v.title}` }, { quoted: msg });
+  return;
+}
+
+// أمر .تغيير لقب <اللقب الجديد>: يرسل طلب لصاحب البوت بالخاص (قبول/رفض)
+const changeTitleMatch = text.match(/^\.تغيير لقب (.+)$/);
+if (changeTitleMatch) {
+  if (!registration.getType(senderId)) {
+    await sock.sendMessage(chatId, { text: "سجّل أول: .تسجيل جوال <لقبك> أو .تسجيل خارجي <لقبك>" }, { quoted: msg });
+    return;
+  }
+  const v = registration.validateTitle(changeTitleMatch[1]);
+  if (!v.ok) {
+    await sock.sendMessage(chatId, { text: `🚫 ${v.reason}` }, { quoted: msg });
+    return;
+  }
+  const existingTitle = registration.getTitle(senderId);
+  if (!existingTitle) {
+    await sock.sendMessage(chatId, { text: "ما عندك لقب للتغيير. اكتب: .لقب <لقبك>" }, { quoted: msg });
+    return;
+  }
+  if (registration.titleOwner(v.title) === senderId) {
+    await sock.sendMessage(chatId, { text: `هذا لقبك الحالي (${existingTitle}).` }, { quoted: msg });
+    return;
+  }
+  if (!registration.isTitleAvailable(v.title, senderId)) {
+    await sock.sendMessage(chatId, { text: `🚫 اللقب «${v.title}» محجوز لشخص ثاني، اختر لقب ثاني.` }, { quoted: msg });
+    return;
+  }
+  if (!ownerJid()) {
+    await sock.sendMessage(chatId, { text: "⚠️ ما فيه صاحب بوت محدد حالياً بالإعدادات، تواصل مع المسؤول يدوياً." }, { quoted: msg });
+    return;
+  }
+  const r = changeRequests.create({ kind: "title", userId: senderId, chatId, value: v.title });
+  const ok = await sendOwnerRequest(sock, r, msg.pushName);
+  if (!ok) await changeRequests.remove(r.id);
+  await sock.sendMessage(
+    chatId,
+    { text: ok ? "📨 تم إرسال طلب تغيير لقبك لصاحب البوت، وبيجيك الرد هنا." : "⚠️ تعذّر إرسال الطلب لصاحب البوت، حاول لاحقاً." },
+    { quoted: msg }
+  );
+  return;
+}
+
+// أمر .تغيير تسجيل جوال/خارجي: يرسل طلب تغيير لصاحب البوت بالخاص (يحتاج موافقته)
 const changeMatch = text.match(/^\.تغيير تسجيل (جوال|خارجي)$/);
 if (changeMatch) {
   const requestedType = changeMatch[1] === "جوال" ? "mobile" : "external";
-  const requestedLabel = requestedType === "mobile" ? "جوال 📱" : "خارجي 💻";
+  const requestedLabel = TYPE_LABELS[requestedType];
   const currentType = registration.getLastType(senderId);
 
   if (currentType === requestedType) {
@@ -1139,8 +1306,7 @@ if (changeMatch) {
     return;
   }
 
-  const cfg = store.getConfig();
-  if (!cfg.ownerId) {
+  if (!ownerJid()) {
     await sock.sendMessage(
       chatId,
       { text: "⚠️ ما فيه صاحب بوت محدد حالياً بالإعدادات، تواصل مع المسؤول يدوياً." },
@@ -1149,29 +1315,54 @@ if (changeMatch) {
     return;
   }
 
-  pendingChangeRequests.set(senderId, requestedType);
-  // حذف تلقائي بعد 24 ساعة لو ما تم الرد — مؤقت واحد لكل شخص والجديد يلغي القديم
-  // (قبل كذا كل طلب يضيف مؤقت جديد يبقى 24 ساعة، والقديم كان يمسح الطلب الجديد بدري)
-  clearTimeout(pendingChangeTimers.get(senderId));
-  pendingChangeTimers.set(
-    senderId,
-    setTimeout(() => {
-      pendingChangeRequests.delete(senderId);
-      pendingChangeTimers.delete(senderId);
-    }, 24 * 60 * 60 * 1000).unref()
-  );
+  const r = changeRequests.create({ kind: "type", userId: senderId, chatId, value: requestedType });
+  const ok = await sendOwnerRequest(sock, r, msg.pushName);
+  if (!ok) await changeRequests.remove(r.id);
   await sock.sendMessage(
     chatId,
-    {
-      text: `📋 طلب تغيير تسجيل\n@${senderId.split("@")[0]} يبي يغيّر تسجيله إلى: ${requestedLabel}\n\n@${cfg.ownerId.split("@")[0]} وافق بـ:\n.قبول تغيير @${senderId.split("@")[0]}\nأو ارفض بـ:\n.رفض تغيير @${senderId.split("@")[0]}`,
-      mentions: [senderId, cfg.ownerId],
-    },
+    { text: ok ? "📨 تم إرسال طلب تغيير تسجيلك لصاحب البوت، وبيجيك الرد هنا." : "⚠️ تعذّر إرسال الطلب لصاحب البوت، حاول لاحقاً." },
     { quoted: msg }
   );
   return;
 }
 
-// أوامر .قبول تغيير @شخص / .رفض تغيير @شخص — لصاحب البوت بس
+// أوامر .قبول <رقم> / .رفض <رقم> — لصاحب البوت بس (غالباً بالخاص). بدون رقم: رد على رسالة الطلب،
+// أو لو فيه طلب واحد معلّق ينفّذ عليه
+const decideMatch = text.match(/^\.(قبول|رفض)(?:\s+(\d+))?$/);
+if (decideMatch) {
+  if (!isOwner(senderId)) {
+    await sock.sendMessage(chatId, { text: "⛔ هذا الأمر مخصص لصاحب البوت بس." }, { quoted: msg });
+    return;
+  }
+  let req = null;
+  if (decideMatch[2]) {
+    req = changeRequests.get(parseInt(decideMatch[2], 10));
+  } else {
+    const ctx = msg.message && msg.message.extendedTextMessage && msg.message.extendedTextMessage.contextInfo;
+    req = ctx ? changeRequests.findByOwnerMsgId(ctx.stanzaId) : null;
+    if (!req) {
+      const all = changeRequests.list();
+      if (all.length === 1) req = all[0];
+      else {
+        await sock.sendMessage(
+          chatId,
+          { text: all.length === 0 ? "ما فيه طلبات معلّقة." : `فيه ${all.length} طلبات معلّقة، حدد الرقم: ${all.map((r) => `#${r.id}`).join(" ")}\nمثال: .${decideMatch[1]} ${all[0].id}` },
+          { quoted: msg }
+        );
+        return;
+      }
+    }
+  }
+  if (!req) {
+    await sock.sendMessage(chatId, { text: "ما لقيت هذا الطلب (يمكن انتهت مدته أو اتنفذ)." }, { quoted: msg });
+    return;
+  }
+  const ownerText = await decideRequest(sock, req, decideMatch[1] === "قبول");
+  await sock.sendMessage(chatId, { text: ownerText, mentions: [req.userId] }, { quoted: msg });
+  return;
+}
+
+// أوامر قديمة .قبول تغيير @شخص / .رفض تغيير @شخص (بالقروب) — لسا تشتغل لطلبات تغيير التسجيل
 const acceptChangeMatch = text.match(/^\.قبول تغيير(?:\s+(.+))?$/);
 if (acceptChangeMatch) {
   if (!isOwner(senderId)) {
@@ -1179,19 +1370,13 @@ if (acceptChangeMatch) {
     return;
   }
   await resolveTargetOrAsk(sock, chatId, msg, senderId, acceptChangeMatch[1], "استخدم الأمر مع منشن أو اسم للشخص: .قبول تغيير @الشخص", async (target) => {
-    const requestedType = pendingChangeRequests.get(target);
-    if (!requestedType) {
+    const req = changeRequests.findByUser(target, "type");
+    if (!req) {
       await sock.sendMessage(chatId, { text: "ما فيه طلب تغيير معلّق لهذا الشخص." }, { quoted: msg });
       return;
     }
-    await registration.register(target, requestedType);
-    clearPendingChange(target);
-    const label = requestedType === "mobile" ? "جوال 📱" : "خارجي 💻";
-    await sock.sendMessage(
-      chatId,
-      { text: `✅ تم قبول الطلب، تسجيل @${target.split("@")[0]} صار: ${label}`, mentions: [target] },
-      { quoted: msg }
-    );
+    const ownerText = await decideRequest(sock, req, true);
+    await sock.sendMessage(chatId, { text: ownerText, mentions: [target] }, { quoted: msg });
   });
   return;
 }
@@ -1203,16 +1388,13 @@ if (rejectChangeMatch) {
     return;
   }
   await resolveTargetOrAsk(sock, chatId, msg, senderId, rejectChangeMatch[1], "استخدم الأمر مع منشن أو اسم للشخص: .رفض تغيير @الشخص", async (target) => {
-    if (!pendingChangeRequests.has(target)) {
+    const req = changeRequests.findByUser(target, "type");
+    if (!req) {
       await sock.sendMessage(chatId, { text: "ما فيه طلب تغيير معلّق لهذا الشخص." }, { quoted: msg });
       return;
     }
-    clearPendingChange(target);
-    await sock.sendMessage(
-      chatId,
-      { text: `🚫 تم رفض طلب تغيير تسجيل @${target.split("@")[0]}.`, mentions: [target] },
-      { quoted: msg }
-    );
+    const ownerText = await decideRequest(sock, req, false);
+    await sock.sendMessage(chatId, { text: ownerText, mentions: [target] }, { quoted: msg });
   });
   return;
 }
@@ -1364,7 +1546,7 @@ if (rejectChangeMatch) {
       out = templates.formatCombinedTop(entriesByType);
     }
 
-    await sock.sendMessage(chatId, { text: out, mentions }, { quoted: msg });
+    await sock.sendMessage(chatId, { text: out, mentions: registration.mentionable(mentions) }, { quoted: msg });
     return;
   }
 
@@ -1392,7 +1574,7 @@ if (rejectChangeMatch) {
       entries.forEach((e) => mentions.push(e.userId));
     }
     const out = templates.formatCombinedTop(entriesByType, templates.TOP_SUBTITLE_MOBILE);
-    await sock.sendMessage(chatId, { text: out, mentions }, { quoted: msg });
+    await sock.sendMessage(chatId, { text: out, mentions: registration.mentionable(mentions) }, { quoted: msg });
     return;
   }
 
@@ -1403,7 +1585,7 @@ if (rejectChangeMatch) {
     const entries = leaderboard.getTopFiltered(poolType, 5, (e) => isMobileEligible(e.userId));
     const out = templates.formatTopSection(poolType, entries, templates.TOP_SUBTITLE_MOBILE);
     const mentions = entries.map((e) => e.userId);
-    await sock.sendMessage(chatId, { text: out, mentions }, { quoted: msg });
+    await sock.sendMessage(chatId, { text: out, mentions: registration.mentionable(mentions) }, { quoted: msg });
     return;
   }
 
@@ -1424,7 +1606,7 @@ if (rejectChangeMatch) {
       : leaderboard.getTop(poolKey, 5);
     const out = templates.formatTopSection(poolKey, entries, mobileOnly ? templates.TOP_SUBTITLE_MOBILE : undefined);
     const mentions = entries.map((e) => e.userId);
-    await sock.sendMessage(chatId, { text: out, mentions }, { quoted: msg });
+    await sock.sendMessage(chatId, { text: out, mentions: registration.mentionable(mentions) }, { quoted: msg });
     return;
   }
 
@@ -1618,7 +1800,7 @@ if (rejectChangeMatch) {
     const mobiles = registration.getAllByType("mobile");
     const out = templates.formatMemberList(externals, mobiles);
     const mentions = [...externals, ...mobiles].map((e) => e.userId);
-    await sock.sendMessage(chatId, { text: out, mentions }, { quoted: msg });
+    await sock.sendMessage(chatId, { text: out, mentions: registration.mentionable(mentions) }, { quoted: msg });
     return;
   }
 
@@ -1822,7 +2004,7 @@ if (rejectChangeMatch) {
     activeContests.set(chatId, contest);
     try {
       await sock.sendMessage(chatId, {
-        text: `🏁 بدأ فنش *بدون توقيت*${finishMobileOnly ? " 📱 (جوالات بس)" : ""}!\nالنقاط المطلوبة للفوز: ${finishTarget}\nالفقرات: كتابة، صور، سستع (أسئلة + تعداد) — وتتبدل تلقائياً.\nبالتوفيق للجميع 🍀`,
+        text: `🏁 بدأ فنش *بدون توقيت*${finishMobileOnly ? " 📱 (جوالات بس)" : ""}!\nالنقاط المطلوبة للفوز: ${finishTarget}\nالفقرات بالترتيب: كتابة ← صور ← سستع (أسئلة + تعداد)، وتتبدل تلقائياً.\nبالتوفيق للجميع 🍀`,
       });
     } catch (e) {
       console.error("⚠️ فشل إرسال رسالة بدء الفنش (نكمل لبدء السؤال الأول):", e);
@@ -2051,6 +2233,10 @@ if (rejectChangeMatch) {
       await sock.sendMessage(chatId, { text: "ما فيه مسابقة شغالة حالياً." }, { quoted: msg });
       return;
     }
+    if (contest.finishMode) {
+      await sock.sendMessage(chatId, { text: "🏁 .انهاء غير متاح بالفنش — ينتهي تلقائياً." }, { quoted: msg });
+      return;
+    }
     if (contest.endless) {
       const stopCmdFor = { writing: ".سكت", images: ".سص", questions: ".سس", counts: ".ستع", dismantle: ".ستف", reverse: ".سعك", scramble: ".ستر", repeat: ".ستك" };
       await sock.sendMessage(
@@ -2071,6 +2257,10 @@ if (rejectChangeMatch) {
     const contest = activeContests.get(chatId);
     if (!contest || !contest.active) {
       await sock.sendMessage(chatId, { text: "ما فيه مسابقة شغالة حالياً." }, { quoted: msg });
+      return;
+    }
+    if (contest.finishMode) {
+      await sock.sendMessage(chatId, { text: "🏁 .سكب غير متاح بالفنش — السؤال ينسكب تلقائياً بعد 10 ثواني بدون إجابة." }, { quoted: msg });
       return;
     }
     const skipped = await contest.skipRound(msg);
@@ -2130,6 +2320,7 @@ async function main() {
     moderation.loadFromDb(),
     dmPermissions.loadFromDb(),
     topLock.loadFromDb(),
+    changeRequests.loadFromDb(),
     roulette.loadFromDb(),
     rasad.loadFromDb(),
   ]);

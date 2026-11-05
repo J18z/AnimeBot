@@ -2,10 +2,17 @@
 
 // علامات عزل اتجاه يونيكود: تمنع كسر شكل الزخرفة العربية لما يجي اسم
 // إنجليزي وسطها (FSI = يكتشف الاتجاه تلقائياً، PDI = ينهي العزل)
+const registration = require("./registration");
 const ISOLATE_START = "\u2068";
 const ISOLATE_END = "\u2069";
 function isolate(name) {
   return `${ISOLATE_START}${name}${ISOLATE_END}`;
+}
+
+// 🏷️ لو الشخص عنده لقب يطلع اللقب مكان المنشن، وإلا يبقى المنشن (@الرقم)
+function who(userId) {
+  const t = registration.getTitle(userId);
+  return t ? isolate(t) : "@" + userId.split("@")[0];
 }
 
 const TOP_HEADER = "˼‏⬩بــوت ريــم • レム┊🤖˹";
@@ -46,7 +53,7 @@ const TOP_ORDER = ["writing", "images", "questions", "counts", "dismantle", "rev
 
 // سطرين لعنصر ترتيب وحد بلوحة صدارة الأوقات (اسم+منشن ثم إجابة+وقت)
 function formatEntryLines(numOrMedal, e) {
-  let out = `˼‏${numOrMedal}╎${isolate(e.displayName)} + @${e.userId.split("@")[0]} ⤹\n`;
+  let out = `˼‏${numOrMedal}╎${isolate(e.displayName)} + ${who(e.userId)} ⤹\n`;
   out += `˼‏${e.answer}˹﹝${(e.elapsed / 1000).toFixed(2)} ثانية﹞⋄◟\n\n`;
   return out;
 }
@@ -93,7 +100,7 @@ function formatStandingsList(list, subtitle = TOP_SUBTITLE_ALL) {
     out += "ما فيه سجل بعد.\n";
   } else {
     list.forEach((e, i) => {
-      out += `˼‏${numFor(i)}╎${isolate(e.displayName)} ⇆ @${e.userId.split("@")[0]} ⤹\n`;
+      out += `˼‏${numFor(i)}╎${isolate(e.displayName)} ⇆ ${who(e.userId)} ⤹\n`;
       out += `˼‏الـفـنـش˹ ﹝${e.wins || 0}﹞⋄🏅◟\n`;
       out += `˼‏الـنـقـاط˹﹝${e.points}﹞⋄🔢◟\n\n`;
     });
@@ -118,7 +125,7 @@ function formatContestEnd(ranking) {
     out += "انتهت المسابقة بدون فائزين.\n";
   } else {
     ranking.forEach((e, i) => {
-      out += `˼‏${numFor(i)}╎${isolate(e.displayName)} ⇆ @${e.userId.split("@")[0]} ⤹\n`;
+      out += `˼‏${numFor(i)}╎${isolate(e.displayName)} ⇆ ${who(e.userId)} ⤹\n`;
       out += `˼‏الـنـقـاط˹﹝${e.points}﹞⋄◟\n\n`;
     });
   }
@@ -134,7 +141,7 @@ function formatMemberList(externals, mobiles) {
     out += "ما فيه أعضاء مسجلين.\n\n";
   } else {
     externals.forEach((e, i) => {
-      out += `˼‏${numFor(i)}╎${isolate(e.displayName)} ⇆ @${e.userId.split("@")[0]} ⋄◟\n`;
+      out += `˼‏${numFor(i)}╎${isolate(e.displayName)} ⇆ ${who(e.userId)} ⋄◟\n`;
     });
     out += "\n";
   }
@@ -143,7 +150,7 @@ function formatMemberList(externals, mobiles) {
     out += "ما فيه أعضاء مسجلين.\n\n";
   } else {
     mobiles.forEach((e, i) => {
-      out += `˼‏${numFor(i)}╎${isolate(e.displayName)} ⇆ @${e.userId.split("@")[0]} ⋄◟\n`;
+      out += `˼‏${numFor(i)}╎${isolate(e.displayName)} ⇆ ${who(e.userId)} ⋄◟\n`;
     });
   }
   out += TOP_DIVIDER;
@@ -187,7 +194,7 @@ function formatQuestionsList(items) {
 // رسالة .نقاطي — أفضل 5 نتائج شخصية (تاريخ الشخص نفسه، مو التنافسي العام)
 // لكل فقرة، لنفس الشخص اللي طلب الأمر
 function formatMyPoints(entriesByType, displayName, userId) {
-  let out = `${TOP_HEADER}\n${TOP_DIVIDER}\n◞تــوب الـنـقـاط╎˼‏🔝˹⤹◜\n     ◝${isolate(displayName)}⇆@${userId.split("@")[0]}◟\n`;
+  let out = `${TOP_HEADER}\n${TOP_DIVIDER}\n◞تــوب الـنـقـاط╎˼‏🔝˹⤹◜\n     ◝${isolate(displayName)}⇆${who(userId)}◟\n`;
   TOP_ORDER.forEach((poolType) => {
     const { compact, icon } = topTitles[poolType];
     out += `${TOP_DIVIDER2}\n*✠ تــوب 5 ${compact} • ${icon}◜*\n\n`;

@@ -76,6 +76,12 @@ function splitFinishShares(target, sections) {
   return shuffle(shares);
 }
 
+// ⏱️ توقيتات وضع .بدء_فنش
+const FINISH_STEP_DELAY_MS = 2000; // انتظار بعد اسم الفقرة / بعد قائمة النتائج / بعد السكب قبل الرسالة اللي بعدها
+const FINISH_SKIP_MS = 10 * 1000; // بدون أي إجابة: سكب تلقائي
+const FINISH_END_MS = 2 * 60 * 1000; // دقيقتين بدون أي إجابة: إنهاء تلقائي
+const FINISH_MAX_SKIPS = 4; // 4 سكبات ورا بعض (بدون أي إجابة بينها): إنهاء تلقائي
+
 // أنواع الفقرات المدعومة
 const POOL_TYPES = ["writing", "images", "questions", "counts"];
 
@@ -347,6 +353,8 @@ class Contest {
       } catch (e) {
         console.error("⚠️ فشل إرسال اسم الفقرة (نكمل):", e && e.message);
       }
+      // ثانيتين بين اسم الفقرة والسؤال — عشان يلاحظه اللاعبون قبل ما ينزل السؤال
+      await new Promise((r) => setTimeout(r, FINISH_STEP_DELAY_MS));
       if (!this.active) return;
     }
 
@@ -470,7 +478,8 @@ class Contest {
       const preview = slots.map((s, i) => `*${s[0]}(${repeatCounts[i]})*`).join(" ");
       sentMsg = await this.sendChat(preview);
     } else if (poolType === "writing") {
-      const preview = slots.map((s) => `*${s[0]}*`).join(" - ");
+      // الكلمات بين نجمتين مع بعض بدون شرطات (*مايكي رايلي ساسكي*) — بكل المسابقات
+      const preview = `*${slots.map((s) => s[0]).join(" ")}*`;
       sentMsg = await this.sendChat(preview);
     } else if (poolType === "images") {
       try {
@@ -527,7 +536,8 @@ class Contest {
     // البسيط مستثنى: مهمته يرسل الفقرة بس، بدون أي رسائل إضافية إطلاقاً
     this.clearRoundWatchdog();
     if (!this.practiceMode) {
-      this.roundWatchdog = setTimeout(() => {
+      // بوضع الفنش ما فيه رسالة تحذير (السكب والإنهاء تلقائيين)
+      if (!this.finishMode) this.roundWatchdog = setTimeout(() => {
         if (this.currentRound === round && !round.finished && this.active) {
           this.sendChat(
             "⚠️ يبدو إن السؤال الحالي ما وصل بشكل طبيعي (تأخير غير عادي بالاتصال). جرب .سكب للانتقال للسؤال التالي، أو .انهاء لو تبي توقف المسابقة."
@@ -535,7 +545,8 @@ class Contest {
         }
       }, 20000); // 20 ثانية
       this._planNextRound();
-      this._armIdleTimer();
+      if (this.finishMode) this._finishRoundStarted();
+      else this._armIdleTimer();
     }
   }
 
@@ -564,6 +575,10 @@ class Contest {
 
   // يلغي مؤقت الحراسة الحالي (لو موجود) — يُستدعى كل ما جولة تخلص/تُسكب/تنتهي المسابقة
   clearRoundWatchdog() {
+    if (this.finishMode && this.fm && this.fm.skipTimer) {
+      clearTimeout(this.fm.skipTimer);
+      this.fm.skipTimer = null;
+    }
     if (this.idleTimer) {
       clearTimeout(this.idleTimer);
       this.idleTimer = null;
@@ -579,6 +594,7 @@ class Contest {
   // text: النص المستخرج من الرسالة
   // senderId: آيدي الشخص المرسل (jid)
   async handleMessage(msg, text, senderId) {
+    registration.touch(senderId); // مشاركة بمسابقة = نشاط (للتنظيف التلقائي للخاملين)
     // 🔤 لسا ننتظر اللي بدأ المسابقة يحدد نمط الهمزات — أي رسالة من شخص
     // ثاني نتجاهلها كليًا لين يوصلنا رد من نفس الشخص اللي بدأ
     if (this.awaitingHamzaFrom) {
@@ -726,7 +742,8 @@ class Contest {
     if (newlyClaimed.length === 0) return;
 
     for (const idx of newlyClaimed) userSet.add(idx);
-    if (!this.practiceMode && userSet.size < round.required) this._armIdleTimer(); // فيه تقدم: نعيد العدّ
+    if (this.finishMode && newlyClaimed.length > 0) this._finishProgress(); // فيه تقدم: يصفّر عدّاد السكبات ويعيد المؤقتات
+    if (!this.practiceMode && !this.finishMode && userSet.size < round.required) this._armIdleTimer(); // فيه تقدم: نعيد العدّ
 
     if (userSet.size >= round.required) {
       await this.completeRound(msg, senderId, text);
@@ -933,29 +950,27 @@ class Contest {
     }
     if (this.finishMode) this._finishAfterWin();
     const cfg = store.getConfig();
-    this.scheduleNextRound(cfg.nextQuestionDelayMs || 1000, "الجولة القادمة");
+    this.scheduleNextRound(this.finishMode ? FINISH_STEP_DELAY_MS : cfg.nextQuestionDelayMs || 1000, "الجولة القادمة");
   }
 
   // يعرض اسم العرض المخزن (لو موجود) وإلا رقم الشخص فقط
   // ═══ 🏁 وضع .بدء_فنش ═══
-  // دورة = كل الفقرات (كتابة، صور، سستع) بترتيب عشوائي، كل وحدة مرة. الانتقال لفقرة ثانية
+  // دورة = كل الفقرات بالترتيب: كتابة ← صور ← سستع، كل وحدة مرة. الانتقال لفقرة ثانية
   // يصير لما: (1) أحد المشاركين نقاطه (من بداية الدورة) توصل الحد التراكمي للفقرة (7 ثم 14 ثم 20
   // مثلاً لفنش 20)، أو (2) مجموع النقاط الموزعة بهذي الفقرة يوصل حد الفقرة (فنش 20 = 12).
-  // بعد آخر فقرة والفنش ما انتهى: دورة جديدة وكل الحدود تنصّف (تقريب لفوق عند .5)
+  // بعد آخر فقرة والفنش ما انتهى: دورة جديدة بنفس الترتيب والحدود منصّفة (تقريب لفوق عند .5)، والنصف يبقى لكل الدورات بعدها
   _finishStartCycle(first = false) {
     if (first) {
-      this.fm = { cycle: 1, order: [], idx: 0, shares: [], cum: [], cap: 0, baseline: new Map(), sectionPoints: 0, announce: true, lastSection: null, mixNext: Math.random() < 0.5 ? "questions" : "counts" };
+      this.fm = { cycle: 1, order: [], idx: 0, shares: [], cum: [], cap: 0, baseline: new Map(), sectionPoints: 0, announce: true, lastSection: null, mixNext: Math.random() < 0.5 ? "questions" : "counts", consecSkips: 0, skipTimer: null, endTimer: null };
     } else {
       this.fm.cycle += 1;
     }
     const fm = this.fm;
-    let order = shuffle([...FINISH_SECTIONS]);
-    // ما نبدأ الدورة الجديدة بنفس الفقرة اللي انتهت فيها الدورة السابقة
-    if (fm.lastSection && order[0] === fm.lastSection) order.push(order.shift());
-    fm.order = order;
+    // ترتيب ثابت بكل دورة: كتابة ← صور ← سستع
+    fm.order = [...FINISH_SECTIONS];
     fm.idx = 0;
-    const scale = 2 ** (fm.cycle - 1);
-    fm.shares = splitFinishShares(this.target, order.length).map((s) => Math.max(1, Math.round(s / scale)));
+    const scale = fm.cycle >= 2 ? 2 : 1; // من الدورة الثانية النصف ثابت لبقية الدورات (ما ينصف مرة ثانية)
+    fm.shares = splitFinishShares(this.target, fm.order.length).map((s) => Math.max(1, Math.round(s / scale)));
     fm.cum = [];
     let run = 0;
     for (const s of fm.shares) fm.cum.push((run += s));
@@ -999,10 +1014,80 @@ class Contest {
     else fm.announce = true;
   }
 
+  // ⏱️ سكب/إنهاء تلقائي بوضع الفنش
+  _finishRoundStarted() {
+    this._finishArmSkip();
+    if (!this.fm.endTimer) this._finishArmEnd();
+  }
+
+  _finishArmSkip() {
+    if (this.fm.skipTimer) clearTimeout(this.fm.skipTimer);
+    this.fm.skipTimer = setTimeout(() => {
+      this.fm.skipTimer = null;
+      this._finishAutoSkip().catch((e) => console.error("⚠️ خطأ بالسكب التلقائي:", e));
+    }, FINISH_SKIP_MS);
+    if (this.fm.skipTimer.unref) this.fm.skipTimer.unref();
+  }
+
+  _finishArmEnd() {
+    if (this.fm.endTimer) clearTimeout(this.fm.endTimer);
+    this.fm.endTimer = setTimeout(() => {
+      this.fm.endTimer = null;
+      this._finishAutoEnd("ما أحد جاوب لمدة دقيقتين").catch((e) => console.error("⚠️ خطأ بالإنهاء التلقائي:", e));
+    }, FINISH_END_MS);
+    if (this.fm.endTimer.unref) this.fm.endTimer.unref();
+  }
+
+  // أي تقدم بالإجابة (حتى جزء منها): يصفّر عدّاد السكبات المتتالية ويعيد مؤقتي السكب والإنهاء
+  _finishProgress() {
+    this.fm.consecSkips = 0;
+    this._finishArmSkip();
+    this._finishArmEnd();
+  }
+
+  _finishClearTimers() {
+    if (!this.fm) return;
+    if (this.fm.skipTimer) clearTimeout(this.fm.skipTimer);
+    if (this.fm.endTimer) clearTimeout(this.fm.endTimer);
+    this.fm.skipTimer = null;
+    this.fm.endTimer = null;
+  }
+
+  async _finishAutoSkip() {
+    const round = this.currentRound;
+    if (!this.active || !round || round.finished) return;
+    round.finished = true;
+    this.roundsCompleted += 1;
+    this.clearRoundWatchdog();
+    this.fm.consecSkips += 1;
+    try {
+      await waitAtMost(this.sendChat(`*سكب*\nالإجابة: ${round.label}`), CONFIRM_WAIT_MS);
+    } catch (e) {
+      console.error("⚠️ فشل إرسال رسالة السكب التلقائي (نكمل):", e && e.message);
+    }
+    if (!this.active) return;
+    if (this.fm.consecSkips >= FINISH_MAX_SKIPS) {
+      await this._finishAutoEnd(`ما أحد جاوب ${FINISH_MAX_SKIPS} أسئلة ورا بعض`);
+      return;
+    }
+    this.scheduleNextRound(FINISH_STEP_DELAY_MS, "الجولة القادمة بعد السكب");
+  }
+
+  async _finishAutoEnd(reason) {
+    if (!this.active) return;
+    if (this.currentRound) this.currentRound.finished = true; // يمنع أي إجابة متأخرة تتداخل مع الإنهاء
+    try {
+      await this.sendChat(`⏹️ تم إنهاء الفنش تلقائياً لأنه ${reason}.`);
+    } catch (e) {
+      console.error("⚠️ فشل إرسال رسالة الإنهاء التلقائي:", e && e.message);
+    }
+    await this.endContest();
+  }
+
   _finishBoardText(winnerId, reached) {
     const entries = [...this.scores.entries()]
       .sort((a, b) => b[1] - a[1])
-      .map(([userId, points]) => ({ userId, displayName: this.displayNameFor(userId), points }));
+      .map(([userId, points]) => ({ userId, displayName: registration.getTitle(userId) || this.displayNameFor(userId), points }));
     return templates.formatFinishBoard({ target: this.target, mobileOnly: this.mobileOnly, entries, winnerId: reached ? winnerId : null });
   }
 
@@ -1019,8 +1104,9 @@ class Contest {
     let text = "📊 النقاط الحالية:\n\n";
     const mentions = [];
     for (const [userId, points] of ranking) {
-      text += `${this.displayNameFor(userId)} (@${userId.split("@")[0]}) — ${points}\n`;
-      mentions.push(userId);
+      const title = registration.getTitle(userId);
+      text += `${this.displayNameFor(userId)} (${title || "@" + userId.split("@")[0]}) — ${points}\n`;
+      if (!title) mentions.push(userId);
     }
     await this.client.sendMessage(this.chatId, { text, mentions });
   }
@@ -1031,6 +1117,7 @@ class Contest {
       this.nextRoundTimer = null;
     }
     this.clearRoundWatchdog();
+    if (this.finishMode) this._finishClearTimers();
     this._clearPlanned();
     this.active = false;
     const ranking = [...this.scores.entries()].sort((a, b) => b[1] - a[1]);
@@ -1061,7 +1148,7 @@ class Contest {
       points,
     }));
     const text = templates.formatContestEnd(rankingObjs);
-    const mentions = rankingObjs.map((e) => e.userId);
+    const mentions = registration.mentionable(rankingObjs.map((e) => e.userId));
 
     await this.client.sendMessage(this.chatId, { text, mentions });
   }
@@ -1072,6 +1159,7 @@ class Contest {
       this.nextRoundTimer = null;
     }
     this.clearRoundWatchdog();
+    if (this.finishMode) this._finishClearTimers();
     this._clearPlanned();
     this.active = false;
     this.currentRound = null;

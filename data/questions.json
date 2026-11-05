@@ -834,7 +834,7 @@
     "id": "q111",
     "type": "normal",
     "question": "رقم هيسوكا باختبار الصيادين ؟",
-    "answers": ["44"],
+    "answers": ["44","٤٤"],
     "points": 1
   },
   {
@@ -1080,7 +1080,7 @@
     "id": "q140",
     "type": "normal",
     "question": "كم قلب يمتلك كاكوزو ؟",
-    "answers": ["5"],
+    "answers": ["5","٥"],
     "points": 1
   },
   {
@@ -2518,7 +2518,7 @@
     "id": "q323",
     "type": "normal",
     "question": "رقم كيلوا بالاختبار ؟",
-    "answers": ["99"],
+    "answers": ["99","٩٩"],
     "points": 1
   },
   {
