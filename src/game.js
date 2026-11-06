@@ -77,7 +77,10 @@ function splitFinishShares(target, sections) {
 }
 
 // ⏱️ توقيتات وضع .بدء_فنش
-const FINISH_STEP_DELAY_MS = 2000; // انتظار بعد اسم الفقرة / بعد قائمة النتائج / بعد السكب قبل الرسالة اللي بعدها
+// انتظار بعد اسم الفقرة / بعد قائمة النتائج / بعد السكب قبل الرسالة اللي بعدها:
+// 5 ثواني لو الفنش همزات (اللاعبين يحتاجون وقت يقرأون النمط)، و3 ثواني للفنش العادي
+const FINISH_STEP_DELAY_HAMZA_MS = 5000;
+const FINISH_STEP_DELAY_NORMAL_MS = 3000;
 const FINISH_SKIP_MS = 7 * 1000; // بدون أي إجابة: سكب تلقائي
 const FINISH_END_MS = 2 * 60 * 1000; // دقيقتين بدون أي إجابة: إنهاء تلقائي
 const FINISH_MAX_SKIPS = 4; // 4 سكبات ورا بعض (بدون أي إجابة بينها): إنهاء تلقائي
@@ -368,8 +371,8 @@ class Contest {
       } catch (e) {
         console.error("⚠️ فشل إرسال اسم الفقرة (نكمل):", e && e.message);
       }
-      // ثانيتين بين اسم الفقرة والسؤال — عشان يلاحظه اللاعبون قبل ما ينزل السؤال
-      await new Promise((r) => setTimeout(r, FINISH_STEP_DELAY_MS));
+      // انتظار بين اسم الفقرة والسؤال (5 ثواني همزات / 3 عادي) — عشان يلاحظه اللاعبون قبل ما ينزل السؤال
+      await new Promise((r) => setTimeout(r, this._finishStepDelay()));
       if (!this.active) return;
     }
 
@@ -986,7 +989,7 @@ class Contest {
     }
     if (this.finishMode) this._finishAfterWin();
     const cfg = store.getConfig();
-    this.scheduleNextRound(this.finishMode ? FINISH_STEP_DELAY_MS : cfg.nextQuestionDelayMs || 1000, "الجولة القادمة");
+    this.scheduleNextRound(this.finishMode ? this._finishStepDelay() : cfg.nextQuestionDelayMs || 1000, "الجولة القادمة");
   }
 
   // يعرض اسم العرض المخزن (لو موجود) وإلا رقم الشخص فقط
@@ -1089,13 +1092,35 @@ class Contest {
     this.fm.endTimer = null;
   }
 
-  async _finishAutoSkip() {
+  // مدة الانتظار بين الرسائل بوضع الفنش: 5 ثواني للهمزات، 3 للعادي
+  _finishStepDelay() {
+    return this.hamzaMode ? FINISH_STEP_DELAY_HAMZA_MS : FINISH_STEP_DELAY_NORMAL_MS;
+  }
+
+  // سكب يدوي من الادمنية (.سكب): نفس السكب التلقائي بس ما يُحسب ضمن "4 سكبات
+  // ورا بعض" اللي توقف الفنش تلقائياً. يرجع false لو ما فيه سؤال حالياً
+  async finishManualSkip() {
+    const round = this.currentRound;
+    if (!this.finishMode || !this.active || !round || round.finished) return false;
+    await this._finishAutoSkip(true);
+    return true;
+  }
+
+  // إنهاء يدوي من الادمنية (.انهاء): يعرض آخر قائمة نقاط ثم "انتهى الفنش"
+  async finishManualEnd() {
+    if (!this.finishMode || !this.active) return false;
+    if (this.currentRound) this.currentRound.finished = true; // يمنع أي إجابة متأخرة تتداخل مع الإنهاء
+    await this.endContest();
+    return true;
+  }
+
+  async _finishAutoSkip(manual = false) {
     const round = this.currentRound;
     if (!this.active || !round || round.finished) return;
     round.finished = true;
     this.roundsCompleted += 1;
     this.clearRoundWatchdog();
-    this.fm.consecSkips += 1;
+    if (!manual) this.fm.consecSkips += 1;
     try {
       await waitAtMost(this.sendChat(`*سكب*\nالإجابة: ${round.label}`), CONFIRM_WAIT_MS);
     } catch (e) {
@@ -1106,7 +1131,7 @@ class Contest {
       await this._finishAutoEnd(`ما أحد جاوب ${FINISH_MAX_SKIPS} أسئلة ورا بعض`);
       return;
     }
-    this.scheduleNextRound(FINISH_STEP_DELAY_MS, "الجولة القادمة بعد السكب");
+    this.scheduleNextRound(this._finishStepDelay(), "الجولة القادمة بعد السكب");
   }
 
   async _finishAutoEnd(reason) {
