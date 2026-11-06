@@ -22,7 +22,7 @@ const usedStore = require("./usedStore");
 const { buildMemoryReport } = require("./memoryReport");
 const { useMemoryAuthState, resetMemoryAuthState } = require("./memoryAuthState");
 const adminPoints = require("./adminPoints");
-const { formatSeconds } = require("./utils");
+const { formatSeconds, randomHamzaPattern } = require("./utils");
 const sessionHealer = createHealer({ purge: purgeUserKeys });
 const { startHealthServer, setQr, clearQr } = require("./healthServer");
 const dmPermissions = require("./dmPermissions");
@@ -277,8 +277,15 @@ function isOwner(senderId) {
 }
 
 // ⚙️ يقدر ينفّذ هذا الأمر؟ صاحب البوت دايماً، والادمن (.ترقية ادمن) بس لو الأمر داخل حزمته (شوف admins.js)
-function canRun(senderId, text) {
-  return isOwner(senderId) || admins.canUse(senderId, text);
+// ادمن الشات (.ترقية شات) يشتغل له أمر الحزمة بس داخل شاته (chatId)
+function canRun(senderId, text, chatId) {
+  return isOwner(senderId) || admins.canUse(senderId, text) || (!!chatId && admins.canUseInChat(senderId, chatId, text));
+}
+
+// 🔒 شات مقفول (.قفل شات): أي أمر (يبدأ بنقطة) من غير المالك والادمنية (العامين وادمنية هذا الشات) نتجاهله
+const lockNoticeAt = new Map(); // chatId -> آخر مرة نبّهنا (تنبيه واحد كل دقيقة بدل رد على كل أمر)
+function chatLockBlocks(chatId, senderId, text) {
+  return isGroupChat(chatId) && text.startsWith(".") && admins.isChatLocked(chatId) && !isOwner(senderId) && !admins.isStaff(senderId, chatId);
 }
 
 // 🛡️ الادمن ما يقدر يستخدم أوامره ضد صاحب البوت ولا ضد شخص عليه حصانة (.حصانة). صاحب البوت بدون قيود.
@@ -1017,6 +1024,16 @@ async function handleIncoming(sock, msg) {
     return;
   }
 
+  // 🔒 الشات مقفول؟ الأوامر للمالك والادمنية بس — تنبيه واحد كل دقيقة والباقي بصمت
+  if (chatLockBlocks(chatId, senderId, text)) {
+    const nowTs = Date.now();
+    if (nowTs - (lockNoticeAt.get(chatId) || 0) > 60 * 1000) {
+      lockNoticeAt.set(chatId, nowTs);
+      await sock.sendMessage(chatId, { text: "🔒 الشات مقفول، أوامر البوت هنا للادمنية بس." }, { quoted: msg });
+    }
+    return;
+  }
+
   if (text.startsWith(".")) registration.touch(senderId); // أي أمر = نشاط (للتنظيف التلقائي للخاملين)
 
   // 🎯 رد على قائمة اختيار الفقرات المعلّقة (بعد .فنش أو .مسابقة) — لازم
@@ -1088,7 +1105,7 @@ async function handleIncoming(sock, msg) {
 
   // 🔢 رد المالك بأرقام النقاط المراد حذفها (بعد .ريسيت نقاط <فقرة> <شخص>).
   // الفحص الأول (size > 0) يخلي التكلفة صفر تقريباً على كل رسالة عادية
-  if (pendingPointDeletion.size > 0 && (isOwner(senderId) || admins.isAdmin(senderId)) && pendingPointDeletion.has(senderId)) {
+  if (pendingPointDeletion.size > 0 && (isOwner(senderId) || admins.isStaff(senderId, chatId)) && pendingPointDeletion.has(senderId)) {
     const pending = pendingPointDeletion.get(senderId);
     if (Date.now() > pending.expiresAt) {
       pendingPointDeletion.delete(senderId);
@@ -1134,7 +1151,7 @@ async function handleIncoming(sock, msg) {
   // 🔢 رد برقم بس لحل تشابه أسماء بأمر إداري معلّق (زي .ريسيت توب J18
   // لما فيه أكثر من J18 مسجلين) — لازم يكون صاحب البوت، وفيه أمر معلّق
   // له، والرسالة رقم صريح بس (عشان ما نتعارض مع إجابة عادية بمسابقة)
-  if ((isOwner(senderId) || admins.isAdmin(senderId)) && pendingDisambiguation.has(senderId) && /^\d+$/.test(text)) {
+  if ((isOwner(senderId) || admins.isStaff(senderId, chatId)) && pendingDisambiguation.has(senderId) && /^\d+$/.test(text)) {
     const pending = pendingDisambiguation.get(senderId);
     if (Date.now() > pending.expiresAt) {
       pendingDisambiguation.delete(senderId);
@@ -1281,6 +1298,29 @@ if (titleCmd) {
   }
   await registration.setTitle(senderId, v.title);
   await sock.sendMessage(chatId, { text: `✅ تم تسجيل لقبك: ${v.title}` }, { quoted: msg });
+  return;
+}
+
+// أمر .لقبي: لقبك المسجّل + نقاطك (مجموع السجل: فنشات بمتنافسين أو أكثر) + عدد الفنشات اللي شاركت فيها (بدون المستمرة)
+if (text === ".لقبي") {
+  if (registration.isDormant(senderId)) {
+    await sock.sendMessage(
+      chatId,
+      { text: "⏸️ تسجيلك انشال لأنك ما استخدمت البوت من فترة. بياناتك محفوظة، وترجع لك بعد ما تسجل من جديد: .تسجيل جوال أو .تسجيل خارجي" },
+      { quoted: msg }
+    );
+    return;
+  }
+  const myTitle = registration.getTitle(senderId);
+  if (!myTitle) {
+    const text0 = registration.getType(senderId)
+      ? "ما عندك لقب مسجّل. اكتب: .لقب <لقبك>"
+      : "سجّل أول: .تسجيل جوال <لقبك> أو .تسجيل خارجي <لقبك>";
+    await sock.sendMessage(chatId, { text: text0 }, { quoted: msg });
+    return;
+  }
+  const st = standings.getUser(senderId) || { points: 0, contests: 0 };
+  await sock.sendMessage(chatId, { text: templates.formatMyTitle({ title: myTitle, points: st.points, contests: st.contests }) }, { quoted: msg });
   return;
 }
 
@@ -1535,6 +1575,77 @@ if (rejectChangeMatch) {
     }
   }
 
+  // 🔒 .قفل شات / .فتح شات: يقفل/يفتح أوامر البوت بهذا الشات. تشتغل للمالك، وللادمنية لو الأمر بحزمتهم (والافتراضي إنها فيها)
+  if (text === ".قفل شات" || text === ".فتح شات") {
+    if (!canRun(senderId, text, chatId)) return ownerOnlyDeny();
+    if (!isGroupChat(chatId)) {
+      await sock.sendMessage(chatId, { text: "هذا الأمر للقروبات بس." }, { quoted: msg });
+      return;
+    }
+    const wantLock = text === ".قفل شات";
+    if (wantLock === admins.isChatLocked(chatId)) {
+      await sock.sendMessage(chatId, { text: wantLock ? "الشات مقفول أصلاً." : "الشات مفتوح أصلاً." }, { quoted: msg });
+      return;
+    }
+    if (wantLock) admins.lockChat(chatId);
+    else admins.unlockChat(chatId);
+    await sock.sendMessage(
+      chatId,
+      { text: wantLock ? "🔒 تم قفل الشات: أوامر البوت هنا للمالك والادمنية بس.\nلفتحه: .فتح شات" : "🔓 تم فتح الشات: أوامر البوت متاحة للجميع." },
+      { quoted: msg }
+    );
+    return;
+  }
+
+  // 👮 .ترقية شات @ / .تنزيل شات @ (للمالك بس): ادمن بهذا القروب فقط — يستخدم أوامر الحزمة هنا وما يقدر بقروبات ثانية
+  const promoteChatMatch = text.match(/^\.ترقية شات(?:\s+(.+))?$/);
+  if (promoteChatMatch) {
+    if (!isOwner(senderId)) return ownerOnlyDeny();
+    if (!isGroupChat(chatId)) {
+      await sock.sendMessage(chatId, { text: "هذا الأمر للقروبات بس." }, { quoted: msg });
+      return;
+    }
+    await resolveTargetOrAsk(sock, chatId, msg, senderId, promoteChatMatch[1], "استخدم الأمر مع منشن: .ترقية شات @الشخص", async (target) => {
+      if (isOwner(target)) {
+        await sock.sendMessage(chatId, { text: "أنت صاحب البوت أصلاً 😄" }, { quoted: msg });
+        return;
+      }
+      if (admins.isAdmin(target)) {
+        await sock.sendMessage(chatId, { text: "هو ادمن عام أصلاً (صلاحياته بكل القروبات).", mentions: [target] }, { quoted: msg });
+        return;
+      }
+      if (admins.isChatAdmin(target, chatId)) {
+        await sock.sendMessage(chatId, { text: "هو ادمن بهذا الشات أصلاً.", mentions: [target] }, { quoted: msg });
+        return;
+      }
+      admins.addChatAdmin(chatId, target);
+      await sock.sendMessage(
+        chatId,
+        { text: `✅ تمت ترقية @${target.split("@")[0]} ادمن بهذا الشات فقط.\nأوامره: ${pkgText()}`, mentions: [target] },
+        { quoted: msg }
+      );
+    });
+    return;
+  }
+
+  const demoteChatMatch = text.match(/^\.تنزيل شات(?:\s+(.+))?$/);
+  if (demoteChatMatch) {
+    if (!isOwner(senderId)) return ownerOnlyDeny();
+    if (!isGroupChat(chatId)) {
+      await sock.sendMessage(chatId, { text: "هذا الأمر للقروبات بس." }, { quoted: msg });
+      return;
+    }
+    await resolveTargetOrAsk(sock, chatId, msg, senderId, demoteChatMatch[1], "استخدم الأمر مع منشن: .تنزيل شات @الشخص", async (target) => {
+      if (!admins.isChatAdmin(target, chatId)) {
+        await sock.sendMessage(chatId, { text: "هذا الشخص مو ادمن بهذا الشات.", mentions: [target] }, { quoted: msg });
+        return;
+      }
+      admins.removeChatAdmin(chatId, target);
+      await sock.sendMessage(chatId, { text: `✅ تم تنزيل @${target.split("@")[0]} من ادمن هذا الشات.`, mentions: [target] }, { quoted: msg });
+    });
+    return;
+  }
+
   if (text === ".حزمة" || text === ".حزمة الادمن") {
     if (!isOwner(senderId)) return ownerOnlyDeny();
     const adminIds = admins.listAdmins();
@@ -1544,7 +1655,12 @@ if (rejectChangeMatch) {
     if (notIn.length) out += `\n\nممكن تضيفها (.اضافة امر <الاسم>):\n${notIn.map((k) => "." + k).join("، ")}`;
     out += `\n\n👮 الادمنية: ${adminIds.length ? adminIds.map((id) => "@" + id.split("@")[0]).join(" ") : "ما فيه"}`;
     out += `\n🛡️ عليهم حصانة: ${immuneIds.length ? immuneIds.map((id) => "@" + id.split("@")[0]).join(" ") : "ما فيه"}`;
-    await sock.sendMessage(chatId, { text: out, mentions: [...adminIds, ...immuneIds] }, { quoted: msg });
+    const chatAdminIds = isGroupChat(chatId) ? admins.listChatAdmins(chatId) : [];
+    if (isGroupChat(chatId)) {
+      out += `\n\n💬 هذا الشات: ${admins.isChatLocked(chatId) ? "🔒 مقفول" : "🔓 مفتوح"}`;
+      out += `\n👮 ادمنية هذا الشات فقط: ${chatAdminIds.length ? chatAdminIds.map((id) => "@" + id.split("@")[0]).join(" ") : "ما فيه"}`;
+    }
+    await sock.sendMessage(chatId, { text: out, mentions: [...adminIds, ...immuneIds, ...chatAdminIds] }, { quoted: msg });
     return;
   }
 
@@ -1574,10 +1690,74 @@ if (rejectChangeMatch) {
     return;
   }
 
+  // .تعديل لقب (للمالك بس): يغيّر لقب أي شخص مسجّل بدون موافقة
+  //   .تعديل لقب @منشن <اللقب الجديد>
+  //   .تعديل لقب <لقبه القديم> <اللقب الجديد>   أو   .تعديل لقب <رقمه بـ.تسجيلات> <اللقب الجديد>  (بدون منشن)
+  const editTitleMatch = text.match(/^\.تعديل لقب(?:\s+(.+))?$/);
+  if (editTitleMatch) {
+    if (!isOwner(senderId)) return ownerOnlyDeny();
+    const usage =
+      "استخدم:\n.تعديل لقب @منشن <اللقب الجديد>\nأو بدون منشن: .تعديل لقب <لقبه القديم أو رقمه من .تسجيلات> <اللقب الجديد>\nمثال: .تعديل لقب 51 رايلي";
+    const arg = (editTitleMatch[1] || "").trim();
+    let target = null;
+    let newTitle = "";
+    const mentioned = getMentionedJid(msg);
+    if (mentioned) {
+      target = mentioned;
+      newTitle = arg.replace(/@\S+/, " ").replace(/\s+/g, " ").trim(); // نشيل نص المنشن والباقي هو اللقب الجديد
+    } else {
+      const tokens = arg.split(/\s+/).filter(Boolean);
+      if (tokens.length >= 2) {
+        const num = toAsciiDigits(tokens[0]).match(/^(\d+)(?:_(خارجي|جوال))?$/);
+        if (num) {
+          // رقمه من .تسجيلات (الجوالات، أو 3_خارجي)
+          const list = registration.getAllByType(num[2] === "خارجي" ? "external" : "mobile");
+          const hit = list[parseInt(num[1], 10) - 1];
+          if (hit) {
+            target = hit.userId;
+            newTitle = tokens.slice(1).join(" ");
+          } else {
+            await sock.sendMessage(chatId, { text: `⚠️ ما فيه رقم ${num[1]} بقائمة التسجيلات (فيها ${list.length}).` }, { quoted: msg });
+            return;
+          }
+        } else {
+          // لقبه القديم (ممكن فيه مسافة): نجرّب أطول جزء من البداية يطابق لقب موجود
+          for (let k = tokens.length - 1; k >= 1 && !target; k--) {
+            const owner = registration.titleOwner(tokens.slice(0, k).join(" "));
+            if (owner) {
+              target = owner;
+              newTitle = tokens.slice(k).join(" ");
+            }
+          }
+          if (!target) {
+            await sock.sendMessage(chatId, { text: `⚠️ ما لقيت أحد بهذا اللقب.\n${usage}` }, { quoted: msg });
+            return;
+          }
+        }
+      }
+    }
+    if (!target || !newTitle) {
+      await sock.sendMessage(chatId, { text: usage }, { quoted: msg });
+      return;
+    }
+    const oldTitle = registration.getTitle(target);
+    const res = await registration.setTitle(target, newTitle);
+    if (!res.ok) {
+      await sock.sendMessage(chatId, { text: `🚫 ${res.reason}`, mentions: [target] }, { quoted: msg });
+      return;
+    }
+    await sock.sendMessage(
+      chatId,
+      { text: `✅ تم تعديل لقب @${target.split("@")[0]}${oldTitle ? ` من «${oldTitle}»` : ""} إلى «${res.title}».`, mentions: [target] },
+      { quoted: msg }
+    );
+    return;
+  }
+
   // أوامر إشراف (.ايقاف / .الغاء ايقاف / .حظر / .الغاء حظر) — لصاحب البوت بس
   const unsuspendMatch = text.match(/^(?:\.الغاء ايقاف|\.إلغاء إيقاف)(?:\s+(.+))?$/);
   if (unsuspendMatch) {
-    if (!canRun(senderId, text)) {
+    if (!canRun(senderId, text, chatId)) {
       await sock.sendMessage(chatId, { text: "⛔ هذا الأمر مخصص لصاحب البوت بس." }, { quoted: msg });
       return;
     }
@@ -1594,7 +1774,7 @@ if (rejectChangeMatch) {
 
   const suspendMatch = text.match(/^\.ايقاف(?:\s+(.+))?$/);
   if (suspendMatch) {
-    if (!canRun(senderId, text)) {
+    if (!canRun(senderId, text, chatId)) {
       await sock.sendMessage(chatId, { text: "⛔ هذا الأمر مخصص لصاحب البوت بس." }, { quoted: msg });
       return;
     }
@@ -1611,7 +1791,7 @@ if (rejectChangeMatch) {
 
   const unbanMatch = text.match(/^(?:\.الغاء حظر|\.إلغاء حظر)(?:\s+(.+))?$/);
   if (unbanMatch) {
-    if (!canRun(senderId, text)) {
+    if (!canRun(senderId, text, chatId)) {
       await sock.sendMessage(chatId, { text: "⛔ هذا الأمر مخصص لصاحب البوت بس." }, { quoted: msg });
       return;
     }
@@ -1624,7 +1804,7 @@ if (rejectChangeMatch) {
 
   const banMatch = text.match(/^\.حظر(?:\s+(.+))?$/);
   if (banMatch) {
-    if (!canRun(senderId, text)) {
+    if (!canRun(senderId, text, chatId)) {
       await sock.sendMessage(chatId, { text: "⛔ هذا الأمر مخصص لصاحب البوت بس." }, { quoted: msg });
       return;
     }
@@ -1644,7 +1824,7 @@ if (rejectChangeMatch) {
   // المسابقات بالخاص رغم إنها مقفولة افتراضياً بالخاص للجميع عدا المالك
   const samahMatch = text.match(/^\.سماح(?:\s+(.+))?$/);
   if (samahMatch) {
-    if (!canRun(senderId, text)) {
+    if (!canRun(senderId, text, chatId)) {
       await sock.sendMessage(chatId, { text: "⛔ هذا الأمر مخصص لصاحب البوت بس." }, { quoted: msg });
       return;
     }
@@ -1657,7 +1837,7 @@ if (rejectChangeMatch) {
 
   const laSamahMatch = text.match(/^\.الغاء سماح(?:\s+(.+))?$/);
   if (laSamahMatch) {
-    if (!canRun(senderId, text)) {
+    if (!canRun(senderId, text, chatId)) {
       await sock.sendMessage(chatId, { text: "⛔ هذا الأمر مخصص لصاحب البوت بس." }, { quoted: msg });
       return;
     }
@@ -1671,7 +1851,7 @@ if (rejectChangeMatch) {
   // 🔒 .قفل توب / .فتح توب — للمالك بس. لما يكون مقفول، كل أوامر .توب
   // (.توب، .توب <نوع>، .توب جوالات، .توب <نوع> جوال، .توب كت <رقم>) ترفضها للجميع عدا المالك
   if (text === ".قفل توب" || text === ".فتح توب") {
-    if (!canRun(senderId, text)) {
+    if (!canRun(senderId, text, chatId)) {
       await sock.sendMessage(chatId, { text: "⛔ هذا الأمر مخصص لصاحب البوت بس." }, { quoted: msg });
       return;
     }
@@ -1789,7 +1969,7 @@ if (rejectChangeMatch) {
   // "كت_3" = بنك الكتابة بعدد كلمات محدد (1 إلى 5) — مستقل تماماً عن "كت" العام
   const resetTopMatch = text.match(/^\.ريسيت توب(?:\s+(ص|كت_[1-5١-٥]|كت|تع|سس|فك|تف|عك|تر|تك))?(?:\s+(.+))?$/);
   if (resetTopMatch) {
-    if (!canRun(senderId, text)) {
+    if (!canRun(senderId, text, chatId)) {
       await sock.sendMessage(chatId, { text: "⛔ هذا الأمر مخصص لصاحب البوت بس." }, { quoted: msg });
       return;
     }
@@ -1942,7 +2122,7 @@ if (rejectChangeMatch) {
   // أمر .سجل: يعرض السجل التراكمي (مجموع نقاط كل شخص عبر كل المسابقات
   // اللي شارك فيها 3 أشخاص فأكثر)
   if (text === ".سجل") {
-    if (!canRun(senderId, text)) {
+    if (!canRun(senderId, text, chatId)) {
       await sock.sendMessage(chatId, { text: "⛔ هذا الأمر مخصص لصاحب البوت بس." }, { quoted: msg });
       return;
     }
@@ -1953,7 +2133,7 @@ if (rejectChangeMatch) {
 
   // أمر .سجل جوالات: زي .سجل بس بس الأشخاص المسجلين كجوال
   if (text === ".سجل جوالات") {
-    if (!canRun(senderId, text)) {
+    if (!canRun(senderId, text, chatId)) {
       await sock.sendMessage(chatId, { text: "⛔ هذا الأمر مخصص لصاحب البوت بس." }, { quoted: msg });
       return;
     }
@@ -1965,7 +2145,7 @@ if (rejectChangeMatch) {
   // أمر .تسجيلات: يعرض كل الأعضاء المسجلين (خارجي وجوال) مع منشنهم
   // (اسمها القديم كان .قائمة) — مخصص لصاحب البوت بس
   if (text === ".تسجيلات") {
-    if (!canRun(senderId, text)) {
+    if (!canRun(senderId, text, chatId)) {
       await sock.sendMessage(chatId, { text: "⛔ هذا الأمر مخصص لصاحب البوت بس." }, { quoted: msg });
       return;
     }
@@ -1980,7 +2160,7 @@ if (rejectChangeMatch) {
   // أمر .ريسيت تسجيلات: يصفّر كل التسجيلات (جوال/خارجي) لكل الأعضاء
   // كاملة، فيرجعون يحتاجون يسجلوا نوع جهازهم من جديد — مخصص لصاحب البوت بس
   if (text === ".ريسيت تسجيلات") {
-    if (!canRun(senderId, text)) {
+    if (!canRun(senderId, text, chatId)) {
       await sock.sendMessage(chatId, { text: "⛔ هذا الأمر مخصص لصاحب البوت بس." }, { quoted: msg });
       return;
     }
@@ -2015,7 +2195,7 @@ if (rejectChangeMatch) {
   //    (1 للجوالات، 1_خارجي للخارجي)
   const resetPointsMatch = text.match(/^\.ريسيت نقاط(?:\s+(ص|كت|تع|سس|فك|تف|عك|تر|تك))?(?:\s+(.+))?$/);
   if (resetPointsMatch) {
-    if (!canRun(senderId, text)) {
+    if (!canRun(senderId, text, chatId)) {
       await sock.sendMessage(chatId, { text: "⛔ هذا الأمر مخصص لصاحب البوت بس." }, { quoted: msg });
       return;
     }
@@ -2073,7 +2253,7 @@ if (rejectChangeMatch) {
   // أكثر من رقم مرة وحدة. مخصص لصاحب البوت بس
   const deleteStandingsMatch = text.match(/^\.حذف سجل(?:\s+(.+))?$/);
   if (deleteStandingsMatch) {
-    if (!canRun(senderId, text)) {
+    if (!canRun(senderId, text, chatId)) {
       await sock.sendMessage(chatId, { text: "⛔ هذا الأمر مخصص لصاحب البوت بس." }, { quoted: msg });
       return;
     }
@@ -2167,13 +2347,16 @@ if (rejectChangeMatch) {
     }
     clearStalePracticeContest(chatId);
     const finishMobileOnly = finishStartMatch[1] === "ج";
+    // 🔤 .بدء_فنش: الهمزات دايماً مفعّلة والبوت نفسه يختار النمط (حرف + ءء + حرف) — ما يسأل اللي بدأ ولا يحتاج كلمة "همزات"
+    const autoPattern = randomHamzaPattern();
     const contest = new Contest(chatId, sock, "general", finishTarget, {
       mobileOnly: finishMobileOnly,
-      hamzaMode: hamzaCheckMain.hamzaMode,
+      hamzaMode: true,
       allowedPoolTypes: ["writing", "images", "questions", "counts"],
       fixedWordCount: 3,
       finishMode: true,
     });
+    contest.hamzaPattern = { prefix: autoPattern.prefix, suffix: autoPattern.suffix };
     activeContests.set(chatId, contest);
     try {
       await sock.sendMessage(chatId, {
@@ -2182,7 +2365,13 @@ if (rejectChangeMatch) {
     } catch (e) {
       console.error("⚠️ فشل إرسال رسالة بدء الفنش (نكمل لبدء السؤال الأول):", e);
     }
-    await beginContest(chatId, sock, contest, senderId);
+    // النمط بخط غليظ (بين نجمتين) قبل أول فقرة — الإجابة تنكتب مغلّفة به بدون النجمتين: مءسابوءك
+    try {
+      await sock.sendMessage(chatId, { text: `*${autoPattern.text}*` });
+    } catch (e) {
+      console.error("⚠️ فشل إرسال نمط الهمزات (نكمل):", e);
+    }
+    await safeStartFirstRound(chatId, sock, contest);
     return;
   }
 
@@ -2364,7 +2553,7 @@ if (rejectChangeMatch) {
 
   const removeResetMatch = text.match(/^\.ازالة تصفير(?:\s+(.+))?$/);
   if (removeResetMatch) {
-    if (!canRun(senderId, text)) {
+    if (!canRun(senderId, text, chatId)) {
       await sock.sendMessage(chatId, { text: "⛔ هذا الأمر مخصص لصاحب البوت بس." }, { quoted: msg });
       return;
     }
@@ -2384,7 +2573,7 @@ if (rejectChangeMatch) {
 
   const removeMatch = text.match(/^\.ازالة(?:\s+(.+))?$/);
   if (removeMatch) {
-    if (!canRun(senderId, text)) {
+    if (!canRun(senderId, text, chatId)) {
       await sock.sendMessage(chatId, { text: "⛔ هذا الأمر مخصص لصاحب البوت بس." }, { quoted: msg });
       return;
     }

@@ -121,8 +121,14 @@ function formatStandingsList(list, subtitle = TOP_SUBTITLE_ALL) {
 // يبقى بمكانه (الاسم يمين والنقاط يسار) بدون أي مسافة زايدة
 const RLM = "\u200F";
 const BIDI_STRIP = /[\u200b-\u200f\u202a-\u202e\u2066-\u2069]/g;
-function formatFinishBoard({ target, mobileOnly, entries, winnerId }) {
+// 🏷️ .لقبي: لقبك + مجموع نقاطك بالسجل + عدد الفنشات اللي شاركت فيها
+function formatMyTitle({ title, points, contests }) {
+  return `> اللـقـب: ${title}\n- الـنـقـاط: ${points}\n√ عـدد الـمـشـاركـات: ${contests}`;
+}
+
+function formatFinishBoard({ target, mobileOnly, entries, winnerId, hamzaText }) {
   let out = `> فـنـش ${target} ${mobileOnly ? "جـوالات" : "الـكـل"}`;
+  if (hamzaText) out += `\n\`هـمـزات ${hamzaText}\``; // نمط الهمزات بخط ثابت (monospace) تحت العنوان
   for (const e of entries) {
     const name = String(e.displayName || "").replace(BIDI_STRIP, "").trim();
     out += `\n- ${RLM}${name}${RLM} ${e.points}${winnerId && e.userId === winnerId ? " فـنـش" : ""}`;
@@ -226,6 +232,7 @@ function formatMyPoints(entriesByType, displayName, userId) {
 module.exports = {
   isolate,
   formatFinishBoard,
+  formatMyTitle,
   TOP_HEADER,
   TOP_DIVIDER,
   TOP_SUBTITLE_ALL,

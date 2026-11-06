@@ -25,11 +25,23 @@ const DELEGABLE = [
   "تسجيلات",
   "قفل توب",
   "فتح توب",
+  "قفل شات",
+  "فتح شات",
 ];
-const DEFAULT_PACKAGE = ["ايقاف", "الغاء ايقاف", "حظر", "الغاء حظر", "ازالة"];
+const DEFAULT_PACKAGE = ["ايقاف", "الغاء ايقاف", "حظر", "الغاء حظر", "ازالة", "قفل شات", "فتح شات"];
+// الأوامر اللي كانت موجودة قبل إضافة قفل/فتح الشات — نستخدمها بالتحميل عشان نعرف أي أوامر "جديدة" لازم تنضاف للحزمة
+// المحفوظة تلقائياً (حزمة محفوظة قديمة ما فيها الأمرين، ولو ما أضفناها ما يشتغلون للادمنية)
+const LEGACY_KEYS = [
+  "ايقاف", "الغاء ايقاف", "حظر", "الغاء حظر", "ازالة", "ازالة تصفير", "سماح", "الغاء سماح",
+  "ريسيت توب", "ريسيت نقاط", "ريسيت تسجيلات", "حذف سجل", "سجل", "سجل جوالات", "تسجيلات", "قفل توب", "فتح توب",
+];
 
 const admins = new Set();
 const immune = new Set();
+// 👮 ادمنية شات: أدمن بقروب واحد بس (.ترقية شات @)، يستخدم أوامر الحزمة داخل هذا القروب فقط
+const chatAdmins = new Map(); // chatId -> Set(userId)
+// 🔒 شاتات مقفولة (.قفل شات): أوامر البوت فيها للمالك والادمنية بس
+const lockedChats = new Set();
 const pkg = new Set(DEFAULT_PACKAGE);
 
 // تطبيع للمقارنة بس (التشكيل، اختلاف الهمزات/الألف، المسافات المكررة) — عشان "إيقاف" = "ايقاف"
@@ -77,6 +89,73 @@ function canUse(userId, text) {
   return !!k && pkg.has(k);
 }
 
+// ─── ادمن الشات ───
+function isChatAdmin(userId, chatId) {
+  const set = chatAdmins.get(chatId);
+  return !!set && set.has(userId);
+}
+// أدمن الشات يقدر يشغّل أمر الحزمة بس داخل شاته
+function canUseInChat(userId, chatId, text) {
+  if (!isChatAdmin(userId, chatId)) return false;
+  const k = commandKeyOf(text);
+  return !!k && pkg.has(k);
+}
+// ادمن عام أو ادمن هذا الشات (بدون المالك — المالك يتفحص خارجياً)
+function isStaff(userId, chatId) {
+  return admins.has(userId) || isChatAdmin(userId, chatId);
+}
+async function persistChatAdmins(chatId) {
+  const db = getDb();
+  if (!db) return;
+  try {
+    const set = chatAdmins.get(chatId);
+    const col = db.collection("chatAdmins");
+    if (set && set.size > 0) await col.updateOne({ _id: chatId }, { $set: { users: [...set] } }, { upsert: true });
+    else await col.deleteOne({ _id: chatId });
+  } catch (err) {
+    console.error("خطأ حفظ ادمنية الشات:", err.message);
+  }
+}
+function addChatAdmin(chatId, userId) {
+  if (!chatAdmins.has(chatId)) chatAdmins.set(chatId, new Set());
+  chatAdmins.get(chatId).add(userId);
+  persistChatAdmins(chatId);
+}
+function removeChatAdmin(chatId, userId) {
+  const set = chatAdmins.get(chatId);
+  if (!set) return;
+  set.delete(userId);
+  if (set.size === 0) chatAdmins.delete(chatId);
+  persistChatAdmins(chatId);
+}
+function listChatAdmins(chatId) {
+  return [...(chatAdmins.get(chatId) || [])];
+}
+
+// ─── قفل الشات ───
+function isChatLocked(chatId) {
+  return lockedChats.has(chatId);
+}
+async function persistLock(chatId, exists) {
+  const db = getDb();
+  if (!db) return;
+  try {
+    const col = db.collection("lockedChats");
+    if (exists) await col.updateOne({ _id: chatId }, { $set: { chatId } }, { upsert: true });
+    else await col.deleteOne({ _id: chatId });
+  } catch (err) {
+    console.error("خطأ حفظ قفل الشات:", err.message);
+  }
+}
+function lockChat(chatId) {
+  lockedChats.add(chatId);
+  persistLock(chatId, true);
+}
+function unlockChat(chatId) {
+  lockedChats.delete(chatId);
+  persistLock(chatId, false);
+}
+
 async function persistSet(collectionName, userId, exists) {
   const db = getDb();
   if (!db) return;
@@ -93,7 +172,9 @@ async function persistPackage() {
   const db = getDb();
   if (!db) return;
   try {
-    await db.collection("adminPackage").updateOne({ _id: "commands" }, { $set: { list: [...pkg] } }, { upsert: true });
+    await db
+      .collection("adminPackage")
+      .updateOne({ _id: "commands" }, { $set: { list: [...pkg], known: [...DELEGABLE] } }, { upsert: true });
   } catch (err) {
     console.error("خطأ حفظ حزمة الادمن:", err.message);
   }
@@ -147,8 +228,24 @@ async function loadFromDb() {
     if (doc && Array.isArray(doc.list)) {
       pkg.clear();
       doc.list.filter((k) => DELEGABLE.includes(k)).forEach((k) => pkg.add(k));
+      // أوامر جديدة (ما كانت معروفة وقت آخر حفظ) وهي ضمن الافتراضي: تنضاف للحزمة المحفوظة مرة وحدة
+      const known = new Set(Array.isArray(doc.known) ? doc.known : LEGACY_KEYS);
+      let added = false;
+      for (const k of DEFAULT_PACKAGE) {
+        if (!known.has(k) && !pkg.has(k)) {
+          pkg.add(k);
+          added = true;
+        }
+      }
+      if (added || !Array.isArray(doc.known)) await persistPackage();
     }
-    console.log(`📥 تحميل ${admins.size} ادمن و${immune.size} بحصانة، وحزمة ادمن فيها ${pkg.size} أمر.`);
+    (await db.collection("lockedChats").find({}).toArray()).forEach((d) => lockedChats.add(d._id));
+    (await db.collection("chatAdmins").find({}).toArray()).forEach((d) => {
+      if (Array.isArray(d.users) && d.users.length) chatAdmins.set(d._id, new Set(d.users));
+    });
+    console.log(
+      `📥 تحميل ${admins.size} ادمن و${immune.size} بحصانة، وحزمة ادمن فيها ${pkg.size} أمر، و${lockedChats.size} شات مقفول، و${chatAdmins.size} شات فيه ادمنية.`
+    );
   } catch (err) {
     console.error("خطأ تحميل بيانات الادمنية:", err.message);
   }
@@ -161,6 +258,15 @@ module.exports = {
   isAdmin,
   isImmune,
   canUse,
+  isChatAdmin,
+  canUseInChat,
+  isStaff,
+  addChatAdmin,
+  removeChatAdmin,
+  listChatAdmins,
+  isChatLocked,
+  lockChat,
+  unlockChat,
   addAdmin,
   removeAdmin,
   addImmune,

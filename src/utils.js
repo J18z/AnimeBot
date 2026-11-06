@@ -185,6 +185,58 @@ function unwrapHamza(text, pattern) {
   return middle.slice(1, -1);
 }
 
+
+/**
+ * طول أطول تسلسل مشترك بين نصين (LCS) — يعني كم حرف من الإجابة انكتب صح بنفس الترتيب،
+ * حتى لو فيه حرف زايد أو ناقص أو غلط بالنص (عكس المقارنة حرف بحرف اللي تنكسر بأول حرف زايد)
+ */
+function lcsLength(a, b) {
+  if (!a.length || !b.length) return 0;
+  let prev = new Array(b.length + 1).fill(0);
+  for (let i = 1; i <= a.length; i++) {
+    const cur = [0];
+    for (let j = 1; j <= b.length; j++) {
+      cur[j] = a[i - 1] === b[j - 1] ? prev[j - 1] + 1 : Math.max(prev[j], cur[j - 1]);
+    }
+    prev = cur;
+  }
+  return prev[b.length];
+}
+
+/**
+ * 🔤 وضع الهمزات + إجابة من اسم واحد (صورة/سؤال): لو محاولة الشخص الأولى (المغلّفة بالهمزات) غلط بس
+ * "قريبة" — يعني 30% أو أكثر من حروف الاسم الصحيح انكتبت صح بنفس الترتيب — نفتح له يرسل التصحيح
+ * بدون همزات (نفس فكرة الكتابة/التعداد، اللي فيها أول كلمة صح تفتح الباقي).
+ * - نفحص بس الصيغ المقبولة اللي من كلمة وحدة (الأسماء المركبة ما تدخل هنا)
+ * - الحد الأدنى حرف صح: فالاسم من حرفين/3 أحرف يكفي حرف صح، و4-6 أحرف يحتاجون حرفين، و7-9 ثلاثة...
+ * - وطول المحاولة مو أكثر من ضعف طول الاسم (+1) عشان نص طويل عشوائي ما يطلع "قريب"
+ */
+function isCloseToSingleName(attempt, prepared, ratio = 0.3, minLetters = 1) {
+  if (!prepared || !prepared.candidates) return false;
+  const normalize = prepared.relaxed ? normalizeRelaxed : normalizeWritingRelaxed;
+  const letters = normalize(attempt).replace(/\s+/g, "");
+  if (letters.length < minLetters) return false;
+  for (const c of prepared.candidates) {
+    if (c.norm.includes(" ")) continue; // اسم مركّب: مو داخل هذي القاعدة
+    const len = c.norm.length;
+    if (letters.length > len * 2 + 1) continue;
+    const need = Math.min(len, Math.max(minLetters, Math.ceil(len * ratio)));
+    if (lcsLength(letters, c.norm) >= need) return true;
+  }
+  return false;
+}
+
+
+// 🏁 نمط الهمزات التلقائي لـ.بدء_فنش: حرف + همزتين + حرف (مثل نءءن أو غءءا أو جءءن).
+// الإجابة تنكتب مغلّفة بنفس الحرفين: مثلاً مءسابوءك لنمط مءءك
+const HAMZA_FRAME_LETTERS = "ابتثجحخدذرزسشصضطظعغفقكلمنهوي";
+function randomHamzaPattern() {
+  const pick = () => HAMZA_FRAME_LETTERS[Math.floor(Math.random() * HAMZA_FRAME_LETTERS.length)];
+  const prefix = pick();
+  const suffix = pick();
+  return { prefix, suffix, text: `${prefix}ءء${suffix}` };
+}
+
 /**
  * ✅ نسخة محسّنة من findAllMatches للجولات: تطبيع الإجابات المقبولة
  * (كل الصيغ + ترتيبها) يتم مرة وحدة بس لكل جولة (prepareSlots) بدل ما
@@ -234,5 +286,8 @@ module.exports = {
   prepareSlots,
   findAllMatchesPrepared,
   parseHamzaPattern,
+  isCloseToSingleName,
+  randomHamzaPattern,
+  lcsLength,
   unwrapHamza,
 };

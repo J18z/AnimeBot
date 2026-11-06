@@ -1,7 +1,7 @@
 const fs = require("fs");
 const usedStore = require("./usedStore");
 const { imageKeyFn } = require("./answerGroups");
-const { pickRandom, shuffle, formatSeconds, prepareSlots, findAllMatchesPrepared, parseHamzaPattern, unwrapHamza } = require("./utils");
+const { pickRandom, shuffle, formatSeconds, prepareSlots, findAllMatchesPrepared, parseHamzaPattern, unwrapHamza, isCloseToSingleName } = require("./utils");
 const store = require("./dataStore");
 const leaderboard = require("./leaderboard");
 const personalHistory = require("./personalHistory");
@@ -745,16 +745,37 @@ class Contest {
     // 🔤 وضع الهمزات: أول محاولة (userSet فاضي) لهذا الشخص بهذي الجولة
     // لازم تكون بإطار الهمزات المحدد — لو ما طابقت الإطار، نتجاهل الرسالة
     // كليًا (كأنها ما كانت إجابة أصلاً). أي محاولة بعدها (تصحيح) تفحص عادي
+    // ➕ جولة إجابتها اسم واحد (صورة/سؤال): لو أول محاولة مغلّفة غلط بس قريبة (30%+ من حروف الاسم)،
+    // نفتح للشخص التصحيح بدون همزات (round.hamzaUnlocked) — الكتابة/التعداد ما تحتاجها (أول كلمة صح تفتح الباقي)
     let searchText = text;
-    if (this.hamzaMode && this.hamzaPattern && userSet.size === 0) {
-      const unwrapped = unwrapHamza(text, this.hamzaPattern);
-      if (unwrapped === null) return;
-      searchText = unwrapped;
+    let framedAttempt = false;
+    if (this.hamzaMode && this.hamzaPattern) {
+      const unlocked = !!(round.hamzaUnlocked && round.hamzaUnlocked.has(senderId));
+      if (userSet.size === 0 && !unlocked) {
+        const unwrapped = unwrapHamza(text, this.hamzaPattern);
+        if (unwrapped === null) return;
+        searchText = unwrapped;
+        framedAttempt = true;
+      } else if (unlocked) {
+        const unwrapped = unwrapHamza(text, this.hamzaPattern); // لو رجع يغلّف، نفك الإطار عادي
+        if (unwrapped !== null) searchText = unwrapped;
+      }
     }
     // تطبيع الإجابات المقبولة مرة وحدة لكل جولة (مو مع كل رسالة)
     if (!round.prepared) round.prepared = prepareSlots(round.slots, relaxed);
     const newlyClaimed = findAllMatchesPrepared(searchText, round.prepared, userSet);
-    if (newlyClaimed.length === 0) return;
+    if (newlyClaimed.length === 0) {
+      if (
+        framedAttempt &&
+        round.slots.length === 1 &&
+        round.required === 1 &&
+        !["writing", "counts", "repeat"].includes(round.poolType) &&
+        isCloseToSingleName(searchText, round.prepared)
+      ) {
+        (round.hamzaUnlocked || (round.hamzaUnlocked = new Set())).add(senderId); // بدون أي رد (ما نعطي تلميح)
+      }
+      return;
+    }
 
     for (const idx of newlyClaimed) userSet.add(idx);
     if (this.finishMode && newlyClaimed.length > 0) this._finishProgress(); // فيه تقدم: يصفّر عدّاد السكبات ويعيد المؤقتات
@@ -1103,7 +1124,8 @@ class Contest {
     const entries = [...this.scores.entries()]
       .sort((a, b) => b[1] - a[1])
       .map(([userId, points]) => ({ userId, displayName: registration.getTitle(userId) || this.displayNameFor(userId), points }));
-    return templates.formatFinishBoard({ target: this.target, mobileOnly: this.mobileOnly, entries, winnerId: reached ? winnerId : null });
+    const hamzaText = this.hamzaMode && this.hamzaPattern ? `${this.hamzaPattern.prefix}ءء${this.hamzaPattern.suffix}` : null;
+    return templates.formatFinishBoard({ target: this.target, mobileOnly: this.mobileOnly, entries, winnerId: reached ? winnerId : null, hamzaText });
   }
 
   displayNameFor(userId) {
@@ -1153,6 +1175,12 @@ class Contest {
       // لو انتهت يدوياً (.انهاء) أو لخمول، نرسل القائمة الحالية كنتيجة
       if (!ranking.some(([, p]) => p >= this.target)) {
         await this.sendChat(this._finishBoardText(null, false));
+      }
+      // 🏁 بعد القائمة النهائية مباشرة (كل طرق الانتهاء: وصل الهدف / .انهاء / إنهاء تلقائي)
+      try {
+        await this.sendChat("*انـتـهـى الـفـنـش*");
+      } catch (e) {
+        console.error("⚠️ فشل إرسال رسالة انتهاء الفنش:", e && e.message);
       }
       return;
     }

@@ -4,7 +4,7 @@
 
 const { getDb } = require("./db");
 
-const totals = new Map(); // userId -> { displayName, points, wins }
+const totals = new Map(); // userId -> { displayName, points, wins, contests } — contests: عدد الفنشات (مو المستمرة) اللي شارك فيها
 
 // شرط: لازم 3 مشاركين على الأقل بالمسابقة عشان تُحتسب بالسجل — عشان ما
 // حد يلعب لحاله ويكدس نقاط بدون منافسة حقيقية
@@ -23,7 +23,7 @@ async function persistMany(userIds) {
       ops.push({
         updateOne: {
           filter: { _id: userId },
-          update: { $set: { displayName: e.displayName, points: e.points, wins: e.wins } },
+          update: { $set: { displayName: e.displayName, points: e.points, wins: e.wins, contests: e.contests || 0 } },
           upsert: true,
         },
       });
@@ -53,8 +53,10 @@ function addContestResult(scoresMap, nameCache, options = {}) {
   const touched = [];
   for (const [userId, points] of scoresMap.entries()) {
     const displayName = (nameCache && nameCache.get(userId)) || userId.split("@")[0];
-    const current = totals.get(userId) || { displayName, points: 0, wins: 0 };
+    const current = totals.get(userId) || { displayName, points: 0, wins: 0, contests: 0 };
     current.points += points;
+    // عدد المشاركات (.لقبي): بس الفنشات اللي مو مستمرة، وبحد أدنى متنافسين (نفس شرط السجل). قبل هالتحديث ما كان يتسجل، فيبدأ من 0
+    if (options.countWin !== false) current.contests = (current.contests || 0) + 1;
     current.displayName = displayName;
     if (countWin && userId === winnerId) current.wins += 1;
     totals.set(userId, current);
@@ -65,8 +67,14 @@ function addContestResult(scoresMap, nameCache, options = {}) {
 
 function getStandings() {
   return [...totals.entries()]
-    .map(([userId, v]) => ({ userId, displayName: v.displayName, points: v.points, wins: v.wins }))
+    .map(([userId, v]) => ({ userId, displayName: v.displayName, points: v.points, wins: v.wins, contests: v.contests || 0 }))
     .sort((a, b) => b.points - a.points);
+}
+
+// سجل شخص واحد (للأمر .لقبي) — null لو ما له سجل
+function getUser(userId) {
+  const v = totals.get(userId);
+  return v ? { points: v.points, wins: v.wins, contests: v.contests || 0 } : null;
 }
 
 function getStandingsFiltered(predicate) {
@@ -99,7 +107,7 @@ async function loadFromDb() {
   try {
     const docs = await db.collection("standings").find({}).toArray();
     for (const doc of docs) {
-      totals.set(doc._id, { displayName: doc.displayName, points: doc.points, wins: doc.wins || 0 });
+      totals.set(doc._id, { displayName: doc.displayName, points: doc.points, wins: doc.wins || 0, contests: doc.contests || 0 });
     }
     console.log(`📥 تحميل ${docs.length} سجل نقاط من قاعدة البيانات.`);
   } catch (err) {
@@ -111,6 +119,7 @@ module.exports = {
   addContestResult,
   getStandings,
   getStandingsFiltered,
+  getUser,
   reset,
   removeUser,
   loadFromDb,
