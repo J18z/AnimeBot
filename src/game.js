@@ -79,8 +79,8 @@ function splitFinishShares(target, sections) {
 // ⏱️ توقيتات وضع .بدء_فنش
 // انتظار بعد اسم الفقرة / بعد قائمة النتائج / بعد السكب قبل الرسالة اللي بعدها:
 // 5 ثواني لو الفنش همزات (اللاعبين يحتاجون وقت يقرأون النمط)، و3 ثواني للفنش العادي
-const FINISH_STEP_DELAY_HAMZA_MS = 5000;
-const FINISH_STEP_DELAY_NORMAL_MS = 3000;
+const FINISH_STEP_DELAY_HAMZA_MS = 3500;
+const FINISH_STEP_DELAY_NORMAL_MS = 2500;
 const FINISH_SKIP_MS = 7 * 1000; // بدون أي إجابة: سكب تلقائي
 const FINISH_END_MS = 2 * 60 * 1000; // دقيقتين بدون أي إجابة: إنهاء تلقائي
 const FINISH_MAX_SKIPS = 4; // 4 سكبات ورا بعض (بدون أي إجابة بينها): إنهاء تلقائي
