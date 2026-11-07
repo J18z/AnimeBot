@@ -283,7 +283,7 @@ function canRun(senderId, text, chatId) {
   return isOwner(senderId) || admins.canUse(senderId, text) || (!!chatId && admins.canUseInChat(senderId, chatId, text));
 }
 
-// 🔒 شات مقفول (.قفل شات): أي أمر (يبدأ بنقطة) من غير المالك والادمنية (العامين وادمنية هذا الشات) نتجاهله
+// 🔒 شات مقفول (.قفل الاوامر): أي أمر (يبدأ بنقطة) من غير المالك والادمنية (العامين وادمنية هذا الشات) نتجاهله
 const lockNoticeAt = new Map(); // chatId -> آخر مرة نبّهنا (تنبيه واحد كل دقيقة بدل رد على كل أمر)
 function chatLockBlocks(chatId, senderId, text) {
   return isGroupChat(chatId) && text.startsWith(".") && admins.isChatLocked(chatId) && !isOwner(senderId) && !admins.isStaff(senderId, chatId);
@@ -330,10 +330,13 @@ function toAsciiDigits(str) {
 }
 
 function resolveTarget(msg, trailingText) {
-  const mentioned = getMentionedJid(msg);
+  const mentioned = getMentionedJid(msg, false);
   if (mentioned) return { userId: mentioned };
   const name = (trailingText || "").trim();
-  if (!name) return { error: "none" };
+  if (!name) {
+    const replied = getMentionedJid(msg); // ريبلاي بدون اسم = الشخص اللي انرد عليه
+    return replied ? { userId: replied } : { error: "none" };
+  }
   // 🔢 رقم التسجيل (نفس ترقيم .تسجيلات): "1" = جوال رقم 1، "1_خارجي" = خارجي رقم 1
   const numMatch = toAsciiDigits(name).match(/^(\d+)\s*(?:_\s*(خارجي|جوال))?$/);
   if (numMatch) {
@@ -396,7 +399,7 @@ async function resolveTargetOrAsk(sock, chatId, msg, senderId, trailingText, usa
     );
     return;
   }
-  await sock.sendMessage(chatId, { text: usageHint }, { quoted: msg });
+  await sock.sendMessage(chatId, { text: `${usageHint}\n(أو رد على رسالة الشخص بالأمر)` }, { quoted: msg });
 }
 
 // عدد الكلمات الافتراضي لأمر ".كت" التقديمي (لكل محادثة)
@@ -529,15 +532,14 @@ async function stopEndless(chatId, sock, msg, poolType) {
 }
 
 // يحلل أوامر بدء المسابقة من نص الرسالة
-// أمثلة: ".فنش 50" | ".فص 15" | ".فتع 20" | ".فسس 10" | ".فكت 15"
-// أو نسخة الجوالات بس: ".فنش ج 50" | ".فص ج 15" ...
-// ✅ صار .فنش (وحده) هو أمر البدء — يفتح قائمة اختيار الفقرات التفاعلية
+// .ف_كل <رقم> = للكل (جوال وخارجي) | .ف <رقم> = جوالات فقط — يفتح قائمة اختيار الفقرات التفاعلية
+// (.فنش <رقم> و.فنش الكل <رقم> صارت للفنش الساحات بدون توقيت — تحت)
 // بدل ما يكون لكل فقرة أمر منفصل (.فص/.فكت/.فتع/.فسس/.فتف/.فعك/.فتر)
 function parseStartCommand(text) {
   const t = text.trim().replace(/\s+/g, " ");
-  const match = t.match(/^\.فنش(?:\s+(ج))?\s*(\d+)$/);
+  const match = t.match(/^\.ف(_كل| كل)?\s*(\d+)$/);
   if (!match) return null;
-  return { mobileOnly: match[1] === "ج", target: parseInt(match[2], 10) };
+  return { mobileOnly: !match[1], target: parseInt(match[2], 10) };
 }
 
 // خريطة قائمة اختيار الفقرات التفاعلية (لـ.فنش و.مسابقة)
@@ -622,8 +624,14 @@ function extractText(msg) {
 }
 
 // يستخرج آيدي أول شخص تم عمل منشن له برسالة (يستخدمها .ايقاف/.حظر وأشباهها)
-function getMentionedJid(msg) {
-  return msg.message?.extendedTextMessage?.contextInfo?.mentionedJid?.[0] || null;
+// المنشن أولاً، وإذا ما فيه: صاحب الرسالة اللي انرد عليها (ريبلاي = منشن) — يشتغل لكل الأوامر اللي تحتاج منشن
+function getMentionedJid(msg, replyFallback = true) {
+  const m = msg.message || {};
+  const ctx = m.extendedTextMessage?.contextInfo || m.imageMessage?.contextInfo || m.videoMessage?.contextInfo || null;
+  const mentioned = ctx?.mentionedJid?.[0];
+  if (mentioned) return mentioned;
+  if (replyFallback && ctx?.quotedMessage && ctx.participant) return ctx.participant;
+  return null;
 }
 
 // مؤهل لقوائم الجوالات: مسجل كجوال وغير موقوف من صاحب البوت
@@ -1037,7 +1045,7 @@ async function handleIncoming(sock, msg) {
     const nowTs = Date.now();
     if (nowTs - (lockNoticeAt.get(chatId) || 0) > 60 * 1000) {
       lockNoticeAt.set(chatId, nowTs);
-      await sock.sendMessage(chatId, { text: "🔒 الشات مقفول، أوامر البوت هنا للادمنية بس." }, { quoted: msg });
+      await sock.sendMessage(chatId, { text: "🔒 أوامر البوت مقفولة هنا، للادمنز بس." }, { quoted: msg });
     }
     return;
   }
@@ -1519,12 +1527,13 @@ if (rejectChangeMatch) {
   // ═══ الادمنية وحزمة الأوامر والحصانة وترتيب التسجيلات (كلها لصاحب البوت بس) ═══
   // الادمن (.ترقية ادمن) يستخدم أوامر "الحزمة" بس، وما يقدر يستخدمها ضد صاحب البوت أو شخص عليه حصانة
   const ownerOnlyDeny = () => sock.sendMessage(chatId, { text: "⛔ هذا الأمر مخصص لصاحب البوت بس." }, { quoted: msg });
+  const pkgBullets = (arr) => (arr.length ? arr.map((k) => `- .${k}`).join("\n") : "- ما فيه");
   const pkgText = () => admins.pkgList().map((k) => "." + k).join("، ") || "(فاضية)";
 
-  const promoteMatch = text.match(/^\.ترقية (?:ادمن|أدمن)(?:\s+(.+))?$/);
+  const promoteMatch = text.match(/^\.ترقية (?:اداريه|اداري|إدارية|إداري)(?:\s+(.+))?$/);
   if (promoteMatch) {
     if (!isOwner(senderId)) return ownerOnlyDeny();
-    await resolveTargetOrAsk(sock, chatId, msg, senderId, promoteMatch[1], "استخدم الأمر مع منشن: .ترقية ادمن @الشخص", async (target) => {
+    await resolveTargetOrAsk(sock, chatId, msg, senderId, promoteMatch[1], "استخدم الأمر مع منشن: .ترقية اداريه @الشخص", async (target) => {
       if (isOwner(target)) {
         await sock.sendMessage(chatId, { text: "أنت صاحب البوت أصلاً 😄" }, { quoted: msg });
         return;
@@ -1536,17 +1545,17 @@ if (rejectChangeMatch) {
       admins.addAdmin(target);
       await sock.sendMessage(
         chatId,
-        { text: `✅ تمت ترقية @${target.split("@")[0]} ادمن.\nأوامره: ${pkgText()}`, mentions: [target] },
+        { text: `✅ تمت ترقية @${target.split("@")[0]} ادمن.\n\n> 📦 أوامره:\n${pkgBullets(admins.pkgList())}`, mentions: [target] },
         { quoted: msg }
       );
     });
     return;
   }
 
-  const demoteMatch = text.match(/^\.تنزيل (?:ادمن|أدمن)(?:\s+(.+))?$/);
+  const demoteMatch = text.match(/^\.(?:اعفاء|إعفاء) (?:اداريه|اداري|إدارية|إداري)(?:\s+(.+))?$/);
   if (demoteMatch) {
     if (!isOwner(senderId)) return ownerOnlyDeny();
-    await resolveTargetOrAsk(sock, chatId, msg, senderId, demoteMatch[1], "استخدم الأمر مع منشن: .تنزيل ادمن @الشخص", async (target) => {
+    await resolveTargetOrAsk(sock, chatId, msg, senderId, demoteMatch[1], "استخدم الأمر مع منشن: .اعفاء اداري @الشخص", async (target) => {
       if (!admins.isAdmin(target)) {
         await sock.sendMessage(chatId, { text: "هذا الشخص مو ادمن.", mentions: [target] }, { quoted: msg });
         return;
@@ -1612,14 +1621,14 @@ if (rejectChangeMatch) {
     }
   }
 
-  // 🔒 .قفل شات / .فتح شات: يقفل/يفتح أوامر البوت بهذا الشات. تشتغل للمالك، وللادمنية لو الأمر بحزمتهم (والافتراضي إنها فيها)
-  if (text === ".قفل شات" || text === ".فتح شات") {
+  // 🔒 .قفل الاوامر / .فتح الاوامر: يقفل/يفتح أوامر البوت بهذا الشات. تشتغل للمالك، وللادمنية لو الأمر بحزمتهم (والافتراضي إنها فيها)
+  if (text === ".قفل الاوامر" || text === ".فتح الاوامر") {
     if (!canRun(senderId, text, chatId)) return ownerOnlyDeny();
     if (!isGroupChat(chatId)) {
       await sock.sendMessage(chatId, { text: "هذا الأمر للقروبات بس." }, { quoted: msg });
       return;
     }
-    const wantLock = text === ".قفل شات";
+    const wantLock = text === ".قفل الاوامر";
     if (wantLock === admins.isChatLocked(chatId)) {
       await sock.sendMessage(chatId, { text: wantLock ? "الشات مقفول أصلاً." : "الشات مفتوح أصلاً." }, { quoted: msg });
       return;
@@ -1628,21 +1637,21 @@ if (rejectChangeMatch) {
     else admins.unlockChat(chatId);
     await sock.sendMessage(
       chatId,
-      { text: wantLock ? "🔒 تم قفل الشات: أوامر البوت هنا للمالك والادمنية بس.\nلفتحه: .فتح شات" : "🔓 تم فتح الشات: أوامر البوت متاحة للجميع." },
+      { text: wantLock ? "🔒 تم قفل الشات: أوامر البوت هنا للمالك والادمنية بس.\nلفتحه: .فتح الاوامر" : "🔓 تم فتح الشات: أوامر البوت متاحة للجميع." },
       { quoted: msg }
     );
     return;
   }
 
   // 👮 .ترقية شات @ / .تنزيل شات @ (للمالك بس): ادمن بهذا القروب فقط — يستخدم أوامر الحزمة هنا وما يقدر بقروبات ثانية
-  const promoteChatMatch = text.match(/^\.ترقية شات(?:\s+(.+))?$/);
+  const promoteChatMatch = text.match(/^\.ترقية (?:ادمن|أدمن)(?:\s+(.+))?$/);
   if (promoteChatMatch) {
     if (!isOwner(senderId)) return ownerOnlyDeny();
     if (!isGroupChat(chatId)) {
       await sock.sendMessage(chatId, { text: "هذا الأمر للقروبات بس." }, { quoted: msg });
       return;
     }
-    await resolveTargetOrAsk(sock, chatId, msg, senderId, promoteChatMatch[1], "استخدم الأمر مع منشن: .ترقية شات @الشخص", async (target) => {
+    await resolveTargetOrAsk(sock, chatId, msg, senderId, promoteChatMatch[1], "استخدم الأمر مع منشن: .ترقية ادمن @الشخص", async (target) => {
       if (isOwner(target)) {
         await sock.sendMessage(chatId, { text: "أنت صاحب البوت أصلاً 😄" }, { quoted: msg });
         return;
@@ -1658,21 +1667,21 @@ if (rejectChangeMatch) {
       admins.addChatAdmin(chatId, target);
       await sock.sendMessage(
         chatId,
-        { text: `✅ تمت ترقية @${target.split("@")[0]} ادمن بهذا الشات فقط.\nأوامره (هنا بس): ${admins.chatPkgList().map((k) => "." + k).join("، ") || "(فاضية)"}`, mentions: [target] },
+        { text: `✅ تمت ترقية @${target.split("@")[0]} ادمن بهذا الشات فقط.\n\n> 📦 أوامره (هنا بس):\n${pkgBullets(admins.chatPkgList())}`, mentions: [target] },
         { quoted: msg }
       );
     });
     return;
   }
 
-  const demoteChatMatch = text.match(/^\.تنزيل شات(?:\s+(.+))?$/);
+  const demoteChatMatch = text.match(/^\.خفض (?:ادمن|أدمن)(?:\s+(.+))?$/);
   if (demoteChatMatch) {
     if (!isOwner(senderId)) return ownerOnlyDeny();
     if (!isGroupChat(chatId)) {
       await sock.sendMessage(chatId, { text: "هذا الأمر للقروبات بس." }, { quoted: msg });
       return;
     }
-    await resolveTargetOrAsk(sock, chatId, msg, senderId, demoteChatMatch[1], "استخدم الأمر مع منشن: .تنزيل شات @الشخص", async (target) => {
+    await resolveTargetOrAsk(sock, chatId, msg, senderId, demoteChatMatch[1], "استخدم الأمر مع منشن: .خفض ادمن @الشخص", async (target) => {
       if (!admins.isChatAdmin(target, chatId)) {
         await sock.sendMessage(chatId, { text: "هذا الشخص مو ادمن بهذا الشات.", mentions: [target] }, { quoted: msg });
         return;
@@ -1704,9 +1713,9 @@ if (rejectChangeMatch) {
     return;
   }
 
-  // 👑 .ترقية @ / .تنزيل @ (بدون كلمة ثانية — لصاحب البوت بس): يرقّي عضو لمشرف بالقروب أو يخفضه، لو البوت نفسه مشرف
-  // (.ترقية ادمن / .ترقية شات وأشباههم عولجت قبل ما نوصل هنا)
-  const waAdminMatch = text.match(/^\.(ترقية|تنزيل)(?:\s+(.+))?$/);
+  // 👑 .ترقية @ / .خفض @ (بدون كلمة ثانية — لصاحب البوت بس): يرقّي عضو لمشرف بالقروب أو يخفضه، لو البوت نفسه مشرف
+  // (.ترقية ادمن / .ترقية اداريه وأشباههم عولجت قبل ما نوصل هنا)
+  const waAdminMatch = text.match(/^\.(ترقية|خفض)(?:\s+(.+))?$/);
   if (waAdminMatch) {
     if (!isOwner(senderId)) return ownerOnlyDeny();
     if (!isGroupChat(chatId)) {
@@ -1762,7 +1771,7 @@ if (rejectChangeMatch) {
   }
 
   // 🚪 .طرد @ / 🔇 .قفل / 🔊 .فتح: إدارة القروب نفسه (المالك، والادمنية لو الأمر بحزمتهم — محصورة بشاتهم). لازم البوت مشرف
-  const groupOpMatch = text.match(/^\.(طرد|قفل|فتح)(?:\s+(.+))?$/);
+  const groupOpMatch = text.match(/^\.(طرد|قفل قروب|فتح قروب)(?:\s+(.+))?$/);
   if (groupOpMatch && (groupOpMatch[1] === "طرد" || !groupOpMatch[2])) {
     const op = groupOpMatch[1];
     if (!canRun(senderId, text, chatId)) return ownerOnlyDeny();
@@ -1781,8 +1790,8 @@ if (rejectChangeMatch) {
       await sock.sendMessage(chatId, { text: "⚠️ ما أقدر أنفّذ لأن البوت مو مشرف بهذا القروب. اعطني إشراف أول." }, { quoted: msg });
       return;
     }
-    if (op === "قفل" || op === "فتح") {
-      const wantClose = op === "قفل";
+    if (op === "قفل قروب" || op === "فتح قروب") {
+      const wantClose = op === "قفل قروب";
       if (wantClose === !!meta.announce) {
         await sock.sendMessage(chatId, { text: wantClose ? "القروب مقفول أصلاً (الأعضاء ما يقدرون يرسلون)." : "القروب مفتوح أصلاً." }, { quoted: msg });
         return;
@@ -1791,7 +1800,7 @@ if (rejectChangeMatch) {
         await sock.groupSettingUpdate(chatId, wantClose ? "announcement" : "not_announcement");
         await sock.sendMessage(
           chatId,
-          { text: wantClose ? "🔇 تم إغلاق القروب: المشرفين بس يرسلون.\nلفتحه: .فتح" : "🔊 تم فتح القروب: الكل يقدر يرسل." },
+          { text: wantClose ? "🔇 تم إغلاق القروب: المشرفين بس يرسلون.\nلفتحه: .فتح قروب" : "🔊 تم فتح القروب: الكل يقدر يرسل." },
           { quoted: msg }
         );
       } catch (e) {
@@ -2484,7 +2493,7 @@ if (rejectChangeMatch) {
     return;
   }
 
-  // أمر بدء مسابقة (.فنش <رقم> أو .فنش ج <رقم>) — يفتح قائمة اختيار
+  // أمر بدء مسابقة (.ف_كل <رقم> أو .ف <رقم> للجوالات) — يفتح قائمة اختيار
   // الفقرات التفاعلية بدل ما يبدأ فورًا
   const hamzaCheckMain = stripHamzaSuffix(text);
   const startCmd = parseStartCommand(hamzaCheckMain.text);
@@ -2518,10 +2527,10 @@ if (rejectChangeMatch) {
     return;
   }
 
-  // 🏁 .بدء_فنش <العدد> (أو .بدء_فنش ج <العدد> للجوالات): فنش بدون حساب وقت ولا تسجيل
+  // 🏁 .فنش <العدد> (جوالات فقط) / .فنش الكل <العدد> (جوال وخارجي): فنش ساحات بدون حساب وقت ولا تسجيل
   // بـ.توب/.سجل. بعد كل سؤال يرد بقائمة النقاط. الفقرات: كتابة (3 كلمات) / صور / سستع
   // (أسئلة+تعداد بالتناوب) وتتبدل تلقائياً حسب النقاط (شوف game.js _finishAfterWin)
-  const finishStartMatch = hamzaCheckMain.text.trim().replace(/\s+/g, " ").match(/^\.بدء[_ ]فنش(?: (ج))? ?(\d+)$/);
+  const finishStartMatch = hamzaCheckMain.text.trim().replace(/\s+/g, " ").match(/^\.فنش(?: (الكل))? ?(\d+)$/);
   if (finishStartMatch) {
     const finishTarget = parseInt(finishStartMatch[2], 10);
     if (finishTarget < 3) {
@@ -2545,8 +2554,8 @@ if (rejectChangeMatch) {
       return;
     }
     clearStalePracticeContest(chatId);
-    const finishMobileOnly = finishStartMatch[1] === "ج";
-    // 🔤 الهمزات اختيارية: بس لو كتبت "همزات" بآخر الأمر (.بدء فنش 20 همزات) — وقتها
+    const finishMobileOnly = !finishStartMatch[1];
+    // 🔤 الهمزات اختيارية: بس لو كتبت "همزات" بآخر الأمر (.فنش 20 همزات) — وقتها
     // البوت نفسه يختار النمط (حرف + ءء + حرف). بدونها الفنش عادي بدون همزات
     const finishHamza = hamzaCheckMain.hamzaMode;
     const autoPattern = finishHamza ? randomHamzaPattern() : null;
@@ -2788,6 +2797,26 @@ if (rejectChangeMatch) {
         { quoted: msg }
       );
     });
+    return;
+  }
+
+  // 🔀 .همزات / .الغ: تحويل الفنش (الساحات) الشغال بين عادي وهمزات بنصه. للمالك والادمنية (حسب الحزمة)
+  if (text === ".همزات" || text === ".الغ") {
+    if (!canRun(senderId, text, chatId)) return ownerOnlyDeny();
+    const contest = activeContests.get(chatId);
+    if (!contest || !contest.active || !contest.finishMode) {
+      await sock.sendMessage(chatId, { text: "ما فيه فنش شغال حالياً. الأمر يشتغل بس أثناء الفنش (.فنش)." }, { quoted: msg });
+      return;
+    }
+    const wantOn = text === ".همزات";
+    const st = contest.requestFinishHamza(wantOn);
+    const reply = {
+      already_on: "الفنش همزات أصلاً.",
+      already_off: "الفنش عادي أصلاً.",
+      cancelled: "تم إلغاء طلب التحويل، الفنش يكمل مثل ما هو.",
+      queued: wantOn ? "⏳ بيتحول لهمزات بعد هذا السؤال." : "⏳ بيرجع عادي بعد هذا السؤال.",
+    }[st];
+    if (reply) await sock.sendMessage(chatId, { text: reply }, { quoted: msg });
     return;
   }
 

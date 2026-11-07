@@ -1,7 +1,7 @@
 const fs = require("fs");
 const usedStore = require("./usedStore");
 const { imageKeyFn } = require("./answerGroups");
-const { pickRandom, shuffle, formatSeconds, prepareSlots, findAllMatchesPrepared, parseHamzaPattern, unwrapHamza, isCloseToSingleName } = require("./utils");
+const { randomHamzaPattern, pickRandom, shuffle, formatSeconds, prepareSlots, findAllMatchesPrepared, parseHamzaPattern, unwrapHamza, isCloseToSingleName } = require("./utils");
 const store = require("./dataStore");
 const leaderboard = require("./leaderboard");
 const personalHistory = require("./personalHistory");
@@ -81,6 +81,7 @@ function splitFinishShares(target, sections) {
 // 3.5 ثانية لو الفنش همزات (اللاعبين يحتاجون وقت يقرأون النمط)، و2.5 ثانية للفنش العادي
 const FINISH_STEP_DELAY_HAMZA_MS = 3500;
 const FINISH_STEP_DELAY_NORMAL_MS = 2500;
+const FINISH_SECTION_CHANGE_DELAY_MS = 1000; // بعد القائمة لما الفقرة تتغير: ثانية وحدة قبل اسم الفقرة الجديدة
 const FINISH_SKIP_MS = 7 * 1000; // بدون أي إجابة: سكب تلقائي
 const FINISH_END_MS = 2 * 60 * 1000; // دقيقتين بدون أي إجابة: إنهاء تلقائي
 const FINISH_MAX_SKIPS = 3; // 3 سكبات ورا بعض (بدون أي إجابة بينها): إنهاء تلقائي
@@ -362,6 +363,12 @@ class Contest {
   // يبدأ جولة جديدة
   async nextRound() {
     if (!this.active) return;
+
+    // 🔀 تحويل الفنش بين عادي/همزات (.همزات / .الغ) — يتطبق بين سؤالين، بدون ما يمس الحسبة أو الفقرات
+    if (this.finishMode && this.fm && this.fm.pendingHamza !== undefined) {
+      await this._applyFinishHamzaSwitch();
+      if (!this.active) return;
+    }
 
     // 🏁 إعلان اسم الفقرة (*كتابة* / *صور* / *سستع*) قبل أول سؤال منها
     if (this.finishMode && this.fm.announce) {
@@ -1030,7 +1037,7 @@ class Contest {
     }
     if (this.finishMode) this._finishAfterWin();
     const cfg = store.getConfig();
-    this.scheduleNextRound(this.finishMode ? this._finishStepDelay() : cfg.nextQuestionDelayMs || 1000, "الجولة القادمة");
+    this.scheduleNextRound(this.finishMode ? this._finishNextRoundDelay() : cfg.nextQuestionDelayMs || 1000, "الجولة القادمة");
   }
 
   // يعرض اسم العرض المخزن (لو موجود) وإلا رقم الشخص فقط
@@ -1138,6 +1145,53 @@ class Contest {
     return this.hamzaMode ? FINISH_STEP_DELAY_HAMZA_MS : FINISH_STEP_DELAY_NORMAL_MS;
   }
 
+  // 🔀 طلب تحويل الفنش لهمزات (on=true) أو لعادي (on=false) — يرجع حالة الطلب:
+  // none (ما فيه فنش) | already_on | already_off | cancelled (لغى طلب معلّق) | ok (يتطبق قبل السؤال الجاي) | queued (فيه سؤال شغال، يتطبق بعده)
+  requestFinishHamza(on) {
+    if (!this.active || !this.finishMode || !this.fm) return "none";
+    const target = !!on;
+    if (target === this.hamzaMode) {
+      if (this.fm.pendingHamza !== undefined) {
+        this.fm.pendingHamza = undefined;
+        return "cancelled";
+      }
+      return target ? "already_on" : "already_off";
+    }
+    if (this.fm.pendingHamza === target) return target ? "already_on" : "already_off";
+    this.fm.pendingHamza = target;
+    return this.currentRound && !this.currentRound.finished ? "queued" : "ok";
+  }
+
+  async _applyFinishHamzaSwitch() {
+    const on = this.fm.pendingHamza;
+    this.fm.pendingHamza = undefined;
+    if (on === undefined || on === this.hamzaMode) return;
+    this.hamzaMode = on;
+    try {
+      if (on) {
+        const p = randomHamzaPattern();
+        this.hamzaPattern = { prefix: p.prefix, suffix: p.suffix };
+        await this.sendChat(`*${p.text}*`);
+      } else {
+        this.hamzaPattern = null;
+        await this.sendChat("✅ تم إلغاء الهمزات، الفنش رجع عادي.");
+      }
+      await new Promise((r) => setTimeout(r, 1500));
+      if (!this.active) return;
+      await this.sendChat("كمل");
+    } catch (e) {
+      console.error("⚠️ فشل إرسال رسائل تحويل الهمزات (نكمل):", e && e.message);
+    }
+    // بعدها: لو الفقرة بتتغير ثانية وحدة، وإلا نفس انتظار الفنش (3.5 همزات / 2.5 عادي) قبل السؤال
+    await new Promise((r) => setTimeout(r, this.fm.announce ? FINISH_SECTION_CHANGE_DELAY_MS : this._finishStepDelay()));
+  }
+
+  // الانتظار بعد قائمة النتائج/السكب قبل الرسالة اللي بعدها: لو الفقرة بتتغير (بينزل اسم الفقرة الجديدة)
+  // ثانية وحدة بس. لو نفس الفقرة (بينزل السؤال مباشرة) نفس الانتظار المعتاد
+  _finishNextRoundDelay() {
+    return this.fm && this.fm.announce ? FINISH_SECTION_CHANGE_DELAY_MS : this._finishStepDelay();
+  }
+
   // سكب يدوي من الادمنية (.سكب): نفس السكب التلقائي بس ما يُحسب ضمن "3 سكبات
   // ورا بعض" اللي توقف الفنش تلقائياً. يرجع false لو ما فيه سؤال حالياً
   async finishManualSkip() {
@@ -1172,7 +1226,7 @@ class Contest {
       await this._finishAutoEnd(`ما أحد جاوب ${FINISH_MAX_SKIPS} أسئلة ورا بعض`);
       return;
     }
-    this.scheduleNextRound(this._finishStepDelay(), "الجولة القادمة بعد السكب");
+    this.scheduleNextRound(this._finishNextRoundDelay(), "الجولة القادمة بعد السكب");
   }
 
   async _finishAutoEnd(reason) {

@@ -76,12 +76,15 @@
   {
     "id": "img9",
     "file": "allmight.jpg",
+    "type": "count",
     "question": "من هذه الشخصية؟",
+    "required": 2,
+    "points": 1,
     "answers": [
-      "اول مايت",
-      "توشينوري"
+      ["اول"],
+      ["مايت"]
     ],
-    "points": 1
+    "alt": ["اولمايت","توشينوري"]
   },
   {
     "id": "img10",
