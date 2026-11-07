@@ -79,11 +79,12 @@ function splitFinishShares(target, sections) {
 // ⏱️ توقيتات وضع .بدء_فنش
 // انتظار بعد اسم الفقرة / بعد قائمة النتائج / بعد السكب قبل الرسالة اللي بعدها:
 // 3.5 ثانية لو الفنش همزات (اللاعبين يحتاجون وقت يقرأون النمط)، و2.5 ثانية للفنش العادي
-const FINISH_STEP_DELAY_HAMZA_MS = 3500;
+const FINISH_STEP_DELAY_HAMZA_MS = 2900;
 const FINISH_STEP_DELAY_NORMAL_MS = 2500;
 const FINISH_SECTION_CHANGE_DELAY_MS = 1000; // بعد القائمة لما الفقرة تتغير: ثانية وحدة قبل اسم الفقرة الجديدة
 const FINISH_SKIP_MS = 7 * 1000; // بدون أي إجابة: سكب تلقائي
 const FINISH_END_MS = 2 * 60 * 1000; // دقيقتين بدون أي إجابة: إنهاء تلقائي
+const PAUSE_MAX_MS = 2 * 60 * 60 * 1000; // مسابقة موقوفة (.وقف) ولا أحد كمّل بعد ساعتين: تنتهي تلقائياً (ما تبقى معلّقة بالذاكرة)
 const FINISH_MAX_SKIPS = 3; // 3 سكبات ورا بعض (بدون أي إجابة بينها): إنهاء تلقائي
 
 // أنواع الفقرات المدعومة
@@ -363,6 +364,7 @@ class Contest {
   // يبدأ جولة جديدة
   async nextRound() {
     if (!this.active) return;
+    if (this.paused) return; // موقوفة (.وقف): .كمل هو اللي يجدول السؤال الجاي
 
     // 🔀 تحويل الفنش بين عادي/همزات (.همزات / .الغ) — يتطبق بين سؤالين، بدون ما يمس الحسبة أو الفقرات
     if (this.finishMode && this.fm && this.fm.pendingHamza !== undefined) {
@@ -566,7 +568,7 @@ class Contest {
     this.clearRoundWatchdog();
     if (!this.practiceMode) {
       // بوضع الفنش ما فيه رسالة تحذير (السكب والإنهاء تلقائيين)
-      if (!this.finishMode) this.roundWatchdog = setTimeout(() => {
+      if (!this.finishMode && !this.paused) this.roundWatchdog = setTimeout(() => {
         if (this.currentRound === round && !round.finished && this.active) {
           this.sendChat(
             "⚠️ يبدو إن السؤال الحالي ما وصل بشكل طبيعي (تأخير غير عادي بالاتصال). جرب .سكب للانتقال للسؤال التالي، أو .انهاء لو تبي توقف المسابقة."
@@ -582,6 +584,7 @@ class Contest {
   // (يعيد) تشغيل مؤقت الإنهاء التلقائي — يُنادى لما يبدأ سؤال، ولما أحد يحقق تقدم بالإجابة
   // ⏳ انتظار تحديد نمط الهمزات: لو محد حدده خلال IDLE_END_MS تنتهي المسابقة (كل الأنواع)
   _armHamzaWaitTimer() {
+    if (this.paused) return;
     if (this.hamzaWaitTimer) clearTimeout(this.hamzaWaitTimer);
     this.hamzaWaitTimer = setTimeout(() => {
       this.hamzaWaitTimer = null;
@@ -603,6 +606,7 @@ class Contest {
   }
 
   _armIdleTimer() {
+    if (this.paused) return;
     if (this.idleTimer) clearTimeout(this.idleTimer);
     this.idleTimer = setTimeout(() => {
       this.idleTimer = null;
@@ -649,6 +653,7 @@ class Contest {
   // text: النص المستخرج من الرسالة
   // senderId: آيدي الشخص المرسل (jid)
   async handleMessage(msg, text, senderId) {
+    if (this.paused) return; // موقوفة (.وقف): ما نستقبل إجابات
     registration.touch(senderId); // مشاركة بمسابقة = نشاط (للتنظيف التلقائي للخاملين)
     // 🔤 لسا ننتظر اللي بدأ المسابقة يحدد نمط الهمزات — أي رسالة من شخص
     // ثاني نتجاهلها كليًا لين يوصلنا رد من نفس الشخص اللي بدأ
@@ -961,6 +966,7 @@ class Contest {
   // الأولى (عطل مؤقت بالشبكة مثلاً)، وتنبيه واضح للقروب لو فشلت الاثنتين
   // — بدل ما تفضل المسابقة "معلّقة" بصمت بدون أي توضيح لأي أحد
   scheduleNextRound(delayMs, context = "الجولة القادمة") {
+    if (this.paused) return; // موقوفة (.وقف): .كمل يجدول بدالها
     this.nextRoundTimer = setTimeout(async () => {
       try {
         await this.nextRound();
@@ -1108,6 +1114,7 @@ class Contest {
   }
 
   _finishArmSkip() {
+    if (this.paused) return;
     if (this.fm.skipTimer) clearTimeout(this.fm.skipTimer);
     this.fm.skipTimer = setTimeout(() => {
       this.fm.skipTimer = null;
@@ -1117,6 +1124,7 @@ class Contest {
   }
 
   _finishArmEnd() {
+    if (this.paused) return;
     if (this.fm.endTimer) clearTimeout(this.fm.endTimer);
     this.fm.endTimer = setTimeout(() => {
       this.fm.endTimer = null;
@@ -1140,7 +1148,7 @@ class Contest {
     this.fm.endTimer = null;
   }
 
-  // مدة الانتظار بين الرسائل بوضع الفنش: 3.5 ثانية للهمزات، 2.5 للعادي
+  // مدة الانتظار بين الرسائل بوضع الفنش: 2.9 ثانية للهمزات، 2.5 للعادي
   _finishStepDelay() {
     return this.hamzaMode ? FINISH_STEP_DELAY_HAMZA_MS : FINISH_STEP_DELAY_NORMAL_MS;
   }
@@ -1269,6 +1277,10 @@ class Contest {
   }
 
   async endContest() {
+    if (this.pauseTimer) {
+      clearTimeout(this.pauseTimer);
+      this.pauseTimer = null;
+    }
     if (this.nextRoundTimer) {
       clearTimeout(this.nextRoundTimer);
       this.nextRoundTimer = null;
@@ -1317,7 +1329,53 @@ class Contest {
     await this.client.sendMessage(this.chatId, { text, mentions });
   }
 
+  // ⏸️ .وقف: يوقف التقديم مؤقتاً (كل المؤقتات تتجمد) مع الاحتفاظ بكل الحالة (النقاط، الفقرة/الدورة بالفنش، الهدف...)
+  pause() {
+    if (!this.active || this.paused) return false;
+    this.paused = true;
+    if (this.nextRoundTimer) {
+      clearTimeout(this.nextRoundTimer);
+      this.nextRoundTimer = null;
+    }
+    this.clearRoundWatchdog();
+    if (this.finishMode) this._finishClearTimers();
+    this.pauseTimer = setTimeout(() => {
+      this.pauseTimer = null;
+      if (!this.paused || !this.active) return;
+      this.sendChat("⏹️ تم إنهاء المسابقة تلقائياً لأنها كانت موقوفة أكثر من ساعتين.")
+        .catch(() => {})
+        .then(() => this.endContest())
+        .catch((e) => console.error("⚠️ خطأ بإنهاء المسابقة الموقوفة:", e));
+    }, PAUSE_MAX_MS);
+    if (this.pauseTimer.unref) this.pauseTimer.unref();
+    return true;
+  }
+
+  // ▶️ .كمل: يكمل من نفس النقطة. السؤال اللي كان شغال لحظة الوقف (ما انجاب) يُلغى بدون حساب، ويجي سؤال جديد بنفس الفقرة/الدورة
+  resume() {
+    if (!this.active || !this.paused) return false;
+    this.paused = false;
+    if (this.pauseTimer) {
+      clearTimeout(this.pauseTimer);
+      this.pauseTimer = null;
+    }
+    if (this.awaitingHamzaFrom) {
+      this._armHamzaWaitTimer(); // لسا ينتظر نمط الهمزات
+      return true;
+    }
+    const round = this.currentRound;
+    if (round && !round.finished) round.finished = true; // السؤال المعلّق ينلغي بصمت
+    if (this.nextRoundTimer) clearTimeout(this.nextRoundTimer);
+    const delay = this.finishMode ? this._finishNextRoundDelay() : store.getConfig().nextQuestionDelayMs || 1000;
+    this.scheduleNextRound(delay, "الجولة القادمة بعد الاستئناف");
+    return true;
+  }
+
   stop() {
+    if (this.pauseTimer) {
+      clearTimeout(this.pauseTimer);
+      this.pauseTimer = null;
+    }
     if (this.nextRoundTimer) {
       clearTimeout(this.nextRoundTimer);
       this.nextRoundTimer = null;

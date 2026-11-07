@@ -286,6 +286,8 @@ function canRun(senderId, text, chatId) {
 // 🔒 شات مقفول (.قفل الاوامر): أي أمر (يبدأ بنقطة) من غير المالك والادمنية (العامين وادمنية هذا الشات) نتجاهله
 const lockNoticeAt = new Map(); // chatId -> آخر مرة نبّهنا (تنبيه واحد كل دقيقة بدل رد على كل أمر)
 function chatLockBlocks(chatId, senderId, text) {
+  // أوامر التسجيل (.تسجيل / .تغيير تسجيل جوال|خارجي) مفتوحة للكل حتى مع القفل (عشان اللاعب الجديد يقدر يشارك بمسابقة الادمن)
+  if (/^\.(?:تسجيل|تغيير تسجيل) (?:جوال|خارجي)(?: |$)/.test(text)) return false;
   return isGroupChat(chatId) && text.startsWith(".") && admins.isChatLocked(chatId) && !isOwner(senderId) && !admins.isStaff(senderId, chatId);
 }
 
@@ -2867,6 +2869,10 @@ if (rejectChangeMatch) {
       await sock.sendMessage(chatId, { text: "ما فيه مسابقة شغالة حالياً." }, { quoted: msg });
       return;
     }
+    if (contest.paused) {
+      await sock.sendMessage(chatId, { text: "⏸️ المسابقة موقوفة. اكتب .كمل" }, { quoted: msg });
+      return;
+    }
     if (contest.finishMode) {
       // 🏁 بالفنش: .سكب للادمنية وصاحب البوت بس (وغيره السؤال ينسكب تلقائياً بعد 7 ثواني بدون إجابة)
       if (!(isOwner(senderId) || admins.isStaff(senderId, chatId))) {
@@ -2880,6 +2886,30 @@ if (rejectChangeMatch) {
     const skipped = await contest.skipRound(msg);
     if (!skipped) {
       await sock.sendMessage(chatId, { text: "ما فيه سؤال حالياً يُسكب." }, { quoted: msg });
+    }
+    return;
+  }
+
+  // ⏸️ .وقف / ▶️ .كمل: يوقف تقديم الأسئلة مؤقتاً ويكمل من نفس النقطة (للادمنية وصاحب البوت بس)
+  if (text === ".وقف" || text === ".كمل") {
+    const contest = activeContests.get(chatId);
+    if (!contest || !contest.active) return; // ما فيه مسابقة: صمت
+    if (!(isOwner(senderId) || admins.isStaff(senderId, chatId))) {
+      await sock.sendMessage(chatId, { text: `⛔ ${text} للادمنية بس.` }, { quoted: msg });
+      return;
+    }
+    if (text === ".وقف") {
+      if (!contest.pause()) {
+        await sock.sendMessage(chatId, { text: "المسابقة موقوفة بالفعل. اكتب .كمل" }, { quoted: msg });
+        return;
+      }
+      await sock.sendMessage(chatId, { text: "⏸️ تم إيقاف المسابقة مؤقتاً. اكتب .كمل عشان تكمل من نفس المكان." }, { quoted: msg });
+    } else {
+      if (!contest.resume()) {
+        await sock.sendMessage(chatId, { text: "المسابقة مو موقوفة." }, { quoted: msg });
+        return;
+      }
+      await sock.sendMessage(chatId, { text: "▶️ كملنا." }, { quoted: msg });
     }
     return;
   }
