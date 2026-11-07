@@ -2683,6 +2683,41 @@
       ["ان"],
       ["دي"]
     ]
+  },
+  {
+    "id": "q346",
+    "type": "normal",
+    "question": "بطة فيفي ؟",
+    "answers": ["كارو"],
+    "points": 1
+  },
+  {
+    "id": "q347",
+    "type": "normal",
+    "question": "جلاد المعجزات ؟",
+    "answers": ["كاغامي","تايغا"],
+    "points": 1
+  },
+  {
+    "id": "q348",
+    "type": "normal",
+    "question": "اخت لولوش ؟",
+    "answers": ["نانالي"],
+    "points": 1
+  },
+  {
+    "id": "q349",
+    "type": "normal",
+    "question": "عذراء السماء ؟",
+    "answers": ["ويندي"],
+    "points": 1
+  },
+  {
+    "id": "q350",
+    "type": "normal",
+    "question": "كلب ماكيما ؟",
+    "answers": ["دينجي"],
+    "points": 1
   }
 ]
 

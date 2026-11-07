@@ -635,7 +635,7 @@ class Contest {
 
     if (!this.active || !this.currentRound || this.currentRound.finished) return;
     if (!text) return;
-    if (moderation.isBanned(senderId)) return;
+    if (moderation.isBanned(senderId, this.chatId)) return;
 
     // ✅ تجاهل رسائل السبام المكوّنة من حرف واحد بس (زي "ا" مكررة عدة
     // رسائل ورا بعض) — ما تقدر أصلاً تكون إجابة صحيحة لأي فقرة (المطابقة
