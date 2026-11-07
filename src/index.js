@@ -1530,7 +1530,7 @@ if (rejectChangeMatch) {
   const pkgBullets = (arr) => (arr.length ? arr.map((k) => `- .${k}`).join("\n") : "- ما فيه");
   const pkgText = () => admins.pkgList().map((k) => "." + k).join("، ") || "(فاضية)";
 
-  const promoteMatch = text.match(/^\.ترقية (?:اداريه|اداري|إدارية|إداري)(?:\s+(.+))?$/);
+  const promoteMatch = text.match(/^\.ترقي[ةه] [اإ]داري[ةه]?(?:\s+(.+))?$/);
   if (promoteMatch) {
     if (!isOwner(senderId)) return ownerOnlyDeny();
     await resolveTargetOrAsk(sock, chatId, msg, senderId, promoteMatch[1], "استخدم الأمر مع منشن: .ترقية اداريه @الشخص", async (target) => {
@@ -1552,7 +1552,7 @@ if (rejectChangeMatch) {
     return;
   }
 
-  const demoteMatch = text.match(/^\.(?:اعفاء|إعفاء) (?:اداريه|اداري|إدارية|إداري)(?:\s+(.+))?$/);
+  const demoteMatch = text.match(/^\.[اإ]عفاء [اإ]داري[ةه]?(?:\s+(.+))?$/);
   if (demoteMatch) {
     if (!isOwner(senderId)) return ownerOnlyDeny();
     await resolveTargetOrAsk(sock, chatId, msg, senderId, demoteMatch[1], "استخدم الأمر مع منشن: .اعفاء اداري @الشخص", async (target) => {
@@ -1644,7 +1644,7 @@ if (rejectChangeMatch) {
   }
 
   // 👮 .ترقية شات @ / .تنزيل شات @ (للمالك بس): ادمن بهذا القروب فقط — يستخدم أوامر الحزمة هنا وما يقدر بقروبات ثانية
-  const promoteChatMatch = text.match(/^\.ترقية (?:ادمن|أدمن)(?:\s+(.+))?$/);
+  const promoteChatMatch = text.match(/^\.ترقي[ةه] [اأ]دمن(?:\s+(.+))?$/);
   if (promoteChatMatch) {
     if (!isOwner(senderId)) return ownerOnlyDeny();
     if (!isGroupChat(chatId)) {
@@ -1713,22 +1713,26 @@ if (rejectChangeMatch) {
     return;
   }
 
-  // 👑 .ترقية @ / .خفض @ (بدون كلمة ثانية — لصاحب البوت بس): يرقّي عضو لمشرف بالقروب أو يخفضه، لو البوت نفسه مشرف
+  // 👑 .ترقية @ / .خفض @ (بدون كلمة ثانية — للمالك، وللادمنية لو بحزمتهم وهم مشرفين بالقروب): يرقّي عضو لمشرف بالقروب أو يخفضه، لو البوت نفسه مشرف
   // (.ترقية ادمن / .ترقية اداريه وأشباههم عولجت قبل ما نوصل هنا)
-  const waAdminMatch = text.match(/^\.(ترقية|خفض)(?:\s+(.+))?$/);
+  const waAdminMatch = text.match(/^\.(ترقي[ةه]|خفض)(?:\s+(.+))?$/);
   if (waAdminMatch) {
-    if (!isOwner(senderId)) return ownerOnlyDeny();
+    if (!canRun(senderId, text, chatId)) return ownerOnlyDeny();
     if (!isGroupChat(chatId)) {
       await sock.sendMessage(chatId, { text: "هذا الأمر للقروبات بس." }, { quoted: msg });
       return;
     }
-    const action = waAdminMatch[1] === "ترقية" ? "promote" : "demote";
+    const action = waAdminMatch[1].startsWith("ترقي") ? "promote" : "demote";
     await resolveTargetOrAsk(sock, chatId, msg, senderId, waAdminMatch[2], `استخدم الأمر مع منشن: .${waAdminMatch[1]} @الشخص`, async (target) => {
       let meta;
       try {
         meta = await sock.groupMetadata(chatId);
       } catch (e) {
         await sock.sendMessage(chatId, { text: "⚠️ ما قدرت أجيب بيانات القروب، حاول بعد شوي." }, { quoted: msg });
+        return;
+      }
+      if (!isOwner(senderId) && !groupTools.isAdminParticipant(groupTools.findParticipant(meta, senderId))) {
+        await sock.sendMessage(chatId, { text: "⚠️ لازم تكون مشرف بالقروب عشان تستخدم هذا الأمر." }, { quoted: msg });
         return;
       }
       if (!groupTools.isAdminParticipant(groupTools.botParticipant(meta, sock.user))) {
@@ -1788,6 +1792,10 @@ if (rejectChangeMatch) {
     }
     if (!groupTools.isAdminParticipant(groupTools.botParticipant(meta, sock.user))) {
       await sock.sendMessage(chatId, { text: "⚠️ ما أقدر أنفّذ لأن البوت مو مشرف بهذا القروب. اعطني إشراف أول." }, { quoted: msg });
+      return;
+    }
+    if (op === "طرد" && !isOwner(senderId) && !groupTools.isAdminParticipant(groupTools.findParticipant(meta, senderId))) {
+      await sock.sendMessage(chatId, { text: "⚠️ لازم تكون مشرف بالقروب عشان تستخدم هذا الأمر." }, { quoted: msg });
       return;
     }
     if (op === "قفل قروب" || op === "فتح قروب") {
@@ -2829,7 +2837,7 @@ if (rejectChangeMatch) {
     }
     if (contest.finishMode) {
       // 🏁 بالفنش: .انهاء للادمنية وصاحب البوت بس (غيرهم ما يقدر)
-      if (!(isOwner(senderId) || admins.isAdmin(senderId))) {
+      if (!(isOwner(senderId) || admins.isStaff(senderId, chatId))) {
         await sock.sendMessage(chatId, { text: "⛔ .انهاء بالفنش للادمنية بس." }, { quoted: msg });
         return;
       }
@@ -2861,7 +2869,7 @@ if (rejectChangeMatch) {
     }
     if (contest.finishMode) {
       // 🏁 بالفنش: .سكب للادمنية وصاحب البوت بس (وغيره السؤال ينسكب تلقائياً بعد 7 ثواني بدون إجابة)
-      if (!(isOwner(senderId) || admins.isAdmin(senderId))) {
+      if (!(isOwner(senderId) || admins.isStaff(senderId, chatId))) {
         await sock.sendMessage(chatId, { text: "⛔ .سكب بالفنش للادمنية بس." }, { quoted: msg });
         return;
       }
