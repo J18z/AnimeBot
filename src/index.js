@@ -1761,8 +1761,8 @@ if (rejectChangeMatch) {
     return;
   }
 
-  // 🚪 .طرد @ / 🔇 .اغلاق / 🔊 .فتح: إدارة القروب نفسه (المالك، والادمنية لو الأمر بحزمتهم — محصورة بشاتهم). لازم البوت مشرف
-  const groupOpMatch = text.match(/^\.(طرد|اغلاق|فتح)(?:\s+(.+))?$/);
+  // 🚪 .طرد @ / 🔇 .قفل / 🔊 .فتح: إدارة القروب نفسه (المالك، والادمنية لو الأمر بحزمتهم — محصورة بشاتهم). لازم البوت مشرف
+  const groupOpMatch = text.match(/^\.(طرد|قفل|فتح)(?:\s+(.+))?$/);
   if (groupOpMatch && (groupOpMatch[1] === "طرد" || !groupOpMatch[2])) {
     const op = groupOpMatch[1];
     if (!canRun(senderId, text, chatId)) return ownerOnlyDeny();
@@ -1781,8 +1781,8 @@ if (rejectChangeMatch) {
       await sock.sendMessage(chatId, { text: "⚠️ ما أقدر أنفّذ لأن البوت مو مشرف بهذا القروب. اعطني إشراف أول." }, { quoted: msg });
       return;
     }
-    if (op === "اغلاق" || op === "فتح") {
-      const wantClose = op === "اغلاق";
+    if (op === "قفل" || op === "فتح") {
+      const wantClose = op === "قفل";
       if (wantClose === !!meta.announce) {
         await sock.sendMessage(chatId, { text: wantClose ? "القروب مقفول أصلاً (الأعضاء ما يقدرون يرسلون)." : "القروب مفتوح أصلاً." }, { quoted: msg });
         return;
