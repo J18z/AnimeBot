@@ -78,12 +78,12 @@ function splitFinishShares(target, sections) {
 
 // ⏱️ توقيتات وضع .بدء_فنش
 // انتظار بعد اسم الفقرة / بعد قائمة النتائج / بعد السكب قبل الرسالة اللي بعدها:
-// 5 ثواني لو الفنش همزات (اللاعبين يحتاجون وقت يقرأون النمط)، و3 ثواني للفنش العادي
+// 3.5 ثانية لو الفنش همزات (اللاعبين يحتاجون وقت يقرأون النمط)، و2.5 ثانية للفنش العادي
 const FINISH_STEP_DELAY_HAMZA_MS = 3500;
 const FINISH_STEP_DELAY_NORMAL_MS = 2500;
 const FINISH_SKIP_MS = 7 * 1000; // بدون أي إجابة: سكب تلقائي
 const FINISH_END_MS = 2 * 60 * 1000; // دقيقتين بدون أي إجابة: إنهاء تلقائي
-const FINISH_MAX_SKIPS = 4; // 4 سكبات ورا بعض (بدون أي إجابة بينها): إنهاء تلقائي
+const FINISH_MAX_SKIPS = 3; // 3 سكبات ورا بعض (بدون أي إجابة بينها): إنهاء تلقائي
 
 // أنواع الفقرات المدعومة
 const POOL_TYPES = ["writing", "images", "questions", "counts"];
@@ -371,14 +371,14 @@ class Contest {
       } catch (e) {
         console.error("⚠️ فشل إرسال اسم الفقرة (نكمل):", e && e.message);
       }
-      // انتظار بين اسم الفقرة والسؤال (5 ثواني همزات / 3 عادي) — عشان يلاحظه اللاعبون قبل ما ينزل السؤال
+      // انتظار بين اسم الفقرة والسؤال (3.5 ثانية همزات / 2.5 عادي) — عشان يلاحظه اللاعبون قبل ما ينزل السؤال
       await new Promise((r) => setTimeout(r, this._finishStepDelay()));
       if (!this.active) return;
     }
 
     const poolType = this._plannedPoolType || this.pickPoolType();
     this._plannedPoolType = null;
-    let slots, required, points, questionText, label, repeatCounts;
+    let slots, required, points, questionText, label, repeatCounts, altAnswers;
 
     if (poolType === "repeat") {
       const picks = this.pickRepeatRound(this.fixedWordCount);
@@ -452,9 +452,12 @@ class Contest {
       points = item.points || 1;
       questionText = item.question;
 
-      if (poolType === "questions" && item.type === "count") {
+      // صورة بإجابتين أو أكثر (type: "count" أو answers مصفوفة مصفوفات): تنعامل مثل سؤال التعداد
+      const multiImage = poolType === "images" && (item.type === "count" || Array.isArray(item.answers[0]));
+      if ((poolType === "questions" && item.type === "count") || multiImage) {
         slots = item.answers;
         required = item.required;
+        altAnswers = multiImage && Array.isArray(item.alt) ? item.alt : null;
         label = item.answers.map((a) => a[0]).join("، ");
       } else if (poolType === "counts") {
         slots = item.answers;
@@ -481,6 +484,7 @@ class Contest {
       required,
       points,
       label, // "الإجابة" اللي تُعرض بلوحة الصدارة
+      altAnswers,
       repeatCounts, // بس لفقرة "تكرار": عدد التكرار المطلوب بالظبط لكل عنصر بـslots
       startTime: Date.now(), // قيمة مؤقتة، تنستبدل تحت بتوقيت واتساب الفعلي
       finished: false,
@@ -569,6 +573,28 @@ class Contest {
   }
 
   // (يعيد) تشغيل مؤقت الإنهاء التلقائي — يُنادى لما يبدأ سؤال، ولما أحد يحقق تقدم بالإجابة
+  // ⏳ انتظار تحديد نمط الهمزات: لو محد حدده خلال IDLE_END_MS تنتهي المسابقة (كل الأنواع)
+  _armHamzaWaitTimer() {
+    if (this.hamzaWaitTimer) clearTimeout(this.hamzaWaitTimer);
+    this.hamzaWaitTimer = setTimeout(() => {
+      this.hamzaWaitTimer = null;
+      this._hamzaWaitExpired().catch((e) => console.error("⚠️ خطأ بإنهاء انتظار الهمزات:", e));
+    }, IDLE_END_MS);
+    if (this.hamzaWaitTimer.unref) this.hamzaWaitTimer.unref();
+  }
+
+  async _hamzaWaitExpired() {
+    if (!this.active || !this.awaitingHamzaFrom) return;
+    this.awaitingHamzaFrom = null;
+    this.pendingStart = null;
+    try {
+      await this.sendChat("⏹️ تم إنهاء المسابقة تلقائياً لأنه ما أحد حدد نمط الهمزات لمدة دقيقتين.");
+    } catch (e) {
+      console.error("فشل إرسال رسالة إنهاء انتظار الهمزات:", e && e.message);
+    }
+    await this.endContest();
+  }
+
   _armIdleTimer() {
     if (this.idleTimer) clearTimeout(this.idleTimer);
     this.idleTimer = setTimeout(() => {
@@ -593,6 +619,10 @@ class Contest {
 
   // يلغي مؤقت الحراسة الحالي (لو موجود) — يُستدعى كل ما جولة تخلص/تُسكب/تنتهي المسابقة
   clearRoundWatchdog() {
+    if (this.hamzaWaitTimer) {
+      clearTimeout(this.hamzaWaitTimer);
+      this.hamzaWaitTimer = null;
+    }
     if (this.finishMode && this.fm && this.fm.skipTimer) {
       clearTimeout(this.fm.skipTimer);
       this.fm.skipTimer = null;
@@ -624,6 +654,7 @@ class Contest {
       }
       this.hamzaPattern = parsed;
       this.awaitingHamzaFrom = null;
+      if (this.hamzaWaitTimer) { clearTimeout(this.hamzaWaitTimer); this.hamzaWaitTimer = null; }
       const starter = this.pendingStart;
       this.pendingStart = null;
       await this.sendChat(
@@ -766,6 +797,16 @@ class Contest {
     }
     // تطبيع الإجابات المقبولة مرة وحدة لكل جولة (مو مع كل رسالة)
     if (!round.prepared) round.prepared = prepareSlots(round.slots, relaxed);
+    if (round.altAnswers) {
+      if (!round.altPrepared) round.altPrepared = prepareSlots([round.altAnswers], relaxed);
+      if (findAllMatchesPrepared(searchText, round.altPrepared, new Set()).length > 0) {
+        for (let i = 0; i < round.slots.length; i++) userSet.add(i);
+        if (this.finishMode) this._finishProgress();
+         await this.completeRound(msg, senderId, text);
+         return;
+      }
+    }
+    
     const newlyClaimed = findAllMatchesPrepared(searchText, round.prepared, userSet);
     if (newlyClaimed.length === 0) {
       if (
@@ -1092,12 +1133,12 @@ class Contest {
     this.fm.endTimer = null;
   }
 
-  // مدة الانتظار بين الرسائل بوضع الفنش: 5 ثواني للهمزات، 3 للعادي
+  // مدة الانتظار بين الرسائل بوضع الفنش: 3.5 ثانية للهمزات، 2.5 للعادي
   _finishStepDelay() {
     return this.hamzaMode ? FINISH_STEP_DELAY_HAMZA_MS : FINISH_STEP_DELAY_NORMAL_MS;
   }
 
-  // سكب يدوي من الادمنية (.سكب): نفس السكب التلقائي بس ما يُحسب ضمن "4 سكبات
+  // سكب يدوي من الادمنية (.سكب): نفس السكب التلقائي بس ما يُحسب ضمن "3 سكبات
   // ورا بعض" اللي توقف الفنش تلقائياً. يرجع false لو ما فيه سؤال حالياً
   async finishManualSkip() {
     const round = this.currentRound;
@@ -1187,8 +1228,9 @@ class Contest {
     // نضيف نتيجة هذي المسابقة للسجل التراكمي (بس لو فيه مشاركين كافيين)
     // countWin: فوز "فنش" يُحسب بس بالمسابقات اللي مو مستمرة (فنش رسمي أو
     // مسابقة بعدد أسئلة محدد) — المستمرة (.مسص/.مسس/.متع/.مسكت) ما تُحسب
-    // 🏁 فنش بدون تسجيل: ما يدخل السجل التراكمي (.سجل)
-    if (!this.finishMode) standings.addContestResult(this.scores, this.nameCache, { countWin: !this.endless });
+    // 🏁 .بدء_فنش يدخل السجل التراكمي (.سجل/.لقبي: نقاط + مشاركات) أيضاً — بس هنا عند نهاية الفنش مرة وحدة،
+    // مو أثناءه (ما نسجّل ولا نحسب شي وقت اللعب عشان ما يصير بطء)، فالنقاط ما تظهر إلا بعد انتهاء الفنش
+    standings.addContestResult(this.scores, this.nameCache, { countWin: !this.endless });
 
     if (ranking.length === 0) {
       await this.sendChat("انتهت المسابقة بدون فائزين 😅");

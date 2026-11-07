@@ -1418,12 +1418,15 @@
   {
     "id": "img154",
     "file": "mei mei.jpg",
+    "type": "count",
     "question": "من هذه الشخصية؟",
+    "required": 2,
+    "points": 1,
     "answers": [
-      "ميمي",
-      "مي مي"
+      ["مي"],
+      ["مي"]
     ],
-    "points": 1
+    "alt": ["ميمي"]
   },
   {
     "id": "img155",
@@ -2584,11 +2587,14 @@
   {
     "id": "img280",
     "file": "cc.jpg",
+    "type": "count",
     "question": "من هذه الشخصية؟",
+    "required": 2,
+    "points": 1,
     "answers": [
-      "سي سي"
-    ],
-    "points": 1
+      ["سي"],
+      ["سي"]
+    ]
   },
   {
     "id": "img281",
@@ -2904,7 +2910,8 @@
     "file": "inomaki.jpg",
     "question": "من هذه الشخصية؟",
     "answers": [
-      "اينوماكي"
+      "اينوماكي",
+      "توغي"
     ],
     "points": 1
   },
@@ -3267,6 +3274,573 @@
     "question": "من هذه الشخصية؟",
     "answers": [
       "زابوزا"
+    ],
+    "points": 1
+  },
+  {
+    "id": "img356",
+    "file": "ains.jpg",
+    "question": "من هذه الشخصية؟",
+    "answers": [
+      "اينز",
+      "مومونجا"
+    ],
+    "points": 1
+  },
+  {
+    "id": "img357",
+    "file": "angel.jpg",
+    "question": "من هذه الشخصية؟",
+    "answers": [
+      "أنجل"
+    ],
+    "points": 1
+  },
+  {
+    "id": "img358",
+    "file": "arthur.jpg",
+    "question": "من هذه الشخصية؟",
+    "answers": [
+      "ارثر"
+    ],
+    "points": 1
+  },
+  {
+    "id": "img359",
+    "file": "asahi.jpg",
+    "question": "من هذه الشخصية؟",
+    "answers": [
+      "اساهي",
+      "دايتشي"
+    ],
+    "points": 1
+  },
+  {
+    "id": "img360",
+    "file": "asoma.jpg",
+    "question": "من هذه الشخصية؟",
+    "answers": [
+      "اسوما"
+    ],
+    "points": 1
+  },
+  {
+    "id": "img361",
+    "file": "bakogo.jpg",
+    "question": "من هذه الشخصية؟",
+    "answers": [
+      "باكوغو"
+    ],
+    "points": 1
+  },
+  {
+    "id": "img362",
+    "file": "beek.jpg",
+    "question": "من هذه الشخصية؟",
+    "answers": [
+      "بيك"
+    ],
+    "points": 1
+  },
+  {
+    "id": "img363",
+    "file": "bigmam.jpg",
+    "type": "count",
+    "question": "من هذه الشخصية؟",
+    "required": 2,
+    "points": 1,
+    "answers": [
+      ["بيغ"],
+      ["مام"]
+    ],
+    "alt": ["لينلين"]
+  },
+  {
+    "id": "img364",
+    "file": "ceil.jpg",
+    "question": "من هذه الشخصية؟",
+    "answers": [
+      "سيل"
+    ],
+    "points": 1
+  },
+  {
+    "id": "img365",
+    "file": "charmy.jpg",
+    "question": "من هذه الشخصية؟",
+    "answers": [
+      "تشارمي"
+    ],
+    "points": 1
+  },
+  {
+    "id": "img366",
+    "file": "corazon.jpg",
+    "question": "من هذه الشخصية؟",
+    "answers": [
+      "كورازون"
+    ],
+    "points": 1
+  },
+  {
+    "id": "img367",
+    "file": "crocodile.jpg",
+    "question": "من هذه الشخصية؟",
+    "answers": [
+      "كروكودايل"
+    ],
+    "points": 1
+  },
+  {
+    "id": "img368",
+    "file": "dinky.jpg",
+    "question": "من هذه الشخصية؟",
+    "answers": [
+      "دينكي ",
+      "كاميناري"
+    ],
+    "points": 1
+  },
+  {
+    "id": "img369",
+    "file": "dominique.jpg",
+    "question": "من هذه الشخصية؟",
+    "answers": [
+      "دومينيك"
+    ],
+    "points": 1
+  },
+  {
+    "id": "img370",
+    "file": "flok.jpg",
+    "question": "من هذه الشخصية؟",
+    "answers": [
+      "فلوك"
+    ],
+    "points": 1
+  },
+  {
+    "id": "img371",
+    "file": "fugaku.jpg",
+    "question": "من هذه الشخصية؟",
+    "answers": [
+      "فوجاكو"
+    ],
+    "points": 1
+  },
+  {
+    "id": "img372",
+    "file": "gengen.jpg",
+    "question": "من هذه الشخصية؟",
+    "answers": [
+      "جين"
+    ],
+    "points": 1
+  },
+  {
+    "id": "img373",
+    "file": "gordon.jpg",
+    "question": "من هذه الشخصية؟",
+    "answers": [
+      "غوردون"
+    ],
+    "points": 1
+  },
+  {
+    "id": "img374",
+    "file": "hanabi.jpg",
+    "question": "من هذه الشخصية؟",
+    "answers": [
+      "هانابي"
+    ],
+    "points": 1
+  },
+  {
+    "id": "img375",
+    "file": "hanaku.jpg",
+    "question": "من هذه الشخصية؟",
+    "answers": [
+      "هاناكو"
+    ],
+    "points": 1
+  },
+  {
+    "id": "img376",
+    "file": "higoruma.jpg",
+    "question": "من هذه الشخصية؟",
+    "answers": [
+      "هيرومي ",
+      "هيغوروما"
+    ],
+    "points": 1
+  },
+  {
+    "id": "img377",
+    "file": "himawari.jpg",
+    "question": "من هذه الشخصية؟",
+    "answers": [
+      "هيماواري"
+    ],
+    "points": 1
+  },
+  {
+    "id": "img378",
+    "file": "hirozine.jpg",
+    "question": "من هذه الشخصية؟",
+    "answers": [
+      "هيروزين",
+      "ساروتوبي"
+    ],
+    "points": 1
+  },
+  {
+    "id": "img379",
+    "file": "ida.jpg",
+    "question": "من هذه الشخصية؟",
+    "answers": [
+      "تينيا",
+      "ايدا"
+    ],
+    "points": 1
+  },
+  {
+    "id": "img380",
+    "file": "inel.jpg",
+    "question": "من هذه الشخصية؟",
+    "answers": [
+      "اينيل"
+    ],
+    "points": 1
+  },
+  {
+    "id": "img381",
+    "file": "inogen.jpg",
+    "question": "من هذه الشخصية؟",
+    "answers": [
+      "اينوجين"
+    ],
+    "points": 1
+  },
+  {
+    "id": "img382",
+    "file": "iruka.jpg",
+    "question": "من هذه الشخصية؟",
+    "answers": [
+      "ايروكا"
+    ],
+    "points": 1
+  },
+  {
+    "id": "img383",
+    "file": "iry.jpg",
+    "question": "من هذه الشخصية؟",
+    "answers": [
+      "ايري"
+    ],
+    "points": 1
+  },
+  {
+    "id": "img384",
+    "file": "jack.jpg",
+    "question": "من هذه الشخصية؟",
+    "answers": [
+      "جاك"
+    ],
+    "points": 1
+  },
+  {
+    "id": "img385",
+    "file": "kabuto.jpg",
+    "question": "من هذه الشخصية؟",
+    "answers": [
+      "كابوتو"
+    ],
+    "points": 1
+  },
+  {
+    "id": "img386",
+    "file": "katakori.jpg",
+    "question": "من هذه الشخصية؟",
+    "answers": [
+      "كاتاكوري"
+    ],
+    "points": 1
+  },
+  {
+    "id": "img387",
+    "file": "kei.jpg",
+    "question": "من هذه الشخصية؟",
+    "answers": [
+      "كي"
+    ],
+    "points": 1
+  },
+  {
+    "id": "img388",
+    "file": "keni.jpg",
+    "question": "من هذه الشخصية؟",
+    "answers": [
+      "كيني"
+    ],
+    "points": 1
+  },
+  {
+    "id": "img389",
+    "file": "kingg.jpg",
+    "question": "من هذه الشخصية؟",
+    "answers": [
+      "كينغ"
+    ],
+    "points": 1
+  },
+  {
+    "id": "img390",
+    "file": "kloy.jpg",
+    "question": "من هذه الشخصية؟",
+    "answers": [
+      "كلوي"
+    ],
+    "points": 1
+  },
+  {
+    "id": "img391",
+    "file": "koma.jpg",
+    "question": "من هذه الشخصية؟",
+    "answers": [
+      "كوما"
+    ],
+    "points": 1
+  },
+  {
+    "id": "img392",
+    "file": "koni.jpg",
+    "question": "من هذه الشخصية؟",
+    "answers": [
+      "كوني"
+    ],
+    "points": 1
+  },
+  {
+    "id": "img393",
+    "file": "kraker.jpg",
+    "question": "من هذه الشخصية؟",
+    "answers": [
+      "كراكر"
+    ],
+    "points": 1
+  },
+  {
+    "id": "img394",
+    "file": "liby.jpg",
+    "question": "من هذه الشخصية؟",
+    "answers": [
+      "ليبي"
+    ],
+    "points": 1
+  },
+  {
+    "id": "img395",
+    "file": "marco.jpg",
+    "question": "من هذه الشخصية؟",
+    "answers": [
+      "ماركو"
+    ],
+    "points": 1
+  },
+  {
+    "id": "img396",
+    "file": "mi.jpg",
+    "question": "من هذه الشخصية؟",
+    "answers": [
+      "مي"
+    ],
+    "points": 1
+  },
+  {
+    "id": "img397",
+    "file": "naofumi.jpg",
+    "question": "من هذه الشخصية؟",
+    "answers": [
+      "ناوفومي"
+    ],
+    "points": 1
+  },
+  {
+    "id": "img398",
+    "file": "nawiya.jpg",
+    "question": "من هذه الشخصية؟",
+    "answers": [
+      "ناويا"
+    ],
+    "points": 1
+  },
+  {
+    "id": "img399",
+    "file": "oden.jpg",
+    "question": "من هذه الشخصية؟",
+    "answers": [
+      "اودين"
+    ],
+    "points": 1
+  },
+  {
+    "id": "img400",
+    "file": "orochimaru.jpg",
+    "question": "من هذه الشخصية؟",
+    "answers": [
+      "أوروتشيمارو"
+    ],
+    "points": 1
+  },
+  {
+    "id": "img401",
+    "file": "queen.jpg",
+    "question": "من هذه الشخصية؟",
+    "answers": [
+      "كوين"
+    ],
+    "points": 1
+  },
+  {
+    "id": "img402",
+    "file": "sarada.jpg",
+    "question": "من هذه الشخصية؟",
+    "answers": [
+      "سارادا"
+    ],
+    "points": 1
+  },
+  {
+    "id": "img403",
+    "file": "sebastian.jpg",
+    "question": "من هذه الشخصية؟",
+    "answers": [
+      "سيباستيان"
+    ],
+    "points": 1
+  },
+  {
+    "id": "img404",
+    "file": "sengoku.jpg",
+    "question": "من هذه الشخصية؟",
+    "answers": [
+      "سينغوكو"
+    ],
+    "points": 1
+  },
+  {
+    "id": "img405",
+    "file": "sheki.jpg",
+    "question": "من هذه الشخصية؟",
+    "answers": [
+      "شيكي"
+    ],
+    "points": 1
+  },
+  {
+    "id": "img406",
+    "file": "shikamaro.jpg",
+    "question": "من هذه الشخصية؟",
+    "answers": [
+      "شيكامارو"
+    ],
+    "points": 1
+  },
+  {
+    "id": "img407",
+    "file": "shinichi.jpg",
+    "question": "من هذه الشخصية؟",
+    "answers": [
+      "شينتشي",
+      "سينشي",
+      "شينيتشي"
+    ],
+    "points": 1
+  },
+  {
+    "id": "img408",
+    "file": "shuu.jpg",
+    "question": "من هذه الشخصية؟",
+    "answers": [
+      "شو"
+    ],
+    "points": 1
+  },
+  {
+    "id": "img409",
+    "file": "smoker.jpg",
+    "question": "من هذه الشخصية؟",
+    "answers": [
+      "سموكر"
+    ],
+    "points": 1
+  },
+  {
+    "id": "img410",
+    "file": "tenten.jpg",
+     "type": "count",
+    "question": "من هذه الشخصية؟",
+    "required": 2,
+    "points": 1,
+    "answers": [
+      ["تن"],
+      ["تن"]
+    ],
+    "alt": ["تنتن"]
+  },
+  {
+    "id": "img411",
+    "file": "tobi.jpg",
+    "question": "من هذه الشخصية؟",
+    "answers": [
+      "توبي",
+      "اوبيتو"
+    ],
+    "points": 1
+  },
+  {
+    "id": "img412",
+    "file": "toru.jpg",
+    "question": "من هذه الشخصية؟",
+    "answers": [
+      "تورو",
+      "اويكاوا"
+    ],
+    "points": 1
+  },
+  {
+    "id": "img413",
+    "file": "uraraka.jpg",
+    "question": "من هذه الشخصية؟",
+    "answers": [
+      "اوراراكا"
+    ],
+    "points": 1
+  },
+  {
+    "id": "img414",
+    "file": "yasop.jpg",
+    "question": "من هذه الشخصية؟",
+    "answers": [
+      "ياسوب"
+    ],
+    "points": 1
+  },
+  {
+    "id": "img415",
+    "file": "yomir.jpg",
+    "question": "من هذه الشخصية؟",
+    "answers": [
+      "يومير"
+    ],
+    "points": 1
+  },
+  {
+    "id": "img416",
+    "file": "zef.jpg",
+    "question": "من هذه الشخصية؟",
+    "answers": [
+      "زيف"
     ],
     "points": 1
   }

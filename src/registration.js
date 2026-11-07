@@ -39,6 +39,12 @@ function validateTitle(raw) {
   return { ok: true, title };
 }
 
+// الاسم المسجّل (للعرض بقوائم الإدارة) — null لو ما له تسجيل
+function getDisplayName(userId) {
+  const e = registry.get(userId);
+  return e && e.displayName ? e.displayName : null;
+}
+
 function titleOwner(title) {
   return titleIndex.get(normalizeTitle(title)) || null;
 }
@@ -306,6 +312,7 @@ module.exports = {
   register,
   setTitle,
   getTitle,
+  getDisplayName,
   validateTitle,
   isTitleAvailable,
   titleOwner,

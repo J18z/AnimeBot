@@ -2718,6 +2718,34 @@
     "question": "كلب ماكيما ؟",
     "answers": ["دينجي"],
     "points": 1
+  },
+  {
+    "id": "q351",
+    "type": "normal",
+    "question": "سيف ساسكي ؟",
+    "answers": ["كاتانا"],
+    "points": 1
+  },
+  {
+    "id": "q352",
+    "type": "normal",
+    "question": "معلم ايتشيغو ؟",
+    "answers": ["كيسكي"],
+    "points": 1
+  },
+  {
+    "id": "q353",
+    "type": "normal",
+    "question": "معلم لوفي ؟",
+    "answers": ["رايلي"],
+    "points": 1
+  },
+  {
+    "id": "q354",
+    "type": "normal",
+    "question": "مطعم زيف ؟",
+    "answers": ["باراتي"],
+    "points": 1
   }
 ]
 

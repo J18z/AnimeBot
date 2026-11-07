@@ -25,7 +25,12 @@ function build(images) {
     if (ra < rb) parent.set(rb, ra);
     else parent.set(ra, rb);
   };
-  const norms = images.map((it) => (it.answers || []).map((a) => normalizeWritingRelaxed(a)).filter(Boolean));
+  // صورة بإجابات متعددة (answers مصفوفة مصفوفات): مفتاحها مستقل عن غيرها (ما ندمجها مع صور أخرى)
+  const norms = images.map((it) => {
+    const ans = it.answers || [];
+    if (Array.isArray(ans[0])) return ["multi:" + ans.map((s) => normalizeWritingRelaxed(s[0])).join("|")];
+    return ans.map((a) => normalizeWritingRelaxed(a)).filter(Boolean);
+  });
   for (const list of norms) for (const k of list) if (!parent.has(k)) parent.set(k, k);
   for (const list of norms) for (let i = 1; i < list.length; i++) union(list[0], list[i]);
   const map = new Map();

@@ -39,7 +39,7 @@ const { handleMatsuriMessage } = require("../matsuri/matsuri");
 const { handleHoraMessage } = require("../hora/hora");
 const roulette = require("../matsuri/roulette");
 const rasad = require("../matsuri/rasad");
-const helpText = require("./helpText");
+const helpMenus = require("./helpMenus");
 const { handleStickerCommand } = require("./commands/sticker");
 const { handleStickerOldCommand } = require("./commands/stickerOld");
 
@@ -445,6 +445,7 @@ async function beginContest(chatId, sock, contest, senderId) {
   if (contest.hamzaMode) {
     contest.awaitingHamzaFrom = senderId;
     contest.pendingStart = () => safeStartFirstRound(chatId, sock, contest);
+    contest._armHamzaWaitTimer();
     await sock.sendMessage(chatId, {
       text:
         "🔤 حدد نمط الهمزات الإلزامي (رد بنص فيه همزتين ء — أي إطار تحبه، مثال: تءءت أو جججءءججج).\n" +
@@ -1191,7 +1192,36 @@ async function handleIncoming(sock, msg) {
   // أمر .ريم اوامر: قائمة كل الأوامر مصنفة
   // أمر .ريم اوامر: قائمة كل الأوامر مصنفة (النص نفسه بملف مستقل: helpText.js)
   if (text === ".ريم اوامر") {
-    await sock.sendMessage(chatId, { text: helpText }, { quoted: msg });
+    await sock.sendMessage(chatId, { text: helpMenus.MAIN }, { quoted: msg });
+    return;
+  }
+
+  // 📖 أقسام المساعدة: .مسابقات / .تسجيل / .الترتيب للجميع. .المطور للمالك بس. .ادمن للادمنية والمالك (يعرض بس الأوامر المسموحة لهم)
+  const SECTION_TEXT = { ".مسابقات": helpMenus.CONTESTS, ".تسجيل": helpMenus.REGISTRATION, ".الترتيب": helpMenus.RANKING };
+  if (SECTION_TEXT[text]) {
+    await sock.sendMessage(chatId, { text: SECTION_TEXT[text] }, { quoted: msg });
+    return;
+  }
+  if (text === ".المطور") {
+    if (!isOwner(senderId)) {
+      await sock.sendMessage(chatId, { text: "⛔ هذا القسم للمطور فقط." }, { quoted: msg });
+      return;
+    }
+    await sock.sendMessage(chatId, { text: helpMenus.buildOwnerMenu() }, { quoted: msg });
+    return;
+  }
+  if (text === ".ادمن") {
+    const owner = isOwner(senderId);
+    const globalAdmin = admins.isAdmin(senderId);
+    const chatAdmin = isGroupChat(chatId) && admins.isChatAdmin(senderId, chatId);
+    if (!owner && !globalAdmin && !chatAdmin) {
+      await sock.sendMessage(chatId, { text: "⛔ هذا القسم للادمنية والمطور فقط." }, { quoted: msg });
+      return;
+    }
+    // المالك والادمن العام: كل الحزمة. ادمن الشات بس: أوامره المحصورة بالقروب
+    const chatOnly = !owner && !globalAdmin && chatAdmin;
+    const allowed = new Set(chatOnly ? admins.chatPkgList() : admins.pkgList());
+    await sock.sendMessage(chatId, { text: helpMenus.buildAdminMenu(allowed, chatOnly) }, { quoted: msg });
     return;
   }
 
@@ -1731,21 +1761,93 @@ if (rejectChangeMatch) {
     return;
   }
 
+  // 🚪 .طرد @ / 🔇 .اغلاق / 🔊 .فتح: إدارة القروب نفسه (المالك، والادمنية لو الأمر بحزمتهم — محصورة بشاتهم). لازم البوت مشرف
+  const groupOpMatch = text.match(/^\.(طرد|اغلاق|فتح)(?:\s+(.+))?$/);
+  if (groupOpMatch && (groupOpMatch[1] === "طرد" || !groupOpMatch[2])) {
+    const op = groupOpMatch[1];
+    if (!canRun(senderId, text, chatId)) return ownerOnlyDeny();
+    if (!isGroupChat(chatId)) {
+      await sock.sendMessage(chatId, { text: "هذا الأمر للقروبات بس." }, { quoted: msg });
+      return;
+    }
+    let meta;
+    try {
+      meta = await sock.groupMetadata(chatId);
+    } catch (e) {
+      await sock.sendMessage(chatId, { text: "⚠️ ما قدرت أجيب بيانات القروب، حاول بعد شوي." }, { quoted: msg });
+      return;
+    }
+    if (!groupTools.isAdminParticipant(groupTools.botParticipant(meta, sock.user))) {
+      await sock.sendMessage(chatId, { text: "⚠️ ما أقدر أنفّذ لأن البوت مو مشرف بهذا القروب. اعطني إشراف أول." }, { quoted: msg });
+      return;
+    }
+    if (op === "اغلاق" || op === "فتح") {
+      const wantClose = op === "اغلاق";
+      if (wantClose === !!meta.announce) {
+        await sock.sendMessage(chatId, { text: wantClose ? "القروب مقفول أصلاً (الأعضاء ما يقدرون يرسلون)." : "القروب مفتوح أصلاً." }, { quoted: msg });
+        return;
+      }
+      try {
+        await sock.groupSettingUpdate(chatId, wantClose ? "announcement" : "not_announcement");
+        await sock.sendMessage(
+          chatId,
+          { text: wantClose ? "🔇 تم إغلاق القروب: المشرفين بس يرسلون.\nلفتحه: .فتح" : "🔊 تم فتح القروب: الكل يقدر يرسل." },
+          { quoted: msg }
+        );
+      } catch (e) {
+        console.error("⚠️ فشل تغيير إعداد القروب:", e && e.message);
+        await sock.sendMessage(chatId, { text: "⚠️ ما قدرت أغيّر إعداد القروب، تأكد إن البوت مشرف." }, { quoted: msg });
+      }
+      return;
+    }
+    // طرد
+    await resolveTargetOrAsk(sock, chatId, msg, senderId, groupOpMatch[2], "استخدم الأمر مع منشن: .طرد @الشخص", async (target) => {
+      const tp = groupTools.findParticipant(meta, target);
+      if (!tp) {
+        await sock.sendMessage(chatId, { text: "هذا الشخص مو موجود بالقروب.", mentions: [target] }, { quoted: msg });
+        return;
+      }
+      const botP = groupTools.botParticipant(meta, sock.user);
+      if (botP && botP.id === tp.id) {
+        await sock.sendMessage(chatId, { text: "ما أقدر أطرد نفسي 😄" }, { quoted: msg });
+        return;
+      }
+      if (tp.admin === "superadmin") {
+        await sock.sendMessage(chatId, { text: "⚠️ هذا منشئ القروب، ما أقدر أطرده.", mentions: [tp.id] }, { quoted: msg });
+        return;
+      }
+      if (!isOwner(senderId) && (admins.isStaff(target, chatId) || isOwner(target))) {
+        await sock.sendMessage(chatId, { text: "⚠️ ما تقدر تطرد ادمن بالبوت.", mentions: [tp.id] }, { quoted: msg });
+        return;
+      }
+      try {
+        const res = await sock.groupParticipantsUpdate(chatId, [tp.id], "remove");
+        const stt = res && res[0] && res[0].status;
+        if (stt && !String(stt).startsWith("2")) throw new Error(`status ${stt}`);
+        await sock.sendMessage(chatId, { text: `🚪 تم طرد @${tp.id.split("@")[0]} من القروب.`, mentions: [tp.id] }, { quoted: msg });
+      } catch (e) {
+        console.error("⚠️ فشل الطرد:", e && e.message);
+        await sock.sendMessage(chatId, { text: "⚠️ ما قدرت أطرده، تأكد إن البوت مشرف وإن الشخص بالقروب." }, { quoted: msg });
+      }
+    });
+    return;
+  }
+
   if (text === ".حزمة" || text === ".حزمة الادمن") {
     if (!isOwner(senderId)) return ownerOnlyDeny();
+    const label = (id) => `${registration.getTitle(id) || registration.getDisplayName(id) || "بدون اسم"} ~ @${id.split("@")[0]}`;
     const adminIds = admins.listAdmins();
     const immuneIds = admins.listImmune();
-    const notIn = admins.DELEGABLE.filter((k) => !admins.pkgList().includes(k));
-    let out = `📦 حزمة الادمن:\n${pkgText()}`;
-    if (notIn.length) out += `\n\nممكن تضيفها (.اضافة امر <الاسم>):\n${notIn.map((k) => "." + k).join("، ")}`;
-    out += `\n\n👮 الادمنية: ${adminIds.length ? adminIds.map((id) => "@" + id.split("@")[0]).join(" ") : "ما فيه"}`;
-    out += `\n🛡️ عليهم حصانة: ${immuneIds.length ? immuneIds.map((id) => "@" + id.split("@")[0]).join(" ") : "ما فيه"}`;
+    const inPkg = admins.pkgList();
     const chatAdminIds = isGroupChat(chatId) ? admins.listChatAdmins(chatId) : [];
-    if (isGroupChat(chatId)) {
-      out += `\n\n💬 هذا الشات: ${admins.isChatLocked(chatId) ? "🔒 مقفول" : "🔓 مفتوح"}`;
-      out += `\n👮 ادمنية هذا الشات فقط: ${chatAdminIds.length ? chatAdminIds.map((id) => "@" + id.split("@")[0]).join(" ") : "ما فيه"}`;
-    }
-    await sock.sendMessage(chatId, { text: out, mentions: [...adminIds, ...immuneIds, ...chatAdminIds] }, { quoted: msg });
+    const outText = helpMenus.buildPackageText({
+      pkg: inPkg,
+      more: admins.DELEGABLE.filter((k) => !inPkg.includes(k)),
+      adminLines: adminIds.map(label),
+      immuneLines: immuneIds.map(label),
+      chatInfo: isGroupChat(chatId) ? { locked: admins.isChatLocked(chatId), adminLines: chatAdminIds.map(label) } : null,
+    });
+    await sock.sendMessage(chatId, { text: outText, mentions: [...adminIds, ...immuneIds, ...chatAdminIds] }, { quoted: msg });
     return;
   }
 
