@@ -23,6 +23,7 @@ const { buildMemoryReport } = require("./memoryReport");
 const { useMemoryAuthState, resetMemoryAuthState } = require("./memoryAuthState");
 const adminPoints = require("./adminPoints");
 const { formatSeconds, randomHamzaPattern } = require("./utils");
+const { isCommandText } = require("./commandWords");
 const sessionHealer = createHealer({ purge: purgeUserKeys });
 const { startHealthServer, setQr, clearQr } = require("./healthServer");
 const dmPermissions = require("./dmPermissions");
@@ -288,6 +289,8 @@ const lockNoticeAt = new Map(); // chatId -> آخر مرة نبّهنا (تنب�
 function chatLockBlocks(chatId, senderId, text) {
   // أوامر التسجيل (.تسجيل / .تغيير تسجيل جوال|خارجي) مفتوحة للكل حتى مع القفل (عشان اللاعب الجديد يقدر يشارك بمسابقة الادمن)
   if (/^\.(?:تسجيل|تغيير تسجيل) (?:جوال|خارجي)(?: |$)/.test(text)) return false;
+  // إجابة مكتوبة بنقطة (.سوكونا / . سوكونا) مو أمر: تمر بدون رد وتنحسب
+  if (!isCommandText(text)) return false;
   return isGroupChat(chatId) && text.startsWith(".") && admins.isChatLocked(chatId) && !isOwner(senderId) && !admins.isStaff(senderId, chatId);
 }
 

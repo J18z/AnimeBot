@@ -79,7 +79,10 @@ function splitFinishShares(target, sections) {
 // ⏱️ توقيتات وضع .بدء_فنش
 // انتظار بعد اسم الفقرة / بعد قائمة النتائج / بعد السكب قبل الرسالة اللي بعدها:
 // 3.5 ثانية لو الفنش همزات (اللاعبين يحتاجون وقت يقرأون النمط)، و2.5 ثانية للفنش العادي
-const FINISH_STEP_DELAY_HAMZA_MS = 2900;
+const FINISH_STEP_DELAY_HAMZA_MS = 3000;
+// فقرة الصور (الصورة أصلاً تتأخر من السيرفر): انتظار أقصر
+const FINISH_IMAGE_DELAY_HAMZA_MS = 2500;
+const FINISH_IMAGE_DELAY_NORMAL_MS = 2200;
 const FINISH_STEP_DELAY_NORMAL_MS = 2500;
 const FINISH_SECTION_CHANGE_DELAY_MS = 1000; // بعد القائمة لما الفقرة تتغير: ثانية وحدة قبل اسم الفقرة الجديدة
 const HAMZA_SWITCH_CONTINUE_DELAY_MS = 1000; // بعد رسالة تغيير النمط (الهمزات/الإلغاء): ثانية وحدة قبل *نكمل*
@@ -759,7 +762,7 @@ class Contest {
             this.remindedUsers.add(senderId);
             await this.replyTo(
               msg,
-              "💡 لازم تسجل نوع جهازك أول عشان تُحسب لك النقاط. اكتب .تسجيل جوال أو .تسجيل خارجي."
+              "الرجاء قم بالتسجيل في البوت بـ .تسجيل جوال او .تسجيل خارجي"
             );
           }
           return;
@@ -1202,8 +1205,10 @@ class Contest {
     this.fm.endTimer = null;
   }
 
-  // مدة الانتظار بين الرسائل بوضع الفنش: 2.9 ثانية للهمزات، 2.5 للعادي
+  // مدة الانتظار قبل نزول السؤال بوضع الفنش: 3 ثواني للهمزات، 2.5 للعادي؛ وفقرة الصور 2.5 للهمزات و2.2 للعادي
   _finishStepDelay() {
+    const images = !!(this.fm && this.fm.order && this.fm.order[this.fm.idx] === "images");
+    if (images) return this.hamzaMode ? FINISH_IMAGE_DELAY_HAMZA_MS : FINISH_IMAGE_DELAY_NORMAL_MS;
     return this.hamzaMode ? FINISH_STEP_DELAY_HAMZA_MS : FINISH_STEP_DELAY_NORMAL_MS;
   }
 

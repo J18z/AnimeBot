@@ -1061,7 +1061,7 @@
   {
     "id": "q138",
     "type": "count",
-    "question": "ابناء كتيل ؟",
+    "question": "ابناء كاتيل ؟",
     "required": 2,
     "points": 1,
     "answers": [
@@ -2693,14 +2693,10 @@
   },
   {
     "id": "q347",
-    "type": "count",
-    "question": "كيسكي كامل ؟",
-    "required": 2,
-    "points": 1,
-    "answers": [
-      ["كيسكي"],
-      ["اوراهارا"]
-    ]
+    "type": "normal",
+    "question": "جلاد المعجزات ؟",
+    "answers": ["كاغامي","تايغا"],
+    "points": 1
   },
   {
     "id": "q348",
