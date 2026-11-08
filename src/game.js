@@ -1,6 +1,7 @@
 const fs = require("fs");
 const usedStore = require("./usedStore");
 const { imageKeyFn } = require("./answerGroups");
+const cloudImages = require("./cloudImages");
 const { randomHamzaPattern, pickRandom, shuffle, formatSeconds, prepareSlots, findAllMatchesPrepared, prepareWordAliases, findWordProgress, parseHamzaPattern, unwrapHamza, isCloseToSingleName } = require("./utils");
 const store = require("./dataStore");
 const leaderboard = require("./leaderboard");
@@ -286,9 +287,13 @@ class Contest {
 
     let imageBuffer;
     try {
-      const imagePath = store.resolveImagePath(file);
-      if (!imagePath) throw new Error(`الملف غير موجود: ${file}`);
-      imageBuffer = await fs.promises.readFile(imagePath); // غير متزامن: ما يوقف باقي الرسائل
+      if (typeof file === "string" && file.startsWith("cloud:")) {
+        imageBuffer = await cloudImages.fetchImage(file.slice(6)); // ☁️ صورة من Cloudinary
+      } else {
+        const imagePath = store.resolveImagePath(file);
+        if (!imagePath) throw new Error(`الملف غير موجود: ${file}`);
+        imageBuffer = await fs.promises.readFile(imagePath); // غير متزامن: ما يوقف باقي الرسائل
+      }
       if (!imageBuffer.length) throw new Error("الملف فاضي (0 بايت)");
     } catch (err) {
       throw tag("read", err);

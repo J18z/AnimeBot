@@ -33,6 +33,8 @@ const mediaHealth = require("./mediaHealth");
 const changeRequests = require("./changeRequests");
 const groupTools = require("./groupTools");
 const admins = require("./admins");
+const downloadContentFromMessage = (...a) => require("./baileysLoader").baileys().downloadContentFromMessage(...a);
+const cloudImages = require("./cloudImages");
 const inactivity = require("./inactivity");
 const instanceLock = require("./instanceLock");
 const CONFIG = store.getConfig(); // ✅ نقرأ config مرة وحدة عند التشغيل
@@ -1779,6 +1781,116 @@ if (rejectChangeMatch) {
     return;
   }
 
+  // ☁️ صور Cloudinary: .ضف <اسم> [إجابات] (مع صورة، أو بالرد على صورة) / .حذف صورة <اسم> [رقم] / .قائمة_صور
+  //   الإجابات: بدائل نفس الإجابة بـ"|"، وأكثر من إجابة مطلوبة (مثل صورة تعداد) بـ"+"  مثال: .ضف bigmam بيغ+مام
+  //   نفس الشخصية بصورة ثانية: .ضف naruto (بدون إجابات) — تاخذ إجابات صورها السابقة
+  const addImgMatch = text.match(/^\.ضف(?=\s|$)(?:\s+(\S+))?(?:\s+([\s\S]+))?$/);
+  if (addImgMatch) {
+    if (!canRun(senderId, text, chatId)) return ownerOnlyDeny();
+    const usage =
+      "استخدم: .ضف <اسم بالانجليزي> <الإجابات> + أرسل الصورة مع الأمر (أو رد عليها)\\nمثال: .ضف naruto ناروتو|نارتو\\nصورة ثانية لنفس الشخصية: .ضف naruto\\nصورة بإجابتين مطلوبتين: .ضف bigmam بيغ+مام";
+    if (!cloudImages.enabled()) {
+      await sock.sendMessage(chatId, { text: "☁️ Cloudinary مو مفعّل. أضف CLOUDINARY_CLOUD_NAME و CLOUDINARY_API_KEY و CLOUDINARY_API_SECRET بإعدادات الاستضافة." }, { quoted: msg });
+      return;
+    }
+    const charKey = String(addImgMatch[1] || "").toLowerCase();
+    if (!/^[a-z0-9_-]{1,40}$/.test(charKey)) {
+      await sock.sendMessage(chatId, { text: `⚠️ اسم الصورة لازم يكون إنجليزي (أحرف وأرقام و - _ بس).\\n${usage}` }, { quoted: msg });
+      return;
+    }
+    // الصورة: مرفقة بالرسالة نفسها، أو رد على صورة
+    const content = unwrapMessageContent(msg.message) || {};
+    let imageMsg = content.imageMessage;
+    if (!imageMsg) {
+      const quoted = unwrapMessageContent(content.extendedTextMessage?.contextInfo?.quotedMessage);
+      imageMsg = quoted && quoted.imageMessage;
+    }
+    if (!imageMsg) {
+      await sock.sendMessage(chatId, { text: `⚠️ ما لقيت صورة. أرسل الصورة مع الأمر أو رد عليها.\\n${usage}` }, { quoted: msg });
+      return;
+    }
+    // الإجابات (اختيارية لو الشخصية موجودة)
+    let spec = null;
+    const rest = (addImgMatch[2] || "").trim();
+    if (rest) {
+      const slots = rest.split("+").map((s) => s.split(/[|،]/).map((x) => x.trim()).filter(Boolean)).filter((a) => a.length);
+      if (!slots.length) {
+        await sock.sendMessage(chatId, { text: usage }, { quoted: msg });
+        return;
+      }
+      spec = slots.length === 1 ? { answers: slots[0] } : { answers: slots, type: "count", required: slots.length };
+    }
+    const existing = cloudImages.ofChar(charKey);
+    // الشخصية موجودة بصور data/images القديمة (قبل النقل لـCloudinary): ناخذ إجاباتها من images.json حسب اسم الملف
+    if (!existing.length && !spec) spec = cloudImages.findLegacySpec(charKey);
+    if (existing.length && spec && JSON.stringify(existing[0].answers) !== JSON.stringify(spec.answers)) {
+      await sock.sendMessage(
+        chatId,
+        { text: `⚠️ ${charKey} موجودة بإجابات ثانية (${JSON.stringify(existing[0].answers)}). للإضافة لها اكتب الأمر بدون إجابات، أو احذفها أول (.حذف صورة ${charKey}).` },
+        { quoted: msg }
+      );
+      return;
+    }
+    try {
+      const stream = await downloadContentFromMessage(imageMsg, "image");
+      const chunks = [];
+      for await (const c of stream) chunks.push(c);
+      let buffer = Buffer.concat(chunks);
+      if (!buffer.length) throw new Error("ما قدرت أنزّل الصورة");
+      try {
+        buffer = await require("sharp")(buffer).rotate().resize(1600, 1600, { fit: "inside", withoutEnlargement: true }).jpeg({ quality: 90 }).toBuffer();
+      } catch (e) {
+        /* sharp غير متاح/فشل: نرفع الأصلية */
+      }
+      const { doc, n } = await cloudImages.addImage(charKey, buffer, spec);
+      const ansText = doc.type === "count" ? doc.answers.map((a) => a[0]).join(" + ") : doc.answers.join(" | ");
+      await sock.sendMessage(chatId, { text: `✅ انضافت صورة رقم ${n} لـ*${charKey}*\\nالإجابة: ${ansText}\\nعدد صور هذي الشخصية: ${n}` }, { quoted: msg });
+    } catch (e) {
+      if (e && e.message === "NEED_ANSWERS") {
+        await sock.sendMessage(chatId, { text: `⚠️ ${charKey} شخصية جديدة، لازم تكتب إجاباتها.\\n${usage}` }, { quoted: msg });
+      } else {
+        console.error("⚠️ فشل إضافة صورة Cloudinary:", e && e.message);
+        await sock.sendMessage(chatId, { text: `⚠️ فشلت الإضافة: ${(e && e.message) || "خطأ غير معروف"}` }, { quoted: msg });
+      }
+    }
+    return;
+  }
+
+  const delImgMatch = text.match(/^\.حذف صور[ةه](?:\s+(\S+))?(?:\s+(\d+))?\s*$/);
+  if (delImgMatch) {
+    if (!canRun(senderId, text, chatId)) return ownerOnlyDeny();
+    const charKey = String(delImgMatch[1] || "").toLowerCase();
+    if (!charKey) {
+      await sock.sendMessage(chatId, { text: "استخدم: .حذف صورة <اسم> (كل صور الشخصية) أو .حذف صورة <اسم> <رقم الصورة>" }, { quoted: msg });
+      return;
+    }
+    const n = delImgMatch[2] ? parseInt(delImgMatch[2], 10) : undefined;
+    const have = cloudImages.ofChar(charKey).length;
+    if (!have) {
+      await sock.sendMessage(chatId, { text: `ما فيه صور باسم ${charKey} (شوف .قائمة_صور).` }, { quoted: msg });
+      return;
+    }
+    if (n && n > have) {
+      await sock.sendMessage(chatId, { text: `${charKey} فيها ${have} صورة بس.` }, { quoted: msg });
+      return;
+    }
+    const removed = await cloudImages.removeImages(charKey, n);
+    await sock.sendMessage(chatId, { text: `🗑️ انحذفت ${removed} صورة من ${charKey}${n ? ` (رقم ${n})` : ""}.` }, { quoted: msg });
+    return;
+  }
+
+  if (text === ".قائمة_صور") {
+    if (!canRun(senderId, ".ضف", chatId)) return ownerOnlyDeny();
+    const list = cloudImages.listChars();
+    if (!list.length) {
+      await sock.sendMessage(chatId, { text: "ما فيه صور مضافة بـCloudinary للحين." }, { quoted: msg });
+      return;
+    }
+    const lines = list.slice(0, 80).map((c) => `- ${c.charKey} (${c.count}) ← ${Array.isArray(c.answers[0]) ? c.answers.map((a) => a[0]).join(" + ") : c.answers.join(" | ")}`);
+    await sock.sendMessage(chatId, { text: `☁️ صور Cloudinary (${list.length} شخصية):\\n${lines.join("\\n")}${list.length > 80 ? "\\n..." : ""}` }, { quoted: msg });
+    return;
+  }
+
   // 🚪 .طرد @ / 🔇 .قفل / 🔊 .فتح: إدارة القروب نفسه (المالك، والادمنية لو الأمر بحزمتهم — محصورة بشاتهم). لازم البوت مشرف
   const groupOpMatch = text.match(/^\.(طرد|قفل قروب|فتح قروب)(?:\s+(.+))?$/);
   if (groupOpMatch && (groupOpMatch[1] === "طرد" || !groupOpMatch[2])) {
@@ -2990,6 +3102,7 @@ async function main() {
   await db.connect(store.getConfig().mongoUri);
   await Promise.all([
     usedStore.loadFromDb(),
+    cloudImages.loadFromDb().then(() => cloudImages.startAutoReload()),
     leaderboard.loadFromDb(),
     personalHistory.loadFromDb(),
     standings.loadFromDb(),

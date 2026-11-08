@@ -56,8 +56,16 @@ function getCounts() {
   return readJson("counts.json");
 }
 
+// بنك الصور = data/images.json + صور Cloudinary (الإضافية من .ضف). المصفوفة المدموجة تنحفظ بنفس المرجع
+// لين يتغير أحد المصدرين (answerGroups يخزّن نتيجته بمرجع المصفوفة)
+let mergedImages = { base: null, cloud: null, out: null };
 function getImages() {
-  return readJson("images.json");
+  const base = readJson("images.json");
+  const cloud = require("./cloudImages").getItems();
+  if (!cloud.length) return base;
+  if (mergedImages.base === base && mergedImages.cloud === cloud) return mergedImages.out;
+  mergedImages = { base, cloud, out: [...base, ...cloud] };
+  return mergedImages.out;
 }
 
 let configCache = { source: null, merged: null };
