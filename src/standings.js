@@ -37,7 +37,7 @@ async function persistMany(userIds) {
 // options.countWin: هل نحسب "فوز فنش" لصاحب أعلى نقاط بهذي المسابقة؟
 // (بس المسابقات اللي مو مستمرة — تمرَّر من game.js حسب this.endless)
 function addContestResult(scoresMap, nameCache, options = {}) {
-  if (!scoresMap || scoresMap.size < MIN_PLAYERS) return;
+  if (!scoresMap || scoresMap.size < MIN_PLAYERS) return null;
 
   // نحدد الفائز بالمركز الأول بهذي المسابقة (أعلى نقاط)
   let winnerId = null;
@@ -63,6 +63,40 @@ function addContestResult(scoresMap, nameCache, options = {}) {
     touched.push(userId);
   }
   persistMany(touched); // بدون انتظار
+  return { scores: new Map(scoresMap), winnerId: countWin ? winnerId : null };
+}
+
+// ➕ فنش تمدد (.تمديد) وانتهى مرة ثانية: نسجّل الفرق بس عن اللي سُجّل أول مرة.
+// المشاركة تنحسب مرة وحدة لكل شخص، والفوز ينتقل لو تغيّر صاحب المركز الأول. يرجع سجل جديد للتمديد القادم
+function addContestExtension(prev, scoresMap, nameCache) {
+  let winnerId = null;
+  let winnerPoints = -1;
+  for (const [userId, points] of scoresMap.entries()) {
+    if (points > winnerPoints) {
+      winnerPoints = points;
+      winnerId = userId;
+    }
+  }
+  const countWin = winnerPoints > 0;
+  const touched = [];
+  for (const [userId, points] of scoresMap.entries()) {
+    const before = prev.scores.get(userId);
+    const delta = points - (before || 0);
+    const wonNow = countWin && userId === winnerId;
+    const wonBefore = prev.winnerId === userId;
+    if (before !== undefined && delta === 0 && wonNow === wonBefore) continue;
+    const displayName = (nameCache && nameCache.get(userId)) || userId.split("@")[0];
+    const current = totals.get(userId) || { displayName, points: 0, wins: 0, contests: 0 };
+    current.points += delta;
+    if (before === undefined) current.contests = (current.contests || 0) + 1;
+    current.displayName = displayName;
+    if (wonNow && !wonBefore) current.wins += 1;
+    if (wonBefore && !wonNow) current.wins = Math.max(0, current.wins - 1);
+    totals.set(userId, current);
+    touched.push(userId);
+  }
+  if (touched.length) persistMany(touched);
+  return { scores: new Map(scoresMap), winnerId: countWin ? winnerId : null };
 }
 
 function getStandings() {
@@ -117,6 +151,7 @@ async function loadFromDb() {
 
 module.exports = {
   addContestResult,
+  addContestExtension,
   getStandings,
   getStandingsFiltered,
   getUser,

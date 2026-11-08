@@ -7,7 +7,7 @@ const P = require("pino");
 const fs = require("fs");
 const qrcode = require("qrcode-terminal");
 const store = require("./dataStore");
-const { Contest } = require("./game");
+const { Contest, takeExtendable } = require("./game");
 const leaderboard = require("./leaderboard");
 const personalHistory = require("./personalHistory");
 const standings = require("./standings");
@@ -2886,6 +2886,36 @@ if (rejectChangeMatch) {
     const skipped = await contest.skipRound(msg);
     if (!skipped) {
       await sock.sendMessage(chatId, { text: "ما فيه سؤال حالياً يُسكب." }, { quoted: msg });
+    }
+    return;
+  }
+
+  // ➕ .تمديد <رقم>: يمدد فنش انتهى قبل شوي (خلال 15 دقيقة، ولا بدأ بعده شي) ويكمله من حيث وقف — للادمنية وصاحب البوت بس
+  const extendMatch = text.match(/^\.تمديد\s+([0-9٠-٩]+)$/);
+  if (extendMatch) {
+    if (!(isOwner(senderId) || admins.isStaff(senderId, chatId))) {
+      await sock.sendMessage(chatId, { text: "⛔ .تمديد للادمنية بس." }, { quoted: msg });
+      return;
+    }
+    const cur = activeContests.get(chatId);
+    if (cur && cur.active) {
+      await sock.sendMessage(chatId, { text: "⚠️ فيه مسابقة شغالة حالياً، التمديد بعد ما تنتهي." }, { quoted: msg });
+      return;
+    }
+    const n = Number(toAsciiDigits(extendMatch[1]));
+    if (!Number.isInteger(n) || n < 1 || n > 1000) {
+      await sock.sendMessage(chatId, { text: "⚠️ اكتب رقم صحيح من 1 إلى 1000. مثال: .تمديد 5" }, { quoted: msg });
+      return;
+    }
+    const old = takeExtendable(chatId);
+    if (!old) {
+      await sock.sendMessage(chatId, { text: "ما فيه فنش منتهي يقبل التمديد (يبقى مستعد 15 دقيقة بعد نهايته، وينلغي لو بدأ فنش/مسابقة جديدة)." }, { quoted: msg });
+      return;
+    }
+    activeContests.set(chatId, old);
+    if (!old.extend(n)) {
+      activeContests.delete(chatId);
+      await sock.sendMessage(chatId, { text: "⚠️ تعذّر تمديد هذا الفنش." }, { quoted: msg });
     }
     return;
   }

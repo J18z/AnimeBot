@@ -1,7 +1,7 @@
 const fs = require("fs");
 const usedStore = require("./usedStore");
 const { imageKeyFn } = require("./answerGroups");
-const { randomHamzaPattern, pickRandom, shuffle, formatSeconds, prepareSlots, findAllMatchesPrepared, parseHamzaPattern, unwrapHamza, isCloseToSingleName } = require("./utils");
+const { randomHamzaPattern, pickRandom, shuffle, formatSeconds, prepareSlots, findAllMatchesPrepared, prepareWordAliases, findWordProgress, parseHamzaPattern, unwrapHamza, isCloseToSingleName } = require("./utils");
 const store = require("./dataStore");
 const leaderboard = require("./leaderboard");
 const personalHistory = require("./personalHistory");
@@ -82,16 +82,48 @@ function splitFinishShares(target, sections) {
 const FINISH_STEP_DELAY_HAMZA_MS = 2900;
 const FINISH_STEP_DELAY_NORMAL_MS = 2500;
 const FINISH_SECTION_CHANGE_DELAY_MS = 1000; // بعد القائمة لما الفقرة تتغير: ثانية وحدة قبل اسم الفقرة الجديدة
+const HAMZA_SWITCH_CONTINUE_DELAY_MS = 1000; // بعد رسالة تغيير النمط (الهمزات/الإلغاء): ثانية وحدة قبل *نكمل*
+const HAMZA_SWITCH_AFTER_CONTINUE_MS = 3000; // بعد *نكمل*: 3 ثواني قبل السؤال (أو ثانية لو الفقرة بتتغير)
 const FINISH_SKIP_MS = 7 * 1000; // بدون أي إجابة: سكب تلقائي
 const FINISH_END_MS = 2 * 60 * 1000; // دقيقتين بدون أي إجابة: إنهاء تلقائي
+const EXTEND_WINDOW_MS = 15 * 60 * 1000; // بعد نهاية الفنش: 15 دقيقة يبقى مستعد لأمر .تمديد، بعدها يتحرر من الذاكرة
+const FINISH_LATER_CYCLES_FACTOR = 0.7; // من الدورة الثانية: حدود تغيير الفقرة 70% من الأصلية (ثابتة لبقية الدورات)
+const FINISH_SECTION_CAP_BONUS = 2; // زيادة ثابتة على حد نقاط الفقرة (نقاط الشخص ما تتأثر)
 const PAUSE_MAX_MS = 2 * 60 * 60 * 1000; // مسابقة موقوفة (.وقف) ولا أحد كمّل بعد ساعتين: تنتهي تلقائياً (ما تبقى معلّقة بالذاكرة)
 const FINISH_MAX_SKIPS = 3; // 3 سكبات ورا بعض (بدون أي إجابة بينها): إنهاء تلقائي
 
 // أنواع الفقرات المدعومة
 const POOL_TYPES = ["writing", "images", "questions", "counts"];
 
+// ➕ فنش منتهي ينتظر .تمديد: chatId -> { contest, timer }. واحد لكل قروب بالأكثر، يتحرر بعد 15 دقيقة،
+// أو أول ما يبدأ أي تقديم/فنش جديد بنفس القروب (constructor الـContest)، أو لما ينفّذ التمديد
+const extendable = new Map();
+function dropExtendable(chatId) {
+  const e = extendable.get(chatId);
+  if (!e) return;
+  clearTimeout(e.timer);
+  extendable.delete(chatId);
+}
+function rememberExtendable(contest) {
+  dropExtendable(contest.chatId);
+  const timer = setTimeout(() => {
+    const cur = extendable.get(contest.chatId);
+    if (cur && cur.contest === contest) extendable.delete(contest.chatId);
+  }, EXTEND_WINDOW_MS);
+  if (timer.unref) timer.unref();
+  extendable.set(contest.chatId, { contest, timer });
+}
+// يسحب الفنش المنتهي القابل للتمديد (ويشيله من السجل). null لو ما فيه
+function takeExtendable(chatId) {
+  const e = extendable.get(chatId);
+  if (!e) return null;
+  dropExtendable(chatId);
+  return e.contest;
+}
+
 class Contest {
   constructor(chatId, sock, contestType, target, options = {}) {
+    dropExtendable(chatId); // بدء أي تقديم/فنش جديد بالقروب = ينتهي استعداد الفنش السابق للتمديد
     this.chatId = chatId;
     this.client = sock; // Baileys socket
     this.contestType = contestType; // 'general' | 'writing' | 'images' | 'questions' | 'counts'
@@ -216,7 +248,7 @@ class Contest {
       const item = usedStore.pick("repeat", pool, keyFn, chosenKeys, this.chatId);
       if (!item) break;
       chosenKeys.add(keyFn(item));
-      const repeatCount = Math.floor(Math.random() * 4) + 2; // 2..5
+      const repeatCount = Math.floor(Math.random() * 3) + 2; // 2..4
       result.push({ word: item.word, repeatCount });
     }
 
@@ -369,7 +401,7 @@ class Contest {
     // 🔀 تحويل الفنش بين عادي/همزات (.همزات / .الغ) — يتطبق بين سؤالين، بدون ما يمس الحسبة أو الفقرات
     if (this.finishMode && this.fm && this.fm.pendingHamza !== undefined) {
       await this._applyFinishHamzaSwitch();
-      if (!this.active) return;
+      if (!this.active || this.paused) return; // لو انوقفت (.وقف) أثناء التحويل: .كمل يجدول السؤال
     }
 
     // 🏁 إعلان اسم الفقرة (*كتابة* / *صور* / *سستع*) قبل أول سؤال منها
@@ -498,6 +530,7 @@ class Contest {
       startTime: Date.now(), // قيمة مؤقتة، تنستبدل تحت بتوقيت واتساب الفعلي
       finished: false,
       perUser: new Map(), // userId -> Set(فهارس) — مسار كل شخص مستقل تماماً
+      perUserWords: new Map(), // تعداد فقط: userId -> Map(إجابة مركبة -> كلمات انكتبت منها) (يتصفّر مع الجولة)
     };
     this.currentRound = round;
 
@@ -820,6 +853,25 @@ class Contest {
     }
     
     const newlyClaimed = findAllMatchesPrepared(searchText, round.prepared, userSet);
+    // 🧩 تعداد: الإجابة المركبة (أكثر من كلمة) تكتمل بكلماتها المتفرقة (برسالة أو رسائل، بأي ترتيب) وتنحسب إجابة وحدة
+    let wordProgress = false;
+    if (round.poolType === "counts") {
+      if (!round.wordPrepared) round.wordPrepared = prepareWordAliases(round.slots, relaxed);
+      if (round.wordPrepared.list.length > 0) {
+        let seenMap = round.perUserWords.get(senderId);
+        if (!seenMap) round.perUserWords.set(senderId, (seenMap = new Map()));
+        const already = new Set([...userSet, ...newlyClaimed]);
+        const wp = findWordProgress(searchText, round.wordPrepared, already, seenMap);
+        for (const idx of wp.claimed) newlyClaimed.push(idx);
+        wordProgress = wp.progressed;
+      }
+    }
+    if (newlyClaimed.length === 0 && wordProgress) {
+      // كلمة صح من إجابة مركبة بدون ما تكتمل: تقدّم (يعيد عدّ مؤقتات الخمول/السكب)
+      if (this.finishMode) this._finishProgress();
+      else if (!this.practiceMode) this._armIdleTimer();
+      return;
+    }
     if (newlyClaimed.length === 0) {
       if (
         framedAttempt &&
@@ -1038,6 +1090,7 @@ class Contest {
     }
     // مسابقة مستمرة: ما تتوقف تلقائياً عند أي هدف، تستمر لحد أمر الإيقاف اليدوي
     if (!this.endless && total >= this.target) {
+      if (this.finishMode) this._finishWinPending = true; // آخر فوز ما اتحسب بحدود الفقرة: يتحسب لو تمدد الفنش
       await this.endContest();
       return;
     }
@@ -1051,7 +1104,7 @@ class Contest {
   // دورة = كل الفقرات بالترتيب: كتابة ← صور ← سستع، كل وحدة مرة. الانتقال لفقرة ثانية
   // يصير لما: (1) أحد المشاركين نقاطه (من بداية الدورة) توصل الحد التراكمي للفقرة (7 ثم 14 ثم 20
   // مثلاً لفنش 20)، أو (2) مجموع النقاط الموزعة بهذي الفقرة يوصل حد الفقرة (فنش 20 = 12).
-  // بعد آخر فقرة والفنش ما انتهى: دورة جديدة بنفس الترتيب والحدود منصّفة (تقريب لفوق عند .5)، والنصف يبقى لكل الدورات بعدها
+  // بعد آخر فقرة والفنش ما انتهى: دورة جديدة بنفس الترتيب والحدود 70% من الأصلية (تقريب لأقرب رقم)، والـ70% تبقى لكل الدورات بعدها (حد نقاط الفقرة = نصف الهدف + 2 + 2 زيادة، ثم ×0.7 من الدورة الثانية)
   _finishStartCycle(first = false) {
     if (first) {
       this.fm = { cycle: 1, order: [], idx: 0, shares: [], cum: [], cap: 0, baseline: new Map(), sectionPoints: 0, announce: true, lastSection: null, mixNext: Math.random() < 0.5 ? "questions" : "counts", consecSkips: 0, skipTimer: null, endTimer: null };
@@ -1062,12 +1115,12 @@ class Contest {
     // ترتيب ثابت بكل دورة: كتابة ← صور ← سستع
     fm.order = [...FINISH_SECTIONS];
     fm.idx = 0;
-    const scale = fm.cycle >= 2 ? 2 : 1; // من الدورة الثانية النصف ثابت لبقية الدورات (ما ينصف مرة ثانية)
-    fm.shares = splitFinishShares(this.target, fm.order.length).map((s) => Math.max(1, Math.round(s / scale)));
+    const scale = fm.cycle >= 2 ? FINISH_LATER_CYCLES_FACTOR : 1; // من الدورة الثانية 70% ثابتة لبقية الدورات (ما تنقص مرة ثانية)
+    fm.shares = splitFinishShares(this.target, fm.order.length).map((s) => Math.max(1, Math.round(s * scale)));
     fm.cum = [];
     let run = 0;
     for (const s of fm.shares) fm.cum.push((run += s));
-    fm.cap = Math.max(1, Math.round(Math.round(this.target / 2 + 2) / scale));
+    fm.cap = Math.max(1, Math.round((Math.round(this.target / 2 + 2) + FINISH_SECTION_CAP_BONUS) * scale)); // حد نقاط الفقرة (+2 فوق الأصلي)
     fm.baseline = new Map(this.scores); // لقطة نقاط الكل بداية الدورة
     fm.sectionPoints = 0;
     fm.announce = true;
@@ -1083,6 +1136,7 @@ class Contest {
   }
 
   _finishAfterWin() {
+    this._finishWinPending = false;
     const fm = this.fm;
     const round = this.currentRound;
     fm.sectionPoints += (round && round.points) || 0;
@@ -1184,14 +1238,14 @@ class Contest {
         this.hamzaPattern = null;
         await this.sendChat("✅ تم إلغاء الهمزات، الفنش رجع عادي.");
       }
-      await new Promise((r) => setTimeout(r, 1500));
+      await new Promise((r) => setTimeout(r, HAMZA_SWITCH_CONTINUE_DELAY_MS)); // ثانية بعد تغيير المود
       if (!this.active) return;
-      await this.sendChat("كمل");
+      await this.sendChat("*نكمل*");
     } catch (e) {
       console.error("⚠️ فشل إرسال رسائل تحويل الهمزات (نكمل):", e && e.message);
     }
-    // بعدها: لو الفقرة بتتغير ثانية وحدة، وإلا نفس انتظار الفنش (3.5 همزات / 2.5 عادي) قبل السؤال
-    await new Promise((r) => setTimeout(r, this.fm.announce ? FINISH_SECTION_CHANGE_DELAY_MS : this._finishStepDelay()));
+    // بعد *نكمل*: لو الفقرة بتتغير ثانية وحدة، وإلا 3 ثواني قبل السؤال
+    await new Promise((r) => setTimeout(r, this.fm.announce ? FINISH_SECTION_CHANGE_DELAY_MS : HAMZA_SWITCH_AFTER_CONTINUE_MS));
   }
 
   // الانتظار بعد قائمة النتائج/السكب قبل الرسالة اللي بعدها: لو الفقرة بتتغير (بينزل اسم الفقرة الجديدة)
@@ -1289,6 +1343,7 @@ class Contest {
     if (this.finishMode) this._finishClearTimers();
     this._clearPlanned();
     this.active = false;
+    if (this.finishMode) rememberExtendable(this); // يبقى مستعد لـ.تمديد 15 دقيقة
     const ranking = [...this.scores.entries()].sort((a, b) => b[1] - a[1]);
 
     // نضيف نتيجة هذي المسابقة للسجل التراكمي (بس لو فيه مشاركين كافيين)
@@ -1296,7 +1351,10 @@ class Contest {
     // مسابقة بعدد أسئلة محدد) — المستمرة (.مسص/.مسس/.متع/.مسكت) ما تُحسب
     // 🏁 .بدء_فنش يدخل السجل التراكمي (.سجل/.لقبي: نقاط + مشاركات) أيضاً — بس هنا عند نهاية الفنش مرة وحدة،
     // مو أثناءه (ما نسجّل ولا نحسب شي وقت اللعب عشان ما يصير بطء)، فالنقاط ما تظهر إلا بعد انتهاء الفنش
-    standings.addContestResult(this.scores, this.nameCache, { countWin: !this.endless });
+    // لو الفنش تمدد (.تمديد) وانتهى مرة ثانية: نسجّل الفرق بس (ما ينحسب الفوز/المشاركة مرتين)
+    this._standingsRec = this._standingsRec
+      ? standings.addContestExtension(this._standingsRec, this.scores, this.nameCache)
+      : standings.addContestResult(this.scores, this.nameCache, { countWin: !this.endless });
 
     if (ranking.length === 0) {
       await this.sendChat("انتهت المسابقة بدون فائزين 😅");
@@ -1371,6 +1429,20 @@ class Contest {
     return true;
   }
 
+  // ➕ .تمديد <رقم>: يزيد هدف فنش منتهي ويكمله من حيث وقف (نفس النقاط/الفقرة/الدورة/الهمزات/الشخوص)
+  extend(n) {
+    if (!this.finishMode || this.active || !this.fm || !(n > 0)) return false;
+    this.target += n;
+    this.active = true;
+    this.paused = false;
+    if (this._finishWinPending) this._finishAfterWin(); // آخر فوز كان أنهى الفنش قبل حساب حدود الفقرة
+    this.fm.announce = true; // يرسل اسم الفقرة (*كتابة* مثلاً) قبل أول سؤال
+    this.fm.consecSkips = 0;
+    this._finishClearTimers();
+    this.scheduleNextRound(this._finishNextRoundDelay(), "الجولة القادمة بعد التمديد");
+    return true;
+  }
+
   stop() {
     if (this.pauseTimer) {
       clearTimeout(this.pauseTimer);
@@ -1388,4 +1460,4 @@ class Contest {
   }
 }
 
-module.exports = { Contest };
+module.exports = { Contest, takeExtendable };

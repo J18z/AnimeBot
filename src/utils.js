@@ -274,7 +274,49 @@ function findAllMatchesPrepared(message, prepared, claimedSet) {
   return claimedNow;
 }
 
+// 🧩 تعداد: إجابة من أكثر من كلمة (مثل "ميس لوف") تنحسب إجابة وحدة لما تكتمل كلماتها، حتى لو
+// انكتبت متفرقة (برسالة أو رسائل مختلفة، بأي ترتيب). غلط بكلمة ما يلزم يعيد الباقي: يعيد الكلمة الغلط لحالها
+function prepareWordAliases(slots, relaxed = false) {
+  const normalize = relaxed ? normalizeRelaxed : normalizeWritingRelaxed;
+  const list = [];
+  slots.forEach((aliases, idx) => {
+    aliases.forEach((alias, ai) => {
+      const words = [...new Set(normalize(alias).split(" ").filter(Boolean))];
+      if (words.length > 1) list.push({ idx, key: idx + ":" + ai, words });
+    });
+  });
+  return { list, relaxed };
+}
+
+// seenMap: Map(key -> Set(كلمات انكتبت)) لهذا الشخص بهذي الجولة (يتحدث هنا). claimedSet: خانات انحسبت له.
+// يرجع { claimed: [خانات اكتملت الحين], progressed: هل انضافت كلمة جديدة }
+function findWordProgress(message, prepared, claimedSet, seenMap) {
+  const normalize = prepared.relaxed ? normalizeRelaxed : normalizeWritingRelaxed;
+  const tokens = new Set(normalize(message).split(" ").filter(Boolean));
+  const claimed = [];
+  let progressed = false;
+  for (const a of prepared.list) {
+    if (claimedSet.has(a.idx) || claimed.includes(a.idx)) continue;
+    let seen = seenMap.get(a.key);
+    const before = seen ? seen.size : 0;
+    for (const w of a.words) {
+      if (tokens.has(w)) {
+        if (!seen) {
+          seen = new Set();
+          seenMap.set(a.key, seen);
+        }
+        seen.add(w);
+      }
+    }
+    if (seen && seen.size > before) progressed = true;
+    if (seen && seen.size === a.words.length) claimed.push(a.idx);
+  }
+  return { claimed, progressed };
+}
+
 module.exports = {
+  prepareWordAliases,
+  findWordProgress,
   normalizeText,
   normalizeRelaxed,
   normalizeWritingRelaxed,
