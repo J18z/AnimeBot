@@ -1882,7 +1882,7 @@ if (rejectChangeMatch) {
   // 👁️ .عرض <اسم> [رقم]: يعرض صورة الشخصية رقم n (أرقامها من .قائمة_صور)، أو كل صورها لو بدون رقم
   const showImgMatch = text.match(/^\.عرض(?:\s+(\S+))?(?:\s+(\d+))?\s*$/);
   if (showImgMatch) {
-    if (!canRun(senderId, ".ضف", chatId)) return ownerOnlyDeny();
+    if (!canRun(senderId, ".عرض", chatId)) return ownerOnlyDeny();
     const charKey = String(showImgMatch[1] || "").toLowerCase();
     if (!charKey) {
       await sock.sendMessage(chatId, { text: "استخدم: .عرض <اسم> <رقم> (صورة وحدة) أو .عرض <اسم> (كل صور الشخصية)\nالأسماء والأرقام من .قائمة_صور" }, { quoted: msg });
@@ -1913,7 +1913,7 @@ if (rejectChangeMatch) {
   }
 
   if (text === ".قائمة_صور") {
-    if (!canRun(senderId, ".ضف", chatId)) return ownerOnlyDeny();
+    if (!canRun(senderId, ".قائمة_صور", chatId)) return ownerOnlyDeny();
     const list = cloudImages.listChars().sort((x, y) => x.charKey.localeCompare(y.charKey));
     if (!list.length) {
       await sock.sendMessage(chatId, { text: "ما فيه صور مضافة بـCloudinary للحين." }, { quoted: msg });
