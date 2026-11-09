@@ -1879,6 +1879,39 @@ if (rejectChangeMatch) {
     return;
   }
 
+  // 👁️ .عرض <اسم> [رقم]: يعرض صورة الشخصية رقم n (أرقامها من .قائمة_صور)، أو كل صورها لو بدون رقم
+  const showImgMatch = text.match(/^\.عرض(?:\s+(\S+))?(?:\s+(\d+))?\s*$/);
+  if (showImgMatch) {
+    if (!canRun(senderId, ".ضف", chatId)) return ownerOnlyDeny();
+    const charKey = String(showImgMatch[1] || "").toLowerCase();
+    if (!charKey) {
+      await sock.sendMessage(chatId, { text: "استخدم: .عرض <اسم> <رقم> (صورة وحدة) أو .عرض <اسم> (كل صور الشخصية)\nالأسماء والأرقام من .قائمة_صور" }, { quoted: msg });
+      return;
+    }
+    const list = cloudImages.ofChar(charKey);
+    if (!list.length) {
+      await sock.sendMessage(chatId, { text: `ما فيه صور باسم ${charKey} (شوف .قائمة_صور).` }, { quoted: msg });
+      return;
+    }
+    const n = showImgMatch[2] ? parseInt(showImgMatch[2], 10) : 0;
+    if (n && (n < 1 || n > list.length)) {
+      await sock.sendMessage(chatId, { text: `${charKey} فيها ${list.length} صورة بس.` }, { quoted: msg });
+      return;
+    }
+    const picks = n ? [[list[n - 1], n]] : list.slice(0, 15).map((d, i) => [d, i + 1]);
+    for (const [d, idx] of picks) {
+      try {
+        const buf = await cloudImages.fetchImage(d.publicId);
+        const ans = Array.isArray(d.answers[0]) ? d.answers.map((a) => a[0]).join(" + ") : d.answers.join(" | ");
+        await sock.sendMessage(chatId, { image: buf, caption: `${charKey} ${idx}/${list.length}\nالإجابة: ${ans}` }, { quoted: msg });
+      } catch (e) {
+        await sock.sendMessage(chatId, { text: `⚠️ تعذّر عرض ${charKey} ${idx}: ${(e && e.message) || "خطأ"}` }, { quoted: msg });
+      }
+    }
+    if (!n && list.length > 15) await sock.sendMessage(chatId, { text: `(عرضت أول 15 من ${list.length}، استخدم .عرض ${charKey} <رقم> لباقي الصور)` }, { quoted: msg });
+    return;
+  }
+
   if (text === ".قائمة_صور") {
     if (!canRun(senderId, ".ضف", chatId)) return ownerOnlyDeny();
     const list = cloudImages.listChars().sort((x, y) => x.charKey.localeCompare(y.charKey));
@@ -1887,7 +1920,7 @@ if (rejectChangeMatch) {
       return;
     }
     const total = list.reduce((n, c) => n + c.count, 0);
-    const lines = list.map((c) => `- ${c.charKey}${c.count > 1 ? ` (${c.count})` : ""}`);
+    const lines = list.map((c) => `✓${c.charKey}${c.count > 1 ? ` (${c.count})` : ""}`);
     await sock.sendMessage(chatId, { text: `> ☁️ صور Cloudinary (${list.length} شخصية، ${total} صورة):\n${lines.join("\n")}` }, { quoted: msg });
     return;
   }
