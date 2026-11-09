@@ -1788,14 +1788,14 @@ if (rejectChangeMatch) {
   if (addImgMatch) {
     if (!canRun(senderId, text, chatId)) return ownerOnlyDeny();
     const usage =
-      "استخدم: .ضف <اسم بالانجليزي> <الإجابات> + أرسل الصورة مع الأمر (أو رد عليها)\\nمثال: .ضف naruto ناروتو|نارتو\\nصورة ثانية لنفس الشخصية: .ضف naruto\\nصورة بإجابتين مطلوبتين: .ضف bigmam بيغ+مام";
+      "استخدم: .ضف <اسم بالانجليزي> <الإجابات> + أرسل الصورة مع الأمر (أو رد عليها)\nمثال: .ضف naruto ناروتو|نارتو\nصورة ثانية لنفس الشخصية: .ضف naruto\nصورة بإجابتين مطلوبتين: .ضف bigmam بيغ+مام";
     if (!cloudImages.enabled()) {
       await sock.sendMessage(chatId, { text: "☁️ Cloudinary مو مفعّل. أضف CLOUDINARY_CLOUD_NAME و CLOUDINARY_API_KEY و CLOUDINARY_API_SECRET بإعدادات الاستضافة." }, { quoted: msg });
       return;
     }
     const charKey = String(addImgMatch[1] || "").toLowerCase();
     if (!/^[a-z0-9_-]{1,40}$/.test(charKey)) {
-      await sock.sendMessage(chatId, { text: `⚠️ اسم الصورة لازم يكون إنجليزي (أحرف وأرقام و - _ بس).\\n${usage}` }, { quoted: msg });
+      await sock.sendMessage(chatId, { text: `⚠️ اسم الصورة لازم يكون إنجليزي (أحرف وأرقام و - _ بس).\n${usage}` }, { quoted: msg });
       return;
     }
     // الصورة: مرفقة بالرسالة نفسها، أو رد على صورة
@@ -1806,7 +1806,7 @@ if (rejectChangeMatch) {
       imageMsg = quoted && quoted.imageMessage;
     }
     if (!imageMsg) {
-      await sock.sendMessage(chatId, { text: `⚠️ ما لقيت صورة. أرسل الصورة مع الأمر أو رد عليها.\\n${usage}` }, { quoted: msg });
+      await sock.sendMessage(chatId, { text: `⚠️ ما لقيت صورة. أرسل الصورة مع الأمر أو رد عليها.\n${usage}` }, { quoted: msg });
       return;
     }
     // الإجابات (اختيارية لو الشخصية موجودة)
@@ -1844,10 +1844,10 @@ if (rejectChangeMatch) {
       }
       const { doc, n } = await cloudImages.addImage(charKey, buffer, spec);
       const ansText = doc.type === "count" ? doc.answers.map((a) => a[0]).join(" + ") : doc.answers.join(" | ");
-      await sock.sendMessage(chatId, { text: `✅ انضافت صورة رقم ${n} لـ*${charKey}*\\nالإجابة: ${ansText}\\nعدد صور هذي الشخصية: ${n}` }, { quoted: msg });
+      await sock.sendMessage(chatId, { text: `✅ انضافت صورة رقم ${n} لـ*${charKey}*\nالإجابة: ${ansText}\nعدد صور هذي الشخصية: ${n}` }, { quoted: msg });
     } catch (e) {
       if (e && e.message === "NEED_ANSWERS") {
-        await sock.sendMessage(chatId, { text: `⚠️ ${charKey} شخصية جديدة، لازم تكتب إجاباتها.\\n${usage}` }, { quoted: msg });
+        await sock.sendMessage(chatId, { text: `⚠️ ${charKey} شخصية جديدة، لازم تكتب إجاباتها.\n${usage}` }, { quoted: msg });
       } else {
         console.error("⚠️ فشل إضافة صورة Cloudinary:", e && e.message);
         await sock.sendMessage(chatId, { text: `⚠️ فشلت الإضافة: ${(e && e.message) || "خطأ غير معروف"}` }, { quoted: msg });
@@ -1881,13 +1881,14 @@ if (rejectChangeMatch) {
 
   if (text === ".قائمة_صور") {
     if (!canRun(senderId, ".ضف", chatId)) return ownerOnlyDeny();
-    const list = cloudImages.listChars();
+    const list = cloudImages.listChars().sort((x, y) => x.charKey.localeCompare(y.charKey));
     if (!list.length) {
       await sock.sendMessage(chatId, { text: "ما فيه صور مضافة بـCloudinary للحين." }, { quoted: msg });
       return;
     }
-    const lines = list.slice(0, 80).map((c) => `- ${c.charKey} (${c.count}) ← ${Array.isArray(c.answers[0]) ? c.answers.map((a) => a[0]).join(" + ") : c.answers.join(" | ")}`);
-    await sock.sendMessage(chatId, { text: `☁️ صور Cloudinary (${list.length} شخصية):\\n${lines.join("\\n")}${list.length > 80 ? "\\n..." : ""}` }, { quoted: msg });
+    const total = list.reduce((n, c) => n + c.count, 0);
+    const lines = list.map((c) => `- ${c.charKey}${c.count > 1 ? ` (${c.count})` : ""}`);
+    await sock.sendMessage(chatId, { text: `> ☁️ صور Cloudinary (${list.length} شخصية، ${total} صورة):\n${lines.join("\n")}` }, { quoted: msg });
     return;
   }
 
