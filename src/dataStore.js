@@ -37,12 +37,26 @@ function readJson(fileName) {
   return data;
 }
 
+// ➕ دمج ملف البيانات مع الإضافات من واتساب (extraData). المصفوفة المدموجة تنحفظ لين يتغير أحد المصدرين
+const mergedExtra = new Map(); // kind -> { base, extra, out }
+function withExtra(kind, base) {
+  const ed = require("./extraData");
+  const extra = ed.get(kind);
+  const hid = ed.hidden(kind);
+  if (!extra.length && !hid.size) return base;
+  const m = mergedExtra.get(kind);
+  if (m && m.base === base && m.extra === extra && m.hid === hid) return m.out;
+  const out = [...ed.visibleBase(kind, base), ...extra];
+  mergedExtra.set(kind, { base, extra, hid, out });
+  return out;
+}
+
 function getQuestions() {
-  return readJson("questions.json");
+  return withExtra("questions", readJson("questions.json"));
 }
 
 function getWords() {
-  return readJson("words.json");
+  return withExtra("words", readJson("words.json"));
 }
 
 // بنك كلمات مخصص لفقرة "تكرار" بس — كلمات قصيرة (2-4 أحرف) عشان ما
@@ -53,7 +67,7 @@ function getWordsRepeat() {
 }
 
 function getCounts() {
-  return readJson("counts.json");
+  return withExtra("counts", readJson("counts.json"));
 }
 
 // بنك الصور = data/images.json + صور Cloudinary (الإضافية من .ضف). المصفوفة المدموجة تنحفظ بنفس المرجع
@@ -133,6 +147,7 @@ module.exports = {
   getWords,
   getWordsRepeat,
   getCounts,
+  getBaseData: (file) => readJson(file),
   getImages,
   getConfig,
   getImagePath,

@@ -35,6 +35,7 @@ const groupTools = require("./groupTools");
 const admins = require("./admins");
 const downloadContentFromMessage = (...a) => require("./baileysLoader").baileys().downloadContentFromMessage(...a);
 const cloudImages = require("./cloudImages");
+const extraData = require("./extraData");
 const inactivity = require("./inactivity");
 const instanceLock = require("./instanceLock");
 const CONFIG = store.getConfig(); // ✅ نقرأ config مرة وحدة عند التشغيل
@@ -1781,14 +1782,150 @@ if (rejectChangeMatch) {
     return;
   }
 
-  // ☁️ صور Cloudinary: .ضف <اسم> [إجابات] (مع صورة، أو بالرد على صورة) / .حذف صورة <اسم> [رقم] / .قائمة_صور
+  // ☁️ صور Cloudinary: .ضف <اسم> [إجابات] (مع صورة، أو بالرد على صورة) / .حذف صورة <اسم> [رقم] / .قائمة_ص
   //   الإجابات: بدائل نفس الإجابة بـ"|"، وأكثر من إجابة مطلوبة (مثل صورة تعداد) بـ"+"  مثال: .ضف bigmam بيغ+مام
   //   نفس الشخصية بصورة ثانية: .ضف naruto (بدون إجابات) — تاخذ إجابات صورها السابقة
-  const addImgMatch = text.match(/^\.ضف(?=\s|$)(?:\s+(\S+))?(?:\s+([\s\S]+))?$/);
+  // ➕ .ضف كت <كلمات> / .ضف تع <عدد> <سؤال>|<إجابات> / .ضف س <سؤال>|<إجابات>  (تنحفظ بالقاعدة وتندمج مع بنوك الملفات)
+  const addDataMatch = text.match(/^\.ضف\s+(كت|تع|س)(?=\s|$)([\s\S]*)$/);
+  if (addDataMatch) {
+    if (!canRun(senderId, text, chatId)) return ownerOnlyDeny();
+    const which = addDataMatch[1];
+    const rest = (addDataMatch[2] || "").trim();
+    const usages = {
+      كت: "استخدم: .ضف كت <كلمات بينها مسافة>\nالاسم المركب بـ+ ، مثال: .ضف كت يامامورا اول+مايت رينجي",
+      تع: "استخدم: .ضف تع <العدد المطلوب> <السؤال>|<الإجابات بينها مسافة>\nمثال: .ضف تع 3 ملوك شياطين|انوس موزان ريمورو\nالإجابة المركبة بـ+ ، مثال: ميس+لوف نوا بيغ+توب",
+      س: "استخدم: .ضف س <السؤال>|<الإجابات بينها مسافة>\nأي إجابة منها صحيحة، و+ تعني كلمتين مع بعض كإجابة وحدة\nمثال: .ضف س البطل رقم واحد|اول+مايت اولمايت توشينوري",
+    };
+    if (!rest) {
+      await sock.sendMessage(chatId, { text: usages[which] }, { quoted: msg });
+      return;
+    }
+    let kind;
+    let cands;
+    if (which === "كت") {
+      kind = "words";
+      cands = extraData.parseWords(rest);
+      if (!cands.length) {
+        await sock.sendMessage(chatId, { text: usages[which] }, { quoted: msg });
+        return;
+      }
+    } else {
+      const p = which === "تع" ? extraData.parseCount(rest) : extraData.parseQuestion(rest);
+      if (p.error) {
+        await sock.sendMessage(chatId, { text: `⚠️ ${p.error}\n${usages[which]}` }, { quoted: msg });
+        return;
+      }
+      if (which === "تع") {
+        kind = "counts";
+        cands = [{ topic: p.topic, required: p.required, answers: p.answers }];
+      } else {
+        kind = "questions";
+        cands = [{ question: p.question, answers: p.answers }];
+      }
+    }
+    try {
+      const file = kind === "words" ? "words.json" : kind === "counts" ? "counts.json" : "questions.json";
+      const { added, skipped } = await extraData.addItems(kind, require("./dataStore").getBaseData(file), cands);
+      const lines = [];
+      if (added.length) lines.push(`✅ انضاف (${added.length}): ${added.join("، ")}`);
+      if (skipped.length) lines.push(`⚠️ موجود أصلاً وما انضاف (${skipped.length}): ${skipped.join("، ")}`);
+      await sock.sendMessage(chatId, { text: lines.join("\n") }, { quoted: msg });
+    } catch (e) {
+      console.error("⚠️ فشل إضافة بيانات:", e && e.message);
+      await sock.sendMessage(chatId, { text: `⚠️ فشلت الإضافة: ${(e && e.message) || "خطأ"}` }, { quoted: msg });
+    }
+    return;
+  }
+
+  // 🗑️ .حذف كت|تع|س <نص>  /  ✏️ .تعديل تع|س <نفس صيغة .ضف>  /  📋 .قائمة_كت
+  const delDataMatch = text.match(/^\.حذف\s+(كت|تع|س)(?=\s|$)([\s\S]*)$/);
+  if (delDataMatch) {
+    if (!canRun(senderId, text, chatId)) return ownerOnlyDeny();
+    const which = delDataMatch[1];
+    const kind = which === "كت" ? "words" : which === "تع" ? "counts" : "questions";
+    const arg = (delDataMatch[2] || "").split("|")[0].trim();
+    if (!arg) {
+      await sock.sendMessage(chatId, { text: which === "كت" ? "استخدم: .حذف كت <كلمة> (المركبة بـ+)\nمثال: .حذف كت اول+مايت" : `استخدم: .حذف ${which} <${which === "تع" ? "سؤال التعداد" : "السؤال"}>\nمثال: .حذف ${which} ${which === "تع" ? "3 ملوك شياطين" : "البطل رقم واحد"}` }, { quoted: msg });
+      return;
+    }
+    try {
+      const words = which === "كت" ? arg.split(/\s+/).filter(Boolean) : [arg];
+      const done = [];
+      const missing = [];
+      for (const w of words) {
+        const it = await extraData.removeItem(kind, require("./dataStore").getBaseData(kind + ".json"), w);
+        if (it) done.push(kind === "words" ? it.word[0] : kind === "counts" ? it.topic : it.question);
+        else missing.push(w);
+      }
+      const lines = [];
+      if (done.length) lines.push(`🗑️ انحذف (${done.length}): ${done.join("، ")}`);
+      if (missing.length) lines.push(`⚠️ ما لقيته (${missing.length}): ${missing.join("، ")}`);
+      await sock.sendMessage(chatId, { text: lines.join("\n") }, { quoted: msg });
+    } catch (e) {
+      await sock.sendMessage(chatId, { text: `⚠️ فشل الحذف: ${(e && e.message) || "خطأ"}` }, { quoted: msg });
+    }
+    return;
+  }
+
+  const editDataMatch = text.match(/^\.تعديل\s+(تع|س)(?=\s|$)([\s\S]*)$/);
+  if (editDataMatch) {
+    if (!canRun(senderId, text, chatId)) return ownerOnlyDeny();
+    const which = editDataMatch[1];
+    const kind = which === "تع" ? "counts" : "questions";
+    const rest = (editDataMatch[2] || "").trim();
+    const usage =
+      which === "تع"
+        ? "استخدم: .تعديل تع <العدد> <السؤال>|<الإجابات الجديدة>  (نفس صيغة .ضف تع)\nيلقى السؤال بنصه ويبدّل إجاباته والعدد.\nمثال: .تعديل تع 3 ملوك شياطين|انوس موزان ريمورو ميليوداس"
+        : "استخدم: .تعديل س <السؤال>|<الإجابات الجديدة>  (نفس صيغة .ضف س)\nمثال: .تعديل س البطل رقم واحد|اول+مايت اولمايت";
+    if (!rest) {
+      await sock.sendMessage(chatId, { text: usage }, { quoted: msg });
+      return;
+    }
+    const p = which === "تع" ? extraData.parseCount(rest) : extraData.parseQuestion(rest);
+    if (p.error) {
+      await sock.sendMessage(chatId, { text: `⚠️ ${p.error}\n${usage}` }, { quoted: msg });
+      return;
+    }
+    try {
+      const base = require("./dataStore").getBaseData(kind + ".json");
+      const cand = which === "تع" ? { topic: p.topic, required: p.required, answers: p.answers } : { question: p.question, answers: p.answers };
+      const old = extraData.find(kind, base, which === "تع" ? p.topic : p.question);
+      if (!old) {
+        await sock.sendMessage(chatId, { text: `⚠️ ما لقيت هذا السؤال. تأكد من نصه (شوف .قائمة_${which === "تع" ? "تع" : "سس"})، أو أضفه بـ.ضف ${which}.` }, { quoted: msg });
+        return;
+      }
+      await extraData.removeItem(kind, base, which === "تع" ? p.topic : p.question);
+      const { added } = await extraData.addItems(kind, base, [cand]);
+      await sock.sendMessage(chatId, { text: added.length ? `✏️ تم التعديل: ${added[0]}` : "⚠️ ما تم التعديل" }, { quoted: msg });
+    } catch (e) {
+      await sock.sendMessage(chatId, { text: `⚠️ فشل التعديل: ${(e && e.message) || "خطأ"}` }, { quoted: msg });
+    }
+    return;
+  }
+
+  if (text === ".قائمة_كت") {
+    if (!canRun(senderId, text, chatId)) return ownerOnlyDeny();
+    const list = require("./dataStore").getWords().map((w) => w.word[0]).sort((x, y) => x.localeCompare(y, "ar"));
+    const header = `> 📝 كلمات الكتابة (${list.length}):\n`;
+    let chunk = header;
+    for (const w of list) {
+      if (chunk.length + w.length > 12000) {
+        await sock.sendMessage(chatId, { text: chunk.trimEnd() }, { quoted: msg });
+        chunk = "";
+      }
+      chunk += `✓${w}\n`;
+    }
+    if (chunk.trim()) await sock.sendMessage(chatId, { text: chunk.trimEnd() }, { quoted: msg });
+    return;
+  }
+
+  // .ضف ص <اسم> ... = نفس .ضف للصور
+  const imgText = text.replace(/^\.ضف\s+ص(?=\s|$)/, ".ضف");
+  const addImgMatch = imgText.match(/^\.ضف(?=\s|$)(?:\s+(\S+))?(?:\s+([\s\S]+))?$/);
   if (addImgMatch) {
     if (!canRun(senderId, text, chatId)) return ownerOnlyDeny();
     const usage =
-      "استخدم: .ضف <اسم بالانجليزي> <الإجابات> + أرسل الصورة مع الأمر (أو رد عليها)\nمثال: .ضف naruto ناروتو|نارتو\nصورة ثانية لنفس الشخصية: .ضف naruto\nصورة بإجابتين مطلوبتين: .ضف bigmam بيغ+مام";
+      "استخدم: .ضف <اسم بالانجليزي> <الإجابات> + أرسل الصورة مع الأمر (أو رد عليها)\nمثال: .ضف naruto ناروتو|نارتو\nصورة ثانية لنفس الشخصية: .ضف naruto\nصورة بإجابتين مطلوبتين: .ضف bigmam بيغ+مام\nمع بدائل: .ضف allmight اول+مايت|اولمايت|توشينوري";
     if (!cloudImages.enabled()) {
       await sock.sendMessage(chatId, { text: "☁️ Cloudinary مو مفعّل. أضف CLOUDINARY_CLOUD_NAME و CLOUDINARY_API_KEY و CLOUDINARY_API_SECRET بإعدادات الاستضافة." }, { quoted: msg });
       return;
@@ -1813,12 +1950,20 @@ if (rejectChangeMatch) {
     let spec = null;
     const rest = (addImgMatch[2] || "").trim();
     if (rest) {
-      const slots = rest.split("+").map((s) => s.split(/[|،]/).map((x) => x.trim()).filter(Boolean)).filter((a) => a.length);
-      if (!slots.length) {
+      // الجزء الأول (قبل أول |) هو الإجابة الأساسية؛ لو فيه + فهي إجابات متعددة، وباقي الأجزاء بعد | إجابات بديلة كاملة
+      // مثال: اول+مايت|اولمايت|توشينوري  →  أساسية (اول + مايت) وبدائل (اولمايت، توشينوري)
+      const parts = rest.split(/[|،]/).map((x) => x.trim()).filter(Boolean);
+      const mainSlots = (parts[0] || "").split("+").map((x) => x.trim()).filter(Boolean);
+      if (!mainSlots.length) {
         await sock.sendMessage(chatId, { text: usage }, { quoted: msg });
         return;
       }
-      spec = slots.length === 1 ? { answers: slots[0] } : { answers: slots, type: "count", required: slots.length };
+      if (mainSlots.length === 1) {
+        spec = { answers: parts };
+      } else {
+        spec = { answers: mainSlots.map((x) => [x]), type: "count", required: mainSlots.length };
+        if (parts.length > 1) spec.alt = parts.slice(1);
+      }
     }
     const existing = cloudImages.ofChar(charKey);
     // الشخصية موجودة بصور data/images القديمة (قبل النقل لـCloudinary): ناخذ إجاباتها من images.json حسب اسم الملف
@@ -1843,7 +1988,7 @@ if (rejectChangeMatch) {
         /* sharp غير متاح/فشل: نرفع الأصلية */
       }
       const { doc, n } = await cloudImages.addImage(charKey, buffer, spec);
-      const ansText = doc.type === "count" ? doc.answers.map((a) => a[0]).join(" + ") : doc.answers.join(" | ");
+      const ansText = (doc.type === "count" ? doc.answers.map((a) => a[0]).join(" + ") : doc.answers.join(" | ")) + (Array.isArray(doc.alt) && doc.alt.length ? " | " + doc.alt.join(" | ") : "");
       await sock.sendMessage(chatId, { text: `✅ انضافت صورة رقم ${n} لـ*${charKey}*\nالإجابة: ${ansText}\nعدد صور هذي الشخصية: ${n}` }, { quoted: msg });
     } catch (e) {
       if (e && e.message === "NEED_ANSWERS") {
@@ -1867,7 +2012,7 @@ if (rejectChangeMatch) {
     const n = delImgMatch[2] ? parseInt(delImgMatch[2], 10) : undefined;
     const have = cloudImages.ofChar(charKey).length;
     if (!have) {
-      await sock.sendMessage(chatId, { text: `ما فيه صور باسم ${charKey} (شوف .قائمة_صور).` }, { quoted: msg });
+      await sock.sendMessage(chatId, { text: `ما فيه صور باسم ${charKey} (شوف .قائمة_ص).` }, { quoted: msg });
       return;
     }
     if (n && n > have) {
@@ -1879,18 +2024,18 @@ if (rejectChangeMatch) {
     return;
   }
 
-  // 👁️ .عرض <اسم> [رقم]: يعرض صورة الشخصية رقم n (أرقامها من .قائمة_صور)، أو كل صورها لو بدون رقم
+  // 👁️ .عرض <اسم> [رقم]: يعرض صورة الشخصية رقم n (أرقامها من .قائمة_ص)، أو كل صورها لو بدون رقم
   const showImgMatch = text.match(/^\.عرض(?:\s+(\S+))?(?:\s+(\d+))?\s*$/);
   if (showImgMatch) {
     if (!canRun(senderId, ".عرض", chatId)) return ownerOnlyDeny();
     const charKey = String(showImgMatch[1] || "").toLowerCase();
     if (!charKey) {
-      await sock.sendMessage(chatId, { text: "استخدم: .عرض <اسم> <رقم> (صورة وحدة) أو .عرض <اسم> (كل صور الشخصية)\nالأسماء والأرقام من .قائمة_صور" }, { quoted: msg });
+      await sock.sendMessage(chatId, { text: "استخدم: .عرض <اسم> <رقم> (صورة وحدة) أو .عرض <اسم> (كل صور الشخصية)\nالأسماء والأرقام من .قائمة_ص" }, { quoted: msg });
       return;
     }
     const list = cloudImages.ofChar(charKey);
     if (!list.length) {
-      await sock.sendMessage(chatId, { text: `ما فيه صور باسم ${charKey} (شوف .قائمة_صور).` }, { quoted: msg });
+      await sock.sendMessage(chatId, { text: `ما فيه صور باسم ${charKey} (شوف .قائمة_ص).` }, { quoted: msg });
       return;
     }
     const n = showImgMatch[2] ? parseInt(showImgMatch[2], 10) : 0;
@@ -1902,7 +2047,7 @@ if (rejectChangeMatch) {
     for (const [d, idx] of picks) {
       try {
         const buf = await cloudImages.fetchImage(d.publicId);
-        const ans = Array.isArray(d.answers[0]) ? d.answers.map((a) => a[0]).join(" + ") : d.answers.join(" | ");
+        const ans = (Array.isArray(d.answers[0]) ? d.answers.map((a) => a.join("/")).join(" + ") : d.answers.join(" | ")) + (Array.isArray(d.alt) && d.alt.length ? " | " + d.alt.join(" | ") : "");
         await sock.sendMessage(chatId, { image: buf, caption: `${charKey} ${idx}/${list.length}\nالإجابة: ${ans}` }, { quoted: msg });
       } catch (e) {
         await sock.sendMessage(chatId, { text: `⚠️ تعذّر عرض ${charKey} ${idx}: ${(e && e.message) || "خطأ"}` }, { quoted: msg });
@@ -1912,8 +2057,8 @@ if (rejectChangeMatch) {
     return;
   }
 
-  if (text === ".قائمة_صور") {
-    if (!canRun(senderId, ".قائمة_صور", chatId)) return ownerOnlyDeny();
+  if (/^\.قائمة_(?:صور|ص)$/.test(text)) {
+    if (!canRun(senderId, text, chatId)) return ownerOnlyDeny();
     const list = cloudImages.listChars().sort((x, y) => x.charKey.localeCompare(y.charKey));
     if (!list.length) {
       await sock.sendMessage(chatId, { text: "ما فيه صور مضافة بـCloudinary للحين." }, { quoted: msg });
@@ -3137,6 +3282,7 @@ async function main() {
   await Promise.all([
     usedStore.loadFromDb(),
     cloudImages.loadFromDb().then(() => cloudImages.startAutoReload()),
+    extraData.loadFromDb().then(() => extraData.startAutoReload()),
     leaderboard.loadFromDb(),
     personalHistory.loadFromDb(),
     standings.loadFromDb(),

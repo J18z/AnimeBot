@@ -175,6 +175,14 @@ class Contest {
   // (usedStore): أي سؤال انرسل بهذا القروب ما يتكرر فيه إلا لما تخلص كل
   // أسئلة الفقرة، وقتها تبدأ له دورة جديدة عشوائية (القروبات الثانية ما تتأثر). الصور مقفولة "حسب الإجابة"
   // (صور مختلفة بنفس الإجابة = سؤال واحد، شوف answerGroups.js)
+  // 🔒🔒 قفل داخل قفل: بعد ما يتحدد "سؤال" الصورة (مجموعة الإجابة)، نختار منه صورة ما انعرضت قبل بهذا القروب
+  _pickImageVariant(pool, keyFn, item) {
+    if (!item) return item;
+    const k = keyFn(item);
+    const group = pool.filter((it) => keyFn(it) === k);
+    return usedStore.pickWithin("images_var", group, this.chatId) || item;
+  }
+
   pickItem(poolType) {
     let pool;
     if (poolType === "images") pool = store.getImages();
@@ -196,9 +204,10 @@ class Contest {
         item = usedStore.pick(poolType, pool, keyFn, undefined, this.chatId);
       }
       if (item) seen.add(keyFn(item));
-      return item;
+      return poolType === "images" ? this._pickImageVariant(pool, keyFn, item) : item;
     }
-    return usedStore.pick(poolType, pool, keyFn, undefined, this.chatId); // قفل لهذا القروب بس
+    const picked = usedStore.pick(poolType, pool, keyFn, undefined, this.chatId); // قفل لهذا القروب بس
+    return poolType === "images" ? this._pickImageVariant(pool, keyFn, picked) : picked;
   }
 
   // فقرة الكتابة: يسحب 1-3 كلمات من بنك كلمات واحد بنفس نظام الوزن
@@ -210,6 +219,22 @@ class Contest {
   // ✅ استبعاد صارم إضافي: بس لجولات "كلمة وحدة" (مو 2-3 كلمات مع بعض —
   // هذي احتمال تكرارها بنفس المسابقة شبه معدوم أصلاً فما تحتاج استبعاد
   // صارم)، نفس الكلمة ما تتكرر إطلاقاً طول عمر هذي المسابقة
+  // سحب بقفل القروب، وبالفنش نضيف استبعاد صارم لكل ما طلع داخل نفس الفنش (حتى لو بدأت دورة جديدة بنص الفنش)
+  _strictPick(name, pool, keyFn, exclude) {
+    if (!this.finishMode) return usedStore.pick(name, pool, keyFn, exclude, this.chatId);
+    const seenAll = this._finishSeen || (this._finishSeen = {});
+    const seen = seenAll[name] || (seenAll[name] = new Set());
+    const combined = new Set(seen);
+    if (exclude) for (const k of exclude) combined.add(k);
+    let item = usedStore.pick(name, pool, keyFn, combined, this.chatId);
+    if (!item) {
+      seen.clear(); // البنك كله طلع بهذا الفنش، دورة جديدة للضرورة
+      item = usedStore.pick(name, pool, keyFn, exclude, this.chatId);
+    }
+    if (item) seen.add(keyFn(item));
+    return item;
+  }
+
   pickWritingRound(forcedCount) {
     const pool = store.getWords(); // array of { word: ["لوفي","luffy", ...] }
     if (!pool || pool.length === 0) return null;
@@ -225,7 +250,7 @@ class Contest {
     const chosen = new Set();
     const result = [];
     for (let i = 0; i < count; i++) {
-      const item = usedStore.pick("writing", pool, keyFn, chosen, this.chatId);
+      const item = this._strictPick("writing", pool, keyFn, chosen);
       if (!item) break;
       chosen.add(keyFn(item));
       result.push(item.word);
@@ -249,7 +274,7 @@ class Contest {
     const chosenKeys = new Set();
     const result = [];
     for (let i = 0; i < count; i++) {
-      const item = usedStore.pick("repeat", pool, keyFn, chosenKeys, this.chatId);
+      const item = this._strictPick("repeat", pool, keyFn, chosenKeys);
       if (!item) break;
       chosenKeys.add(keyFn(item));
       const repeatCount = Math.floor(Math.random() * 3) + 2; // 2..4
@@ -394,7 +419,10 @@ class Contest {
     // عشان ما تنحسب مستخدمة وهي ما ظهرت لأحد
     if (this._plannedImageItem) {
       const imgs = store.getImages();
-      if (imgs && imgs.length) usedStore.release("images", imageKeyFn(imgs)(this._plannedImageItem), this.chatId);
+      if (imgs && imgs.length) {
+        usedStore.release("images", imageKeyFn(imgs)(this._plannedImageItem), this.chatId);
+        usedStore.release("images_var", this._plannedImageItem.id, this.chatId);
+      }
     }
     this._plannedPoolType = null;
     this._plannedImageItem = null;
@@ -460,7 +488,7 @@ class Contest {
         return;
       }
       // قفل تكرار لكل قروب على حدى لكل فقرة من الثلاث (شوف usedStore.js)
-      const wordItem = usedStore.pick(poolType, wordPool, (it) => it.word[0], undefined, this.chatId);
+      const wordItem = this._strictPick(poolType, wordPool, (it) => it.word[0], undefined);
       const rawWord = wordItem.word[0].replace(/\s+/g, ""); // نشيل المسافات (لو الاسم أكثر من كلمة) عشان الفقرات الثلاث تشتغل على كلمة مصمتة
       points = 1;
       required = 1;

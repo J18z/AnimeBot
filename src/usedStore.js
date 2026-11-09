@@ -67,6 +67,25 @@ function pick(pool, items, keyFn, exclude, scope) {
   return item;
 }
 
+// 🔒🔒 القفل الداخلي: يختار عنصر من مجموعة (group) ما انعرض قبل بهذا القروب (مفتاحه it.id).
+// لما تنعرض كل عناصر المجموعة، يفك قفل عناصرها هي بس (ما يمس مجموعات ثانية) ويبدأ دورة جديدة.
+// مثال: ناروتو عنده 4 صور → كل مرة تطلع ناروتو تجي صورة جديدة لين تنعرض الأربع، وبعدها تبدأ من جديد.
+function pickWithin(pool, group, scope) {
+  if (!group || group.length === 0) return null;
+  if (group.length === 1) return group[0];
+  const used = setOf(pool, scope);
+  const lk = lockKeyOf(pool, scope);
+  let cands = group.filter((it) => !used.has(it.id));
+  if (cands.length === 0) {
+    for (const it of group) used.delete(it.id);
+    cands = group;
+  }
+  const item = cands[Math.floor(Math.random() * cands.length)];
+  used.add(item.id);
+  persistSoon(lk);
+  return item;
+}
+
 // يفك قفل مفتاح (لو سؤال انحجز ولا انرسل فعلاً)
 function release(pool, key, scope) {
   const lk = lockKeyOf(pool, scope);
@@ -158,4 +177,4 @@ async function flushPending() {
   await Promise.all([...running.values()].map((r) => r.promise));
 }
 
-module.exports = { pick, release, size, loadFromDb, flushPending };
+module.exports = { pick, pickWithin, release, size, loadFromDb, flushPending };
