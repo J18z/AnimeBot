@@ -81,8 +81,8 @@ function splitFinishShares(target, sections) {
 // انتظار بعد اسم الفقرة / بعد قائمة النتائج / بعد السكب قبل الرسالة اللي بعدها:
 // 3.5 ثانية لو الفنش همزات (اللاعبين يحتاجون وقت يقرأون النمط)، و2.5 ثانية للفنش العادي
 const FINISH_STEP_DELAY_HAMZA_MS = 3000;
-const FINISH_IMAGE_DELAY_HAMZA_MS = 2100;
-const FINISH_IMAGE_DELAY_NORMAL_MS = 1800;
+const FINISH_IMAGE_DELAY_HAMZA_MS = 1800;
+const FINISH_IMAGE_DELAY_NORMAL_MS = 1500;
 const FINISH_STEP_DELAY_NORMAL_MS = 2700;
 const FINISH_SECTION_CHANGE_DELAY_MS = 1000; // بعد القائمة لما الفقرة تتغير: ثانية وحدة قبل اسم الفقرة الجديدة
 const HAMZA_SWITCH_CONTINUE_DELAY_MS = 1000; // بعد رسالة تغيير النمط (الهمزات/الإلغاء): ثانية وحدة قبل *نكمل*
