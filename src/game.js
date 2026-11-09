@@ -81,8 +81,9 @@ function splitFinishShares(target, sections) {
 // انتظار بعد اسم الفقرة / بعد قائمة النتائج / بعد السكب قبل الرسالة اللي بعدها:
 // 3.5 ثانية لو الفنش همزات (اللاعبين يحتاجون وقت يقرأون النمط)، و2.5 ثانية للفنش العادي
 const FINISH_STEP_DELAY_HAMZA_MS = 3400;
-const FINISH_IMAGE_DELAY_HAMZA_MS = 1800;
-const FINISH_IMAGE_DELAY_NORMAL_MS = 1500;
+// فقرة الصور (الصورة أصلاً تتأخر من السيرفر): انتظار أقصر
+const FINISH_IMAGE_DELAY_HAMZA_MS = 2200;
+const FINISH_IMAGE_DELAY_NORMAL_MS = 1900;
 const FINISH_STEP_DELAY_NORMAL_MS = 3000;
 const FINISH_SECTION_CHANGE_DELAY_MS = 1000; // بعد القائمة لما الفقرة تتغير: ثانية وحدة قبل اسم الفقرة الجديدة
 const HAMZA_SWITCH_CONTINUE_DELAY_MS = 1000; // بعد رسالة تغيير النمط (الهمزات/الإلغاء): ثانية وحدة قبل *نكمل*
@@ -227,7 +228,10 @@ class Contest {
     if (exclude) for (const k of exclude) combined.add(k);
     let item = usedStore.pick(name, pool, keyFn, combined, this.chatId);
     if (!item) {
-      seen.clear(); // البنك كله طلع بهذا الفنش، دورة جديدة للضرورة
+      // البنك كله طلع بهذا الفنش: يتفتح القفل ونبدأ دورة جديدة. كلمات هذي الجولة اللي انسحبت من آخر الدورة
+      // القديمة (مثل آخر كلمة باقية) ما ترجع بالدورة الجديدة، لأنها طلعت الحين قبل شوي
+      seen.clear();
+      if (exclude) for (const k of exclude) seen.add(k);
       item = usedStore.pick(name, pool, keyFn, exclude, this.chatId);
     }
     if (item) seen.add(keyFn(item));
@@ -1054,6 +1058,23 @@ class Contest {
   // — بدل ما تفضل المسابقة "معلّقة" بصمت بدون أي توضيح لأي أحد
   scheduleNextRound(delayMs, context = "الجولة القادمة") {
     if (this.paused) return; // موقوفة (.وقف): .كمل يجدول بدالها
+    // 🏁 فنش + فقرة صور: نجهّز الصورة (جلب Cloudinary + تصغير) أثناء مدة الانتظار، مو بعدها، عشان تنزل بالوقت المضبوط بالضبط
+    if (this.finishMode && this.active && !this._plannedImageItem && this.fm && this.fm.order && this.fm.order[this.fm.idx] === "images") {
+      try {
+        const item = this.pickItem("images");
+        if (item) {
+          this._plannedPoolType = "images";
+          this._plannedImageItem = item;
+          const promise = this._prepareImage(item.file);
+          promise.catch(() => {}); // الخطأ يُعالج وقت الاستخدام الفعلي
+          this._prefetched = { file: item.file, promise };
+        }
+      } catch (e) {
+        this._plannedPoolType = null;
+        this._plannedImageItem = null;
+        this._prefetched = null;
+      }
+    }
     this.nextRoundTimer = setTimeout(async () => {
       try {
         await this.nextRound();
