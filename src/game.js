@@ -82,8 +82,8 @@ function splitFinishShares(target, sections) {
 // 3.5 ثانية لو الفنش همزات (اللاعبين يحتاجون وقت يقرأون النمط)، و2.5 ثانية للفنش العادي
 const FINISH_STEP_DELAY_HAMZA_MS = 3400;
 // فقرة الصور (الصورة أصلاً تتأخر من السيرفر): انتظار أقصر
-const FINISH_IMAGE_DELAY_HAMZA_MS = 2000;
-const FINISH_IMAGE_DELAY_NORMAL_MS = 1700;
+const FINISH_IMAGE_DELAY_HAMZA_MS = 2200;
+const FINISH_IMAGE_DELAY_NORMAL_MS = 1900;
 const FINISH_STEP_DELAY_NORMAL_MS = 3000;
 const FINISH_SECTION_CHANGE_DELAY_MS = 1000; // بعد القائمة لما الفقرة تتغير: ثانية وحدة قبل اسم الفقرة الجديدة
 const HAMZA_SWITCH_CONTINUE_DELAY_MS = 1000; // بعد رسالة تغيير النمط (الهمزات/الإلغاء): ثانية وحدة قبل *نكمل*
@@ -731,7 +731,7 @@ class Contest {
     // ثاني نتجاهلها كليًا لين يوصلنا رد من نفس الشخص اللي بدأ
     if (this.awaitingHamzaFrom) {
       if (senderId !== this.awaitingHamzaFrom) return;
-      const parsed = parseHamzaPattern(text);
+      const parsed = parseHamzaPattern(text.replace(/^[\s.]+|[\s.]+$/g, ""));
       if (!parsed) {
         await this.replyTo(msg, "⚠️ لازم يكون فيه همزتين (ء) مختلفتين بالنص عشان أحدد الإطار. مثال: تءءت");
         return;
@@ -869,14 +869,25 @@ class Contest {
     let framedAttempt = false;
     if (this.hamzaMode && this.hamzaPattern) {
       const unlocked = !!(round.hamzaUnlocked && round.hamzaUnlocked.has(senderId));
+      // نقاط/مسافات قبل أو بعد الإطار ما تأثر (.جءءب / .. جءءب)
+      const clean = text.replace(/^[\s.]+|[\s.]+$/g, "");
       if (userSet.size === 0 && !unlocked) {
-        const unwrapped = unwrapHamza(text, this.hamzaPattern);
+        const unwrapped = unwrapHamza(clean, this.hamzaPattern);
         if (unwrapped === null) return;
         searchText = unwrapped;
         framedAttempt = true;
       } else if (unlocked) {
-        const unwrapped = unwrapHamza(text, this.hamzaPattern); // لو رجع يغلّف، نفك الإطار عادي
+        const unwrapped = unwrapHamza(clean, this.hamzaPattern); // لو رجع يغلّف، نفك الإطار عادي
         if (unwrapped !== null) searchText = unwrapped;
+      }
+    } else {
+      // الوضع العادي (بدون همزات): لو أحد غلّف إجابته بهمزتين (تءسونغءت أو ءسونغء) نقبلها ونفك الإطار بدل ما تنرفض
+      const hp = parseHamzaPattern(text.replace(/^[\s.]+|[\s.]+$/g, ""));
+      if (hp && hp.prefix.length <= 2 && hp.suffix.length <= 2 && !/\s/.test(hp.prefix + hp.suffix)) {
+        const first = text.indexOf("ء");
+        const last = text.lastIndexOf("ء");
+        const middle = text.slice(first + 1, last).trim();
+        if (middle) searchText = middle;
       }
     }
     // تطبيع الإجابات المقبولة مرة وحدة لكل جولة (مو مع كل رسالة)

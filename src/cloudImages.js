@@ -123,8 +123,23 @@ function toItem(d) {
   return it;
 }
 
+// البدائل (alt) لشخصية: أول صورة منها فيها بدائل بنفس الإجابات (الصور اللي انضافت بدون إجابات ما كانت تنسخها)
+function altOfChar(charKey, answers) {
+  const key = JSON.stringify(answers);
+  const d = docs.find((x) => x.charKey === charKey && x.alt && x.alt.length && JSON.stringify(x.answers) === key);
+  return d ? d.alt : undefined;
+}
+
 function rebuild() {
-  items = docs.map(toItem);
+  // صورة بدون بدائل وفيه صورة ثانية لنفس الشخصية بنفس الإجابات وعندها بدائل: ترث بدائلها (بدون تعديل القاعدة)
+  items = docs.map((d) => {
+    const it = toItem(d);
+    if (!it.alt) {
+      const a = altOfChar(d.charKey, d.answers);
+      if (a) it.alt = a;
+    }
+    return it;
+  });
   onChange(items);
 }
 
@@ -201,7 +216,7 @@ async function addImage(charKey, buffer, spec) {
   if (!base) {
     if (!existing.length) throw new Error("NEED_ANSWERS");
     const f = existing[0];
-    base = { answers: f.answers, type: f.type, required: f.required, points: f.points };
+    base = { answers: f.answers, type: f.type, required: f.required, points: f.points, alt: (f.alt && f.alt.length ? f.alt : altOfChar(charKey, f.answers)) };
   }
   // رقم فريد (ما نعيد استخدام رقم محذوف عشان ما ينكسر كاش Cloudinary)
   let n = 1;
