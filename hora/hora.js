@@ -1,7 +1,8 @@
 // ═══════════════════════════════════════════════════════════════════
 // وحدة استمارات نقابة هورا 🩸 — مجلد مستقل تماماً عن ماتسوري ومنطق المسابقات.
-// تشتغل فقط داخل القروب المحدد بـ horaChatId (متغير البيئة HORA_CHAT_ID
-// أو حقل horaChatId بـ data/config.json) — أي شات ثاني يتجاهلها بصمت.
+// تشتغل فقط داخل القروبات المحددة بـ horaChatId (متغير البيئة HORA_CHAT_ID
+// أو حقل horaChatId بـ data/config.json) — قروب واحد أو أكثر مفصولة بفاصلة،
+// وأي شات ثاني يتجاهلها بصمت.
 //
 // الأوامر (تُكتب نفس ما هي، رسالة كاملة بدون زيادة):
 //   .هورا   → القائمة الرئيسية
@@ -61,6 +62,7 @@ const COMMANDS = [
   { names: ["متجر"], file: "forms/admin/store.txt" },
   { names: ["يومي"], file: "forms/admin/daily.txt" },
   // قسم الفعاليات
+  { names: ["ديث نوت", "ديثنوت"], file: "forms/events/deathnote.txt" },
   { names: ["ابراج"], file: "forms/events/towers.txt" },
   { names: ["قلوب"], file: "forms/events/hearts.txt" },
   { names: ["مسابقة"], file: "forms/events/contest.txt" },
@@ -73,6 +75,10 @@ const COMMANDS = [
   { names: ["عنكبوت"], file: "forms/events/spider.txt" },
   { names: ["لعنات"], file: "forms/events/curses.txt" },
   { names: ["شموع"], file: "forms/events/candles.txt" },
+  { names: ["سؤال سهل"], file: "forms/events/question_e.txt" },
+  { names: ["سؤال متوسط"], file: "forms/events/question_m.txt" },
+  { names: ["سؤال صعب"], file: "forms/events/question_h.txt" },
+  { names: ["فردية", "فرديه"], file: "forms/events/oneonone.txt" },
 ];
 
 // القوائم: اسم الأمر → ملف القائمة
@@ -99,13 +105,29 @@ function cleanChatId(raw) {
   return id;
 }
 
-function configuredChatId() {
-  return cleanChatId(store.getConfig().horaChatId);
+// يقبل أكثر من قروب: HORA_CHAT_ID (أو horaChatId بـconfig.json) تنكتب فيها آيديات
+// مفصولة بفاصلة (أو مسافة/سطر/؛)، أو مصفوفة بملف الإعدادات. نخزّن آخر نتيجة
+// مربوطة بالنص الخام عشان ما نعيد التحليل مع كل رسالة
+let cachedRaw = null;
+let cachedSet = new Set();
+function configuredChatIds() {
+  const rawCfg = store.getConfig().horaChatId;
+  const raw = Array.isArray(rawCfg) ? rawCfg.join(",") : String(rawCfg || "");
+  if (raw !== cachedRaw) {
+    cachedRaw = raw;
+    cachedSet = new Set(
+      raw
+        .split(/[,;\s]+/)
+        .map(cleanChatId)
+        .filter(Boolean)
+    );
+  }
+  return cachedSet;
 }
 
 function isHoraChat(chatId) {
-  const configured = configuredChatId();
-  return !!configured && cleanChatId(chatId) === configured;
+  const ids = configuredChatIds();
+  return ids.size > 0 && ids.has(cleanChatId(chatId));
 }
 
 // نقطة الدخول الوحيدة — تُستدعى من index.js لكل رسالة قروب.
