@@ -19,6 +19,7 @@ const { parseMessage, resolvePartialName, extractEmoji } = require("./rasadParse
 
 // حالة بالذاكرة
 let totals = {}; // { key: amountK }
+let starTotals = {}; // { key: نجوم (أرقام عادية) }
 let active = false;
 let startedAt = null;
 
@@ -38,6 +39,7 @@ async function loadFromDb() {
     const doc = await db.collection("matsuri_rasad").findOne({ _id: "state" });
     if (doc) {
       totals = doc.totals || {};
+      starTotals = doc.stars || {};
       active = !!doc.active;
       startedAt = doc.startedAt || null;
     }
@@ -65,7 +67,7 @@ async function persist() {
         try {
           await getDb()
             .collection("matsuri_rasad")
-            .updateOne({ _id: "state" }, { $set: { totals, active, startedAt } }, { upsert: true });
+            .updateOne({ _id: "state" }, { $set: { totals, stars: starTotals, active, startedAt } }, { upsert: true });
         } catch (err) {
           console.error("خطأ حفظ بيانات الرصد:", err.message);
         }
@@ -155,7 +157,8 @@ function applyEntries(entries) {
       key = resolvePartialName(e.namePartial, Object.keys(totals));
     }
     if (!key) continue; // ما قدرنا نحدد مين بالضبط (اسم جديد بلا شعار، أو لبس)
-    totals[key] = (totals[key] || 0) + e.amount;
+    totals[key] = (totals[key] || 0) + (e.amount || 0);
+    if (e.stars) starTotals[key] = (starTotals[key] || 0) + e.stars;
     appliedAny = true;
   }
   return appliedAny;
@@ -170,6 +173,16 @@ const GUILDS = [
   { emoji: "🔆", name: "تـسـوكـي" },
 ];
 
+// سطر الرصيد: 💰 فلوس و/أو ⭐ نجوم (النجوم فقط تظهر لو غير صفر)
+function formatBalance(key) {
+  const money = totals[key] || 0;
+  const stars = starTotals[key] || 0;
+  const parts = [];
+  if (money !== 0 || stars === 0) parts.push(`💰${formatAmount(money)}`);
+  if (stars !== 0) parts.push(`⭐${stars}`);
+  return parts.join(" | ");
+}
+
 function formatAmount(n) {
   const sign = n < 0 ? "-" : "";
   return `${sign}${Math.abs(n)}k`;
@@ -182,7 +195,7 @@ function renderList() {
   if (!keys.length) {
     return RD.listTemplate.replace("{entries}", "⪦ لا يوجد بيانات حالياً");
   }
-  const entries = keys.map((k) => `⪦ ${k} ${formatAmount(totals[k])}`).join("\n");
+  const entries = keys.map((k) => `⪦ ${k} ${formatBalance(k)}`).join("\n");
   return RD.listTemplate.replace("{entries}", entries);
 }
 
@@ -217,12 +230,12 @@ function renderGroupedList() {
   for (const guild of shuffle(GUILDS)) {
     const list = buckets.get(guild.emoji);
     if (!list.length) continue; // نتخطى نقابة فاضية بدون عنوان فاضي
-    const lines = list.map((k) => `⪦ ${k} ${formatAmount(totals[k])}`).join("\n");
+    const lines = list.map((k) => `⪦ ${k} ${formatBalance(k)}`).join("\n");
     blocks.push(`> *✠ ${guild.name} • ${guild.emoji}◜*\n${lines}`);
   }
 
   if (extra.length) {
-    const lines = extra.map((k) => `⪦ ${k} ${formatAmount(totals[k])}`).join("\n");
+    const lines = extra.map((k) => `⪦ ${k} ${formatBalance(k)}`).join("\n");
     blocks.push(`> *✠ غير مصنّف◜*\n${lines}`);
   }
 
@@ -269,6 +282,7 @@ async function recomputeFromLog() {
     .toArray();
 
   const recomputed = {};
+  const recomputedStars = {};
   for (const d of docs) {
     const entries = parseMessage(d.text);
     for (const e of entries) {
@@ -277,10 +291,11 @@ async function recomputeFromLog() {
         key = resolvePartialName(e.namePartial, Object.keys(recomputed));
       }
       if (!key) continue;
-      recomputed[key] = (recomputed[key] || 0) + e.amount;
+      recomputed[key] = (recomputed[key] || 0) + (e.amount || 0);
+      if (e.stars) recomputedStars[key] = (recomputedStars[key] || 0) + e.stars;
     }
   }
-  return recomputed;
+  return { money: recomputed, stars: recomputedStars };
 }
 
 // نقطة الدخول — ترجع true لو تكفلت بالرسالة
@@ -324,7 +339,8 @@ async function handleRasadMessage(sock, msg, text, chatId, senderId) {
       await reply(sock, chatId, msg, "⚠️ ما فيه اتصال بقاعدة البيانات، ما قدرت أرجع للسجل.");
       return true;
     }
-    totals = recomputed;
+    totals = recomputed.money;
+    starTotals = recomputed.stars;
     await persist();
     await reply(sock, chatId, msg, "🔄 تم إعادة حساب الأسبوع كامل من بداية الجمعة.");
     await reply(sock, chatId, msg, renderList());
@@ -333,6 +349,7 @@ async function handleRasadMessage(sock, msg, text, chatId, senderId) {
 
   if (t === ".تصفير_الرصد") {
     totals = {};
+    starTotals = {};
     active = false;
     startedAt = null;
     await persist();
@@ -418,4 +435,22 @@ async function handleRasadMessage(sock, msg, text, chatId, senderId) {
   return false; // ما رددنا: نسمح لباقي البوت يكمل
 }
 
-module.exports = { handleRasadMessage, loadFromDb, isRasadChat, flushPending };
+// يرصد نص أرسله البوت نفسه (نتائج مسابقة ماتسوري): البوت يتجاهل رسائله، فنستدعي الرصد مباشرة.
+// يرجع true لو انرصد شي (الرصد لازم يكون شغّال بـ.بدء_الرصد)
+async function recordText(text, msgId) {
+  try {
+    const entries = parseMessage(String(text || "").trim());
+    if (!active || entries.length === 0) return false;
+    const ok = applyEntries(entries);
+    if (ok) {
+      persist();
+      logRawMessage(msgId || null, "bot", String(text).trim(), Date.now(), true);
+    }
+    return ok;
+  } catch (e) {
+    console.error("⚠️ رصد نتائج ماتسوري:", e && e.message);
+    return false;
+  }
+}
+
+module.exports = { recordText, handleRasadMessage, loadFromDb, isRasadChat, flushPending };

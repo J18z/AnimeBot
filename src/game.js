@@ -143,6 +143,7 @@ class Contest {
     this.finishMode = !!options.finishMode; // 🏁 .بدء_فنش: بدون وقت ولا تسجيل، قائمة نقاط بعد كل سؤال، فقرات تتبدل تلقائياً
     this.practiceMode = !!options.practiceMode; // تقديم بسيط، جولة وحدة، بدون تسجيل بـ.توب/.سجل
     this.endless = !!options.endless; // مسابقة مستمرة، ما تتوقف تلقائياً عند الهدف
+    this.matsuriMode = !!options.matsuriMode; // 🧧 مسابقة ماتسوري المجدولة (matsuri/mContest.js): بدون تسجيل البوت، ولا تدخل .توب/.سجل
     this.mobileOnly = !!options.mobileOnly; // بس المسجلين كجوال يقدرون يشاركون
     this.fixedWordCount = options.fixedWordCount || null; // عدد كلمات ثابت لفقرة الكتابة
     this.roundsTarget = options.roundsTarget || null; // عدد أسئلة إجمالي تنتهي عنده المسابقة (بغض النظر مين جاوب)
@@ -641,7 +642,7 @@ class Contest {
     this.clearRoundWatchdog();
     if (!this.practiceMode) {
       // بوضع الفنش ما فيه رسالة تحذير (السكب والإنهاء تلقائيين)
-      if (!this.finishMode && !this.paused) this.roundWatchdog = setTimeout(() => {
+      if (!this.finishMode && !this.matsuriMode && !this.paused) this.roundWatchdog = setTimeout(() => {
         if (this.currentRound === round && !round.finished && this.active) {
           this.sendChat(
             "⚠️ يبدو إن السؤال الحالي ما وصل بشكل طبيعي (تأخير غير عادي بالاتصال). جرب .سكب للانتقال للسؤال التالي، أو .انهاء لو تبي توقف المسابقة."
@@ -781,7 +782,7 @@ class Contest {
     }
 
     // التقديم البسيط (معاينة/تجربة): مجاني للجميع بدون تسجيل ولا تحذير
-    if (!this.practiceMode) {
+    if (!this.practiceMode && !this.matsuriMode) {
       if (this.mobileOnly) {
         if (!registration.isMobile(senderId)) {
           if (!this.remindedMobileOnly.has(senderId)) {
@@ -1010,7 +1011,7 @@ class Contest {
     // (تجربة/معاينة)، ما نحسبها بالمنافسة الرسمية. محاطة بحماية عشان لو
     // فشل التسجيل لأي سبب (مشكلة قاعدة بيانات لحظية)، ما توقف تقدم الجولة
     // 🔒 لو التوب مقفول (.قفل توب)، ما نسجل النتيجة بـ.توب ولا .نقاطي لين يتفتح
-    if (!this.practiceMode && !this.finishMode && !topLock.isLocked() && !unreliable) {
+    if (!this.practiceMode && !this.finishMode && !this.matsuriMode && !topLock.isLocked() && !unreliable) {
       try {
         // ✅ للتعداد بس: بدل ما نعرض بلوحة الصدارة كل الإجابات المقبولة
         // مجمّعة (ممكن توصل 9+ عنصر وتشوّه شكل الرسالة)، نعرض نص رسالة
@@ -1056,7 +1057,8 @@ class Contest {
       // إجابة إطلاقاً (لا وقت ولا نقاط ولا حتى "إجابة صحيحة")
       if (!this.practiceMode) {
         if (this.finishMode) await new Promise((r) => setTimeout(r, FINISH_BOARD_DELAY_MS));
-        await waitAtMost(this.replyTo(msg, this.finishMode ? this._finishBoardText(senderId, total >= this.target) : `🎉 ${resultLabel}!\n\n⏱️ الوقت: ${formatSeconds(elapsed)} ثانية\n\n⭐ +${round.points} نقطة\n(المجموع: ${total})`), CONFIRM_WAIT_MS);
+        else if (this.matsuriMode) await new Promise((r) => setTimeout(r, 1500)); // ماتسوري: ثانية ونصف ثم النقطة
+        await waitAtMost(this.replyTo(msg, this.finishMode ? this._finishBoardText(senderId, total >= this.target) : this.matsuriMode ? `✅ +${round.points}` : `🎉 ${resultLabel}!\n\n⏱️ الوقت: ${formatSeconds(elapsed)} ثانية\n\n⭐ +${round.points} نقطة\n(المجموع: ${total})`), CONFIRM_WAIT_MS);
       }
     } catch (e) {
       console.error("⚠️ فشل إرسال رسالة الإجابة الصحيحة (تجاهلناه، الجولة تكمل عادي):", e);

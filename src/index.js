@@ -41,6 +41,7 @@ const instanceLock = require("./instanceLock");
 const CONFIG = store.getConfig(); // ✅ نقرأ config مرة وحدة عند التشغيل
 const { handleMatsuriMessage } = require("../matsuri/matsuri");
 const { handleHoraMessage } = require("../hora/hora");
+const matsuriSystem = require("../matsuri/mSystem");
 const roulette = require("../matsuri/roulette");
 const rasad = require("../matsuri/rasad");
 const helpMenus = require("./helpMenus");
@@ -258,6 +259,7 @@ async function decideRequest(sock, r, accept) {
 const loggedDisallowedChats = new Set();
 function isChatAllowed(chatId, senderId) {
   if (isOwner(senderId)) return true;
+  if (matsuriSystem.isContestChat(chatId)) return true; // قروب مسابقات ماتسوري المجدولة: لازم تمر إجابات اللاعبين
   // ✅ نستخدم CONFIG المحمّل مرة وحدة بالبداية بدل ما نعيد قراءة الملف
   // من القرص (fs.readFileSync) مع كل رسالة توصل — قراءة قرص لكل رسالة
   // بدون داعي، والقيمة أصلاً ما تتغير أثناء التشغيل عادة
@@ -1037,6 +1039,8 @@ async function handleIncoming(sock, msg) {
   if (isGroupChat(chatId)) {
     if (await handleHoraMessage(sock, msg, text, chatId, senderId)) return;
   }
+  // 🧧 نظام ماتسوري الإضافي (ألقاب/صلاحيات/مسابقة مجدولة) — مبكراً عمداً: قبل القفل وبوابة الخاص
+  if (await matsuriSystem.handle(sock, msg, text, chatId, senderId)) return;
 
   if (!isChatAllowed(chatId, senderId)) return;
 
@@ -1051,7 +1055,7 @@ async function handleIncoming(sock, msg) {
   // 🔒 الشات مقفول؟ الأوامر للمالك والادمنية بس — تنبيه واحد كل دقيقة والباقي بصمت
   if (chatLockBlocks(chatId, senderId, text)) {
     const nowTs = Date.now();
-    if (nowTs - (lockNoticeAt.get(chatId) || 0) > 60 * 1000) {
+    if (!matsuriSystem.isMatsuriGroup(chatId) && nowTs - (lockNoticeAt.get(chatId) || 0) > 60 * 1000) { // قروبات ماتسوري: بدون أي تنبيه
       lockNoticeAt.set(chatId, nowTs);
       await sock.sendMessage(chatId, { text: "🔒 أوامر البوت مقفولة هنا، للادمنز بس." }, { quoted: msg });
     }
@@ -3294,6 +3298,7 @@ async function main() {
     changeRequests.loadFromDb(),
     roulette.loadFromDb(),
     rasad.loadFromDb(),
+    matsuriSystem.loadFromDb(),
   ]);
   // 🌱 نبذر تاريخ .نقاطي الشخصي بأفضل نتيجة موجودة أصلاً بلوحة الصدارة
   // العامة — عشان اللي عنده نتائج من قبل إضافة هذي الميزة يشوفها فورًا
@@ -3305,7 +3310,9 @@ async function main() {
   // يقفل الاتصال بواتساب بخطأ device_removed) — سيرفر الـHTTP فوق شغّال
   // أصلاً فيرضي فحص Render الصحي، حتى لو انتظرنا هنا شوي
   await instanceLock.acquireWithRetry();
+  matsuriSystem.init({ getSock: () => currentSock, getGroupMeta: (jid) => getGroupMeta(jid, () => currentSock), activeContests });
   await connectSocket();
+  matsuriSystem.start();
   maintenance.start();
   inactivity.start((userId) => isOwner(userId)); // 🧹 تنظيف الخاملين (7 أيام: يتخفّون، 15 يوم: تتصفّر سجلاتهم)
 }

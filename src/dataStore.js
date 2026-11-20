@@ -94,6 +94,8 @@ function getConfig() {
     ownerId: process.env.OWNER_ID || fileConfig.ownerId,
     matsuriChatId: process.env.MATSURI_CHAT_ID || fileConfig.matsuriChatId,
     matsuriOwnerId: process.env.MATSURI_OWNER_ID || fileConfig.matsuriOwnerId,
+    matsuriAnnounceChatIds: process.env.MATSURI_ANNOUNCE_CHAT_IDS || fileConfig.matsuriAnnounceChatIds, // قروبات الإعلانات/الأركان (أمر .اعلان)
+    matsuriContestChatId: process.env.MATSURI_CONTEST_CHAT_ID || fileConfig.matsuriContestChatId, // قروب مسابقات ماتسوري المجدولة (matsuri/mSystem.js)
     rouletteChatId: process.env.ROULETTE_CHAT_ID || fileConfig.rouletteChatId,
     rasadChatId: process.env.RASAD_CHAT_ID || fileConfig.rasadChatId,
     horaChatId: process.env.HORA_CHAT_ID || fileConfig.horaChatId,

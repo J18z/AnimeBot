@@ -143,13 +143,60 @@ function matchSharedDashList(line) {
 }
 
 // يجرب كل الأشكال على سطر وحد، بالأولوية: قوائم مشتركة، قوسين، مرفوع، مباشر
-function parseLine(line) {
+// ⭐ نجوم: رقم النجوم (بدون k، أرقام عادية) يُرصد كإجمالي منفصل عن الفلوس 💰
+// أمثلة: "⪦ لونا⛰️ ⭐20- | 💰50k-"  → فلوس -50 ونجوم -20 | "⪦ لونا⛰️ ⭐20" → نجوم 20 فقط
+// الرقم ممكن يجي قبل ⭐ أو بعدها (⭐20- | 20-⭐)، وإذا الرقم اللي جنبها لرقم الفلوس 💰 (مثل "20⭐ 50💰") نأخذ الرقم الثاني
+const NUM_AFTER_RE = /^(\s*)([+-]?)\s*(\d+)\s*[kKكـ]?\s*([+-]?)/u;
+const NUM_BEFORE_RE = /([+-]?)\s*(\d+)\s*[kKكـ]?\s*([+-]?)(\s*)$/u;
+function extractStars(line) {
+  const idx = line.indexOf("⭐");
+  if (idx < 0) return null;
+  const starEnd = idx + (line[idx + 1] === "\uFE0F" ? 2 : 1);
+  const before = line.slice(0, idx);
+  const after = line.slice(starEnd);
+  const signed = (m, i1, i3) => {
+    const n = parseInt(m[i1 + 1], 10);
+    return m[i1] === "-" || m[i3] === "-" ? -n : n;
+  };
+  const A = after.match(NUM_AFTER_RE);
+  const aIsMoney = A && /^\s*[kKكـ]?\s*[+-]?\s*💰/u.test(after.slice(A[0].length));
+  if (A && !aIsMoney) {
+    return { stars: signed(A, 2, 4), rest: before + " " + after.slice(A[0].length).replace(/^\s*\|\s*/, " ").replace(/\s*\|\s*$/, " ") };
+  }
+  const B = before.match(NUM_BEFORE_RE);
+  if (B) {
+    const head = before.slice(0, B.index);
+    if (!/💰\uFE0F?\s*$/u.test(head)) {
+      return { stars: signed(B, 1, 3), rest: head.replace(/\s*\|\s*$/, " ") + " " + after.replace(/^\s*\|\s*/, " ").replace(/\s*\|\s*$/, " ") };
+    }
+  }
+  return null;
+}
+
+function parseLineNoStars(line) {
   return (
     matchSharedDashList(line) ||
     matchBraced(line) ||
     matchSuperscriptLabeled(line) ||
     matchDirect(line)
   );
+}
+
+// يجرب كل الأشكال على سطر وحد، بالأولوية: قوائم مشتركة، قوسين، مرفوع، مباشر
+function parseLine(line) {
+  const st = extractStars(line);
+  if (!st) return parseLineNoStars(line);
+  const found = parseLineNoStars(st.rest);
+  if (found && found.length === 1) {
+    found[0].stars = st.stars;
+    return found;
+  }
+  if (found) return found; // أشكال جماعية: نتجاهل النجوم
+  // نجوم بدون فلوس: نبني الاسم من بداية السطر
+  const re = new RegExp(`^${LEADING_BULLET}(${NAME_CHARS})\\s*(${EMOJI_CLUSTER})?\\s*[|]?\\s*$`, "u");
+  const m = st.rest.match(re);
+  if (!m) return null;
+  return [m[2] ? { key: makeKey(m[1], m[2]), amount: 0, stars: st.stars } : { namePartial: m[1].trim(), amount: 0, stars: st.stars }];
 }
 
 // نقطة الدخول — تاخذ نص رسالة كامل (ممكن عدة أسطر) وترجع مصفوفة
