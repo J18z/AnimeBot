@@ -19,7 +19,9 @@ const AFTER_POINT_IMAGE_MS = 1500; // بعد النقطة → السؤال ال�
 const AUTO_SKIP_MS = 6000; // ما أحد عرف السؤال: سكب تلقائي
 const MAX_CONSEC_SKIPS = 10; // حماية: 10 أسئلة ورا بعض بدون أي إجابة = إنهاء (ما نكمل 80 سؤال لقروب فاضي)
 const ANNOUNCE_BEFORE_MS = 5 * 60 * 1000; // الإعلان قبل الموعد بخمس دقائق
-const START_DELAY_MS = 3000; // بعد "بنبدأ" وقبل أول فقرة
+const START_DELAY_MS = 2000; // بعد "بنبدأ" وقبل اسم أول فقرة
+const COUNTDOWN_WAIT_MS = 6000; // بعد منشن الكل وقبل العد
+const COUNTDOWN_STEP_MS = 1000; // بين 1 و2 و3 وبنبدأ
 const RIYADH_OFFSET_MS = 3 * 60 * 60 * 1000; // توقيت السعودية UTC+3 (بدون توقيت صيفي)
 const MENTION_CHUNK = 200;
 
@@ -60,7 +62,7 @@ class MatsuriContest extends Contest {
     super(chatId, sock, "general", Infinity, { matsuriMode: true, roundsTarget: opts.total });
     this.total = opts.total;
     this.poolNames = opts.pools.length ? opts.pools : SECTIONS.map((s) => s.name);
-    this.sliceSize = Math.max(1, Math.round(this.total * 0.1)); // كل 10% من العدد = فقرة
+    this._buildPlan();
     this.onFinish = opts.onFinish || (async () => {});
     this._lastLabel = null;
     this._consecSkips = 0;
@@ -68,9 +70,38 @@ class MatsuriContest extends Contest {
     this._ended = false;
   }
 
+  // 🗂️ توزيع الفقرات حسب حجم المسابقة (idx = عدد الأسئلة اللي انجاوبت، السكب ما يُحسب):
+  //   • أقل من 50 : تنقسم بالتساوي على الفقرات المختارة (30 ÷ 5 فقرات = 6 لكل فقرة)
+  //   • من 50 إلى 89 : كل فقرة 10 أسئلة وتدور على الفقرات من جديد لو خلصت
+  //   • 90 فأكثر : كل فقرة 15–20 سؤال (عشوائي) وتدور لين يكتمل العدد
+  _buildPlan() {
+    const n = this.poolNames.length;
+    if (this.total < 50) {
+      this._mode = "even";
+    } else if (this.total < 90) {
+      this._mode = "ten";
+    } else {
+      this._mode = "rand";
+      this._bounds = []; // نهاية كل شريحة (تراكمي)
+      let acc = 0;
+      while (acc < this.total) {
+        acc += 15 + Math.floor(Math.random() * 6);
+        this._bounds.push(acc);
+      }
+    }
+    this._n = n;
+  }
+
+  _sliceIndex(idx) {
+    if (this._mode === "even") return Math.min(this._n - 1, Math.floor((idx * this._n) / this.total));
+    if (this._mode === "ten") return Math.floor(idx / 10);
+    const k = this._bounds.findIndex((b) => idx < b);
+    return k < 0 ? this._bounds.length - 1 : k;
+  }
+
   // الفقرة اللي يقع فيها السؤال رقم idx (يبدأ من 0)
   sectionAt(idx) {
-    const slice = Math.floor(idx / this.sliceSize);
+    const slice = this._sliceIndex(idx);
     const name = this.poolNames[slice % this.poolNames.length];
     const sec = SECTIONS.find((s) => s.name === name) || SECTIONS[0];
     // الكتابة: اسم واحد، وبنص المسابقة تتحول لـ"كتابة اسمين"
@@ -109,10 +140,10 @@ class MatsuriContest extends Contest {
     }
     const sec = this.sectionAt(idx);
     this.fixedWordCount = sec.words; // الكتابة: 1 أو 2 (غيرها يتجاهلها)
+    // التجهيز المسبق كان لسؤال بعد "إجابة"، لو صار سكب أو تغيرت الفقرة ما ينفع: نفك قفله ونختار من جديد
+    if (this._plannedPoolType && this._plannedPoolType !== sec.pool) this._clearPlanned();
     if (sec.label !== this._lastLabel) {
       this._lastLabel = sec.label;
-      // الصور المجهّزة مسبقاً للفقرة القديمة ما تنفع لو تغيّرت الفقرة (نفك قفلها ونختار من جديد)
-      if (this._plannedPoolType && this._plannedPoolType !== sec.pool) this._clearPlanned();
       try {
         await this.sendChat(`*${sec.label}*`);
       } catch (e) {
@@ -168,8 +199,7 @@ class MatsuriContest extends Contest {
   async _autoSkip() {
     const round = this.currentRound;
     if (!this.active || !round || round.finished) return;
-    round.finished = true;
-    this.roundsCompleted += 1;
+    round.finished = true; // السكب ما يُحسب من إجمالي الأسئلة: يجي سؤال بديل لين تكتمل العدد بالإجابات الصحيحة
     this.clearRoundWatchdog();
     this._consecSkips += 1;
     try {
@@ -178,10 +208,6 @@ class MatsuriContest extends Contest {
       console.error("⚠️ ماتسوري: فشل إرسال رسالة السكب (نكمل):", e && e.message);
     }
     if (!this.active) return;
-    if (this.roundsCompleted >= this.total) {
-      await this.endContest("done");
-      return;
-    }
     if (this._consecSkips >= MAX_CONSEC_SKIPS) {
       await this.endContest("idle");
       return;
@@ -300,7 +326,7 @@ function mentionAllBlocks(participants, headText) {
   const blocks = [];
   for (let i = 0; i < list.length; i += MENTION_CHUNK) {
     const chunk = list.slice(i, i + MENTION_CHUNK);
-    const text = (i === 0 ? headText + "\n\n" : "") + chunk.map((p) => "@" + S.digits(p.id)).join(" ");
+    const text = (i === 0 && headText ? headText + "\n\n" : "") + chunk.map((p) => "@" + S.digits(p.id)).join(" ");
     blocks.push({ text, mentions: chunk.map((p) => p.id) });
   }
   if (!blocks.length) blocks.push({ text: headText, mentions: [] });
@@ -387,8 +413,17 @@ function createScheduler(ctx) {
       return;
     }
     await setGroupOpen(sock, sch.chatId, true);
-    await sendMentionAll(sock, sch.chatId, "*بنبدأ*");
-    await sleep(START_DELAY_MS);
+    await sendMentionAll(sock, sch.chatId, "");
+    await sleep(COUNTDOWN_WAIT_MS);
+    for (const word of ["1", "2", "3", "*بنبدأ*"]) {
+      if (!S.getSchedule()) return; // انلغت أثناء العد
+      try {
+        await sock.sendMessage(sch.chatId, { text: word });
+      } catch (e) {
+        console.error("⚠️ ماتسوري: فشل إرسال العد التنازلي (نكمل):", e && e.message);
+      }
+      await sleep(word === "*بنبدأ*" ? START_DELAY_MS : COUNTDOWN_STEP_MS);
+    }
     const cur = S.getSchedule();
     if (!cur) return; // انلغت (.انهاء المسابقة) أثناء الانتظار
     startContest(cur.chatId, cur.total, cur.pools);

@@ -13,6 +13,7 @@
 const store = require("../src/dataStore");
 const S = require("./mStore");
 const C = require("./mContest");
+const DATA = require("./matsuriData");
 
 const FLOW_TTL_MS = 10 * 60 * 1000;
 const FLOW_MAX = 300;
@@ -152,11 +153,48 @@ function yn(text) {
 function flowKey(chatId, senderId) {
   return `${chatId}|${senderId}`;
 }
+// كل سطر بخط غليظ (واتساب ما يدعم الغليظ عبر أسطر): نتجاهل قوائم النقابات وأسطر الاقتباس
+function bold(text) {
+  return String(text)
+    .split("\n")
+    .map((l) => (!l.trim() || /^>/.test(l) || /^\d+\. /.test(l) ? l : `*${l.trim()}*`))
+    .join("\n");
+}
+const rb = (sock, chatId, msg, text, mentions) => reply(sock, chatId, msg, bold(text), mentions);
+
+const NICK_IDLE_MS = 60 * 1000; // دقيقة بدون رد = إلغاء طلب .لقب
+
+function clearFlowTimer(f) {
+  if (f && f.timer) {
+    clearTimeout(f.timer);
+    f.timer = null;
+  }
+}
 function setFlow(chatId, senderId, f) {
   const k = flowKey(chatId, senderId);
+  clearFlowTimer(flows.get(k));
+  clearFlowTimer(f);
+  const nf = { ...f, at: Date.now(), timer: null };
   flows.delete(k);
-  flows.set(k, { ...f, at: Date.now() });
-  while (flows.size > FLOW_MAX) flows.delete(flows.keys().next().value);
+  flows.set(k, nf);
+  while (flows.size > FLOW_MAX) {
+    const oldest = flows.keys().next().value;
+    clearFlowTimer(flows.get(oldest));
+    flows.delete(oldest);
+  }
+  if (nf.type === "nick") {
+    nf.timer = setTimeout(() => {
+      if (flows.get(k) !== nf) return;
+      flows.delete(k);
+      nf.timer = null;
+      const sock = ctx.getSock();
+      if (!sock) return;
+      const tag = isGroup(chatId) ? `@${S.digits(senderId)} ` : "";
+      const text = `${tag ? `*${tag.trim()}*\n` : ""}*⏱️ انلغى الطلب لأنك ما كتبت خلال دقيقة.*\n*لازم تكتب الأمر .لقب مرة ثانية.*`;
+      sock.sendMessage(chatId, isGroup(chatId) ? { text, mentions: [senderId] } : { text }).catch(() => {});
+    }, NICK_IDLE_MS);
+    if (nf.timer.unref) nf.timer.unref();
+  }
 }
 function getFlow(chatId, senderId) {
   const k = flowKey(chatId, senderId);
@@ -169,7 +207,9 @@ function getFlow(chatId, senderId) {
   return f;
 }
 function dropFlow(chatId, senderId) {
-  flows.delete(flowKey(chatId, senderId));
+  const k = flowKey(chatId, senderId);
+  clearFlowTimer(flows.get(k));
+  flows.delete(k);
 }
 
 // ── التسجيل (.لقب) ────────────────────────────────────────────────
@@ -202,12 +242,12 @@ async function finalizeNick(sock, chatId, msg, senderId, f) {
     f.nick = null;
     f.guild = null;
     setFlow(chatId, senderId, f);
-    await reply(sock, chatId, msg, `⚠️ اللقب ${S.display(dup)} مسجل مسبقاً بنفس النقابة.\n${ASK_NICK(f)}`);
+    await rb(sock, chatId, msg, `⚠️ اللقب ${S.display(dup)} مسجل مسبقاً بنفس النقابة.\n${ASK_NICK(f)}`);
     return;
   }
   const e = S.setEntry(f.userId, f.nick, f.guild);
   dropFlow(chatId, senderId);
-  await reply(sock, chatId, msg, f.other ? `✅ تم تسجيل ${S.display(e)}` : `✅ تم تسجيل لقبك: ${S.display(e)}`);
+  await rb(sock, chatId, msg, f.other ? `✅ تم تسجيل ${S.display(e)}` : `✅ تم تسجيل لقبك: ${S.display(e)}`);
 }
 
 async function processNickText(sock, chatId, msg, senderId, f, text) {
@@ -219,11 +259,11 @@ async function processNickText(sock, chatId, msg, senderId, f, text) {
   }
   if (!p.ok) {
     if (p.reason === "bad_guild") {
-      await reply(sock, chatId, msg, badGuildText());
+      await rb(sock, chatId, msg, badGuildText());
     } else if (p.reason === "too_long") {
-      await reply(sock, chatId, msg, `⚠️ اللقب طويل (الحد ${S.MAX_NICK_LEN} حرف).\n${ASK_NICK(f)}`);
+      await rb(sock, chatId, msg, `⚠️ اللقب طويل (الحد ${S.MAX_NICK_LEN} حرف).\n${ASK_NICK(f)}`);
     } else {
-      await reply(sock, chatId, msg, ASK_NICK(f));
+      await rb(sock, chatId, msg, ASK_NICK(f));
     }
     return;
   }
@@ -231,7 +271,7 @@ async function processNickText(sock, chatId, msg, senderId, f, text) {
   f.guild = p.guild ? p.guild.n : null;
   f.step = "confirm";
   setFlow(chatId, senderId, f);
-  await reply(sock, chatId, msg, ASK_CONFIRM(f));
+  await rb(sock, chatId, msg, ASK_CONFIRM(f));
 }
 
 async function continueNickFlow(sock, chatId, msg, senderId, f, text) {
@@ -242,20 +282,20 @@ async function continueNickFlow(sock, chatId, msg, senderId, f, text) {
       if (f.guild) return finalizeNick(sock, chatId, msg, senderId, f);
       f.step = "guild";
       setFlow(chatId, senderId, f);
-      return reply(sock, chatId, msg, `${guildListText()}\n\nحدد ${whoText(f).you} (باسمها أو شعارها أو رقمها).`);
+      return rb(sock, chatId, msg, `${guildListText()}\n\nحدد ${whoText(f).you} (باسمها أو شعارها أو رقمها).`);
     }
     if (a === "no") {
       f.step = "nick";
       f.nick = null;
       f.guild = null;
       setFlow(chatId, senderId, f);
-      return reply(sock, chatId, msg, ASK_NICK(f));
+      return rb(sock, chatId, msg, ASK_NICK(f));
     }
-    return reply(sock, chatId, msg, ASK_CONFIRM(f));
+    return rb(sock, chatId, msg, ASK_CONFIRM(f));
   }
   if (f.step === "guild") {
     const g = S.guildFromToken(text.replace(/[​-‏‪-‮⁦-⁩﻿]/g, "").trim());
-    if (!g) return reply(sock, chatId, msg, `${guildListText()}\n\nما عرفت النقابة، اكتب اسمها أو شعارها أو رقمها.`);
+    if (!g) return rb(sock, chatId, msg, `${guildListText()}\n\nما عرفت النقابة، اكتب اسمها أو شعارها أو رقمها.`);
     f.guild = g.n;
     return finalizeNick(sock, chatId, msg, senderId, f);
   }
@@ -299,13 +339,13 @@ async function cmdNick(sock, chatId, msg, senderId, args, w) {
     const lines = other
       ? `لقبه: ${S.display(existing)}\nعدد مشاركاته في مسابقات البوت: ${existing.contests}`
       : `لقبك: ${S.display(existing)}\nعدد مشاركاتك في مسابقات البوت: ${existing.contests}`;
-    await reply(sock, chatId, msg, where ? `${lines}` : lines);
+    await rb(sock, chatId, msg, lines);
     return true;
   }
   const f = { type: "nick", step: "nick", userId, other };
   setFlow(chatId, senderId, f);
   if (rest) await processNickText(sock, chatId, msg, senderId, f, rest);
-  else await reply(sock, chatId, msg, ASK_NICK(f));
+  else await rb(sock, chatId, msg, ASK_NICK(f));
   return true;
 }
 
@@ -380,7 +420,7 @@ async function continueEditFlow(sock, chatId, msg, senderId, f, text) {
 }
 
 // ── .المسجلين / .منشن_المسجلين ───────────────────────────────────
-const LIST_HEADER = "˼‏⬩بــوت ريــم • レム┊🤖˹\n❆ـ⋅ ┈── ─━ •⊰✣⊱ • ━─ ──┈ ⋅ـ❆\n◞قـائـمـة الاوامــر╎˼‏🧾˹⤹◜\n◝الـمـسـجـلـيـن⇆✒️◟\nـ»» ┉ ٠ ┈─ • ⊰ 倖 ⊱ • ─┈ ٠ ┉ ««ـ";
+const LIST_HEADER = "˼\u200F⬩بــوت ريــم • レム┊🤖˹\n❆ـ⋅ ┈── ─━ •⊰✣⊱ • ━─ ──┈ ⋅ـ❆\n◞الـمـسـجـلـيـن╎˼\u200F✒️˹⤹◜\nـ»» ┉ ٠ ┈─ • ⊰ 倖 ⊱ • ─┈ ٠ ┉ ««ـ";
 const LIST_FOOTER = "ـ»»——⍟——««ـ\n✪ مـرحـبـاً، مـعـكـم بـوت ريـم للاسـتـمـارات الـخـاصـة بــ وزارة ماتسوري🧧\n❆ـ⋅ ┈── ─━ •⊰✣⊱ • ━─ ──┈ ⋅ـ❆\n~✷┇تــ✍︎ــوقــيــ؏↯:~\n◜Hikari✨Matsuri •🧧◝";
 const LIST_LIMIT = 3500;
 
@@ -629,6 +669,53 @@ async function cmdAnnounce(sock, chatId, msg) {
   await reply(sock, chatId, msg, `✅ تم الإعلان في ${ok} قروب${fail ? `\n⚠️ فشل في ${fail} (تأكد إن البوت داخلها)` : ""}`);
 }
 
+// ── قسم البوت والمساعدة (.06) ─────────────────────────────────────
+const HELP06 = `˼\u200F⬩بــوت ريــم • レム┊🤖˹
+❆ـ⋅ ┈── ─━ •⊰✣⊱ • ━─ ──┈ ⋅ـ❆
+     ◞قـسـم الـمـسـاعـدة╎˼\u200F🎐˹⤹◜
+        ◝الاوامــر⇆📍◟
+ـ»» ┉ ٠ ┈─ • ⊰ 倖 ⊱ • ─┈ ٠ ┉ ««ـ
+
+> *✠ لـلـجـمـيـع • 👥◜*
+⪦ .لـقـب [اللقب والنقابة] :
+> تسجيل لقبك ونقابتك (بالقروب أو بالخاص)، وإذا كنت مسجل يعرض لقبك وعدد مشاركاتك بمسابقات البوت.
+⪦ .مـسـاعـدة :
+> قائمة مختصرة بأوامر ماتسوري.
+
+> *✠ لـحـامـلـي الـصـلاحـيـات • 🔖◜*
+⪦ .الـمـسـجـلـيـن :
+> قائمة المسجلين مرتبة بالنقابات.
+⪦ .قـفـل قـروب / .فـتـح قـروب :
+> قفل القروب على الأعضاء أو فتحه.
+⪦ .مـنـشـن [نص] :
+> منشن لجميع أعضاء القروب.
+⪦ .رفـع / .تـرقـيـة @ :
+> ترقية عضو إلى مشرف بالقروب.
+⪦ .تـنـزيـل @ :
+> تنزيل مشرف إلى عضو عادي.
+⪦ .حـذف :
+> بالرد على رسالة: يحذفها ويحذف أمر الحذف.
+
+> *✠ لـلـمـالـك والـقـائـد • 👑◜*
+⪦ .بـدء مـسـابـقـة [العدد] :
+> جدولة مسابقة يومية بقروب المسابقات (الفقرات والوقت بتوقيت السعودية).
+⪦ .انـهـاء الـمـسـابـقـة :
+> إلغاء الجدولة اليومية وإيقاف المسابقة الجارية.
+⪦ .ازالـة لـقـب / .عـدل لـقـب :
+> بالمنشن أو الرد أو بالرقم والنقابة (1🔆) أو باللقب (بلاك🔆).
+⪦ .مـنـشـن_الـمـسـجـلـيـن :
+> نفس قائمة المسجلين مع منشن.
+⪦ .مـنـح @ / .الـغ @ / .صـلاحـيـات :
+> منح حزمة ماتسوري أو سحبها أو عرضها.
+⪦ .اعـلان :
+> بالرد على رسالة (مثل النتائج): ينشرها بقروبات الإعلانات.
+ ـ»»——⍟——««ـ
+✪ مـرحـبـاً، مـعـكـم بـوت ريـم للاسـتـمـارات الـخـاصـة بــ وزارة ماتسوري🧧
+❆ـ⋅ ┈── ─━ •⊰✣⊱ • ━─ ──┈ ⋅ـ❆
+~✷┇تــ✍︎ــوقــيــ؏↯:~
+◜Hikari✨Matsuri •🧧◝`;
+DATA.menus["06"] = HELP06;
+
 // ── مساعدة ────────────────────────────────────────────────────────
 function helpText() {
   return (
@@ -688,7 +775,11 @@ async function handleInner(sock, msg, text, chatId, senderId) {
         dropFlow(chatId, senderId);
         return false;
       }
-      if (f.type === "nick") await continueNickFlow(sock, chatId, msg, senderId, f, text);
+      if (f.type === "nick") {
+        await continueNickFlow(sock, chatId, msg, senderId, f, text);
+        const nf = getFlow(chatId, senderId);
+        if (nf) setFlow(chatId, senderId, nf); // نشاط جديد: نجدد مهلة الدقيقة
+      }
       else if (f.type === "edit") await continueEditFlow(sock, chatId, msg, senderId, f, text);
       else if (f.type === "contest") await continueContestFlow(sock, chatId, msg, senderId, f, text);
       return true;
@@ -795,6 +886,9 @@ async function handleInner(sock, msg, text, chatId, senderId) {
     case "اعلان":
       if (!allowed(true) || args) return false;
       await cmdAnnounce(sock, chatId, msg);
+      return true;
+    case "06":
+      await reply(sock, chatId, msg, HELP06);
       return true;
     case "مساعدة":
       await reply(sock, chatId, msg, helpText());

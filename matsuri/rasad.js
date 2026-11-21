@@ -327,9 +327,14 @@ async function handleRasadMessage(sock, msg, text, chatId, senderId) {
 
   if (t === ".انهاء_الرصد") {
     active = false;
-    await persist();
     await reply(sock, chatId, msg, "🛑 انتهى الرصد.");
     await reply(sock, chatId, msg, renderGroupedList());
+    // 🔄 القائمة النهائية انرسلت: نصفّر الأرصدة (فلوس ونجوم) والسجل الخام، عشان الرصد الجديد يبدأ من الصفر
+    totals = {};
+    starTotals = {};
+    startedAt = null;
+    await persist();
+    await clearRawLog();
     return true;
   }
 

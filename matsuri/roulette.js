@@ -11,16 +11,22 @@
 const { getDb } = require("../src/db");
 const store = require("../src/dataStore");
 const RD = require("./rouletteData");
+const { extractEmoji } = require("./rasadParser");
+const { GUILDS } = require("./mStore");
 
 // حالة بالذاكرة: purchases: [{label, money, stars}], counts: {senderId: totalRolls}
-let state = { purchases: [], counts: {} };
+// items: [{label, cmds:[...]}] = الأوامر اللي جت كل شخص (قائمة .المشتريات)
+let state = { purchases: [], counts: {}, items: [] };
+// انتظار اختيار رقم لـ"نسخ الروليت عادي": `${chatId}|${senderId}` → حالة
+const pendingCopies = new Map();
+const PENDING_TTL_MS = 60 * 60 * 1000;
 
 async function loadFromDb() {
   const db = getDb();
   if (!db) return; // بدون قاعدة بيانات، يشتغل بالذاكرة بس (يُفقد عند إعادة التشغيل)
   try {
     const doc = await db.collection("matsuri_roulette").findOne({ _id: "state" });
-    if (doc) state = { purchases: doc.purchases || [], counts: doc.counts || {} };
+    if (doc) state = { purchases: doc.purchases || [], counts: doc.counts || {}, items: doc.items || [] };
   } catch (err) {
     console.error("خطأ تحميل بيانات الروليت:", err.message);
   }
@@ -32,7 +38,7 @@ async function persist() {
   try {
     await db
       .collection("matsuri_roulette")
-      .updateOne({ _id: "state" }, { $set: { purchases: state.purchases, counts: state.counts } }, { upsert: true });
+      .updateOne({ _id: "state" }, { $set: { purchases: state.purchases, counts: state.counts, items: state.items } }, { upsert: true });
   } catch (err) {
     console.error("خطأ حفظ بيانات الروليت:", err.message);
   }
@@ -78,32 +84,85 @@ function parseParts(text) {
   return { parts, label: rest.trim() };
 }
 
-// يبني رسالة الشراء ويحسب التكلفة ويسحب الأوامر عشوائياً
-function buildPurchase(parts, label) {
+const COPY_CMD = "نسخ الروليت عادي";
+const FREE_TWO_CMD = "لفتين عادية مجانا";
+const goldLine = (cmd) => `*⬩⧼⬦ ${cmd} ⧽⬩*`;
+const goldStruck = (cmd) => `~*⬩⧼⬦ ${cmd} ⧽⬩*~`;
+const normalLine = (cmd) => `*⛋ ${cmd}*`;
+
+// يبني أسطر الاستمارة: كل عنصر {kind:"line"|"copy", text}. أوامر "لفتين مجانا" تتحول لأمرين عاديين عشوائيين
+// (السطر الأصلي ينشطب)، و"نسخ الروليت عادي" ينتظر رقم الأمر من الأدمن. recorded = الأوامر الفعلية للمشتريات
+function buildLines(parts) {
   const usedGold = new Set();
   const usedNormal = new Set();
   const lines = [];
+  const recorded = [];
   let totalMoney = 0;
   let totalStars = 0;
-
   for (const p of parts) {
     const list = p.tier === "ذهبي" ? RD.goldCommands : RD.normalCommands;
     const usedSet = p.tier === "ذهبي" ? usedGold : usedNormal;
     for (let i = 0; i < p.count; i++) {
       const cmd = pickRandom(list, usedSet);
-      lines.push(p.tier === "ذهبي" ? `*⬩⧼⬦ ${cmd} ⧽⬩*` : `*⛋ ${cmd}*`);
+      if (p.tier !== "ذهبي") {
+        lines.push({ kind: "line", text: normalLine(cmd) });
+        recorded.push(cmd);
+      } else if (cmd === FREE_TWO_CMD) {
+        lines.push({ kind: "line", text: goldStruck(cmd) });
+        for (let k = 0; k < 2; k++) {
+          const c2 = pickRandom(RD.normalCommands, usedNormal);
+          lines.push({ kind: "line", text: normalLine(c2) });
+          recorded.push(c2);
+        }
+      } else if (cmd === COPY_CMD) {
+        lines.push({ kind: "copy", cmd });
+      } else {
+        lines.push({ kind: "line", text: goldLine(cmd) });
+        recorded.push(cmd);
+      }
     }
     const unitPrice = RD.PRICES[p.tier][p.currency];
-    const cost = unitPrice * p.count;
-    if (p.currency === "نجوم") totalStars += cost;
-    else totalMoney += cost;
+    if (p.currency === "نجوم") totalStars += unitPrice * p.count;
+    else totalMoney += unitPrice * p.count;
   }
+  return { lines, recorded, totalMoney, totalStars };
+}
 
-  const text = RD.purchaseTemplate
-    .replace("{label}", label)
-    .replace("{lines}", lines.join("\n"));
+// copyChoices: أوامر مختارة لكل "نسخ" بالترتيب (اللي ما انختار بعد يطلع بدون شطب)
+function renderForm(label, lines, copyChoices) {
+  let ci = 0;
+  const out = [];
+  for (const l of lines) {
+    if (l.kind === "copy") {
+      const chosen = copyChoices[ci++];
+      if (chosen) {
+        out.push(goldStruck(l.cmd));
+        out.push(normalLine(chosen));
+      } else out.push(goldLine(l.cmd));
+    } else out.push(l.text);
+  }
+  return RD.purchaseTemplate.replace("{label}", label).replace("{lines}", out.join("\n"));
+}
 
-  return { text, totalMoney, totalStars };
+function numberedNormalList() {
+  return RD.normalCommands.map((c, i) => `${i + 1}. ${c}`).join("\n");
+}
+
+function addItems(label, cmds) {
+  if (!cmds.length) return;
+  let it = state.items.find((x) => x.label === label);
+  if (!it) {
+    it = { label, cmds: [] };
+    state.items.push(it);
+  }
+  it.cmds.push(...cmds);
+}
+
+// يبني رسالة الشراء ويحسب التكلفة ويسحب الأوامر عشوائياً. يرجع أيضاً بيانات النسخ المعلّق
+function buildPurchase(parts, label) {
+  const { lines, recorded, totalMoney, totalStars } = buildLines(parts);
+  const copies = lines.filter((l) => l.kind === "copy").length;
+  return { text: renderForm(label, lines, []), totalMoney, totalStars, lines, recorded, copies };
 }
 
 // يسحب أوامر عشوائية بس (بدون حساب تكلفة ولا قالب) — يُستخدم بأمر
@@ -133,9 +192,10 @@ function addPurchaseRecord(state, label, money, stars) {
   entry.stars += stars;
 }
 
-function renderPurchasesList(state) {
+// المصروفات: الفلوس/النجوم المصروفة (القائمة القديمة للمشتريات)
+function renderExpensesList(state) {
   if (!state.purchases.length) {
-    return RD.purchasesListTemplate.replace("{entries}", "⪦ لا يوجد مشتريات حالياً");
+    return RD.expensesListTemplate.replace("{entries}", "⪦ لا يوجد مصروفات حالياً");
   }
   const entries = state.purchases
     .map((p) => {
@@ -147,7 +207,28 @@ function renderPurchasesList(state) {
       return `⪦ ${p.label} ${bits.join(" | ")}`;
     })
     .join("\n");
-  return RD.purchasesListTemplate.replace("{entries}", entries);
+  return RD.expensesListTemplate.replace("{entries}", entries);
+}
+
+const stripVs = (x) => String(x || "").replace(/\uFE0F/g, "");
+
+// المشتريات: الأوامر اللي جت كل شخص مرتبين بالنقابات
+function renderPurchasesList(state) {
+  const items = (state.items || []).filter((x) => x.cmds && x.cmds.length);
+  if (!items.length) return RD.purchasesListTemplate.replace("{entries}", "⪦ لا يوجد مشتريات حالياً");
+  const blocks = [];
+  const used = new Set();
+  const block = (title, list) => {
+    if (!list.length) return;
+    blocks.push(`${title}\n${list.map((it) => `⪦ ${it.label}\n${it.cmds.join("\n")}`).join("\n\n")}`);
+  };
+  for (const g of GUILDS) {
+    const list = items.filter((it) => stripVs(extractEmoji(it.label)) === stripVs(g.emoji));
+    list.forEach((it) => used.add(it));
+    block(`> *✠ ${g.title} • ${g.emoji}◜*`, list);
+  }
+  block("> *✠ غير مصنّف◜*", items.filter((it) => !used.has(it)));
+  return RD.purchasesListTemplate.replace("{entries}", blocks.join("\n\n"));
 }
 
 function totalRolls(parts) {
@@ -158,14 +239,49 @@ async function reply(sock, chatId, msg, text) {
   await sock.sendMessage(chatId, { text }, { quoted: msg });
 }
 
+// يرسل استمارة الشراء، ولو فيها "نسخ الروليت عادي" يرسل قائمة الأوامر العادية مرقمة وينتظر رقم الأدمن
+async function sendPurchase(sock, chatId, msg, pk, label, built) {
+  pendingCopies.delete(pk);
+  await reply(sock, chatId, msg, built.text);
+  if (built.copies > 0) {
+    pendingCopies.set(pk, { label, lines: built.lines, copies: built.copies, chosen: [], at: Date.now() });
+    await reply(sock, chatId, msg, `${numberedNormalList()}\n\n*اكتب رقم الأمر اللي اختاره${built.copies > 1 ? ` (${built.copies} اختيارات، واحد واحد)` : ""}*`);
+  }
+}
+
 // نقطة الدخول — ترجع true لو تكفلت بالرسالة
 async function handleRouletteMessage(sock, msg, text, chatId, senderId) {
   const t = text.trim();
+
+  // 🔢 اختيار رقم لـ"نسخ الروليت عادي" (الأدمن يكتب رقم الأمر)
+  const pk = `${chatId}|${senderId}`;
+  const pend = pendingCopies.get(pk);
+  if (pend && Date.now() - pend.at > PENDING_TTL_MS) pendingCopies.delete(pk);
+  else if (pend && /^[0-9٠-٩]{1,3}$/.test(t)) {
+    const n = Number(t.replace(/[٠-٩]/g, (d) => "٠١٢٣٤٥٦٧٨٩".indexOf(d)));
+    if (n < 1 || n > RD.normalCommands.length) {
+      await reply(sock, chatId, msg, `⚠️ اكتب رقم من 1 إلى ${RD.normalCommands.length}.`);
+      return true;
+    }
+    pend.chosen.push(RD.normalCommands[n - 1]);
+    const left = pend.copies - pend.chosen.length;
+    if (left > 0) {
+      await reply(sock, chatId, msg, `✅ تم. باقي ${left} اختيار، اكتب رقم الأمر التالي.`);
+      return true;
+    }
+    pendingCopies.delete(pk);
+    addItems(pend.label, pend.chosen);
+    await persist();
+    await reply(sock, chatId, msg, renderForm(pend.label, pend.lines, pend.chosen));
+    return true;
+  }
   const isRouletteCmd =
     t === ".000" ||
     t === ".روليت_اوامر" ||
     t === ".المشتريات" ||
     t === ".تصفير_المشتريات" ||
+    t === ".المصروفات" ||
+    t === ".تصفير_المصروفات" ||
     /^\.شراء(\+|_مميز)?\s+روليت(\s|$)/.test(t) ||
     /^\.روليت\s+\d/.test(t);
 
@@ -186,13 +302,28 @@ async function handleRouletteMessage(sock, msg, text, chatId, senderId) {
     return true;
   }
 
+  if (t === ".المصروفات") {
+    await reply(sock, chatId, msg, renderExpensesList(state));
+    return true;
+  }
+
+  if (t === ".تصفير_المصروفات") {
+    // يصفّر المصروفات وحدود اللفات (نفس سلوك الأمر القديم)، وما يمس قائمة المشتريات (الأوامر)
+    state.purchases = [];
+    state.counts = {};
+    await persist();
+    await reply(sock, chatId, msg, "✅ تم تصفير قائمة المصروفات، تقدرون تبدأون من جديد.");
+    return true;
+  }
+
   if (t === ".المشتريات") {
     await reply(sock, chatId, msg, renderPurchasesList(state));
     return true;
   }
 
   if (t === ".تصفير_المشتريات") {
-    state = { purchases: [], counts: {} };
+    state.items = [];
+    pendingCopies.clear();
     await persist();
     await reply(sock, chatId, msg, "✅ تم تصفير قائمة المشتريات، تقدرون تبدأون من جديد.");
     return true;
@@ -222,11 +353,12 @@ async function handleRouletteMessage(sock, msg, text, chatId, senderId) {
   if (plusMatch) {
     const parts = [{ count: RD.LIMITS.plusExtra, tier: plusMatch[1], currency: plusMatch[2] ? "نجوم" : "فلوس" }];
     const label = plusMatch[3].trim();
-    const { text: purchaseText, totalMoney, totalStars } = buildPurchase(parts, label);
-    addPurchaseRecord(state, label, totalMoney, totalStars);
+    const built = buildPurchase(parts, label);
+    addPurchaseRecord(state, label, built.totalMoney, built.totalStars);
     state.counts[label] = (state.counts[label] || 0) + RD.LIMITS.plusExtra;
+    addItems(label, built.recorded);
     await persist();
-    await reply(sock, chatId, msg, purchaseText);
+    await sendPurchase(sock, chatId, msg, pk, label, built);
     return true;
   }
 
@@ -262,11 +394,12 @@ async function handleRouletteMessage(sock, msg, text, chatId, senderId) {
       return true;
     }
 
-    const { text: purchaseText, totalMoney, totalStars } = buildPurchase(parts, label);
-    addPurchaseRecord(state, label, totalMoney, totalStars);
+    const built = buildPurchase(parts, label);
+    addPurchaseRecord(state, label, built.totalMoney, built.totalStars);
     state.counts[key] = already + requested;
+    addItems(label, built.recorded);
     await persist();
-    await reply(sock, chatId, msg, purchaseText);
+    await sendPurchase(sock, chatId, msg, pk, label, built);
     return true;
   }
 

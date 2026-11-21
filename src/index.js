@@ -2074,6 +2074,37 @@ if (rejectChangeMatch) {
     return;
   }
 
+  // 🗑️ .حذف (بالرد على رسالة): يحذف الرسالة ورسالة الأمر. للمالك والادمنية، بأي قروب (البوت لازم يكون مشرف).
+  // قروبات ماتسوري لها نسختها (matsuri/mSystem.js) لحاملي صلاحياتهم، وهذي تغطي بقية القروبات والمالك والادمنية
+  if (text === ".حذف" && isGroupChat(chatId) && (isOwner(senderId) || admins.isAdmin(senderId))) {
+    const qc = msg.message?.extendedTextMessage?.contextInfo;
+    if (!qc || !qc.stanzaId) {
+      await sock.sendMessage(chatId, { text: "رد على الرسالة اللي تبي تحذفها بـ .حذف" }, { quoted: msg });
+      return;
+    }
+    let meta;
+    try {
+      meta = await sock.groupMetadata(chatId);
+    } catch (e) {
+      await sock.sendMessage(chatId, { text: "⚠️ ما قدرت أجيب بيانات القروب، حاول بعد شوي." }, { quoted: msg });
+      return;
+    }
+    const botP = groupTools.botParticipant(meta, sock.user);
+    if (!groupTools.isAdminParticipant(botP)) {
+      await sock.sendMessage(chatId, { text: "⚠️ ما أقدر أحذف لأن البوت مو مشرف بهذا القروب. اعطني إشراف أول." }, { quoted: msg });
+      return;
+    }
+    const fromBot = !!botP && !!qc.participant && groupTools.participantMatches(botP, qc.participant);
+    try {
+      await sock.sendMessage(chatId, { delete: { remoteJid: chatId, fromMe: fromBot, id: qc.stanzaId, participant: qc.participant } });
+      await sock.sendMessage(chatId, { delete: msg.key });
+    } catch (e) {
+      console.error("⚠️ فشل حذف الرسالة:", e && e.message);
+      await sock.sendMessage(chatId, { text: "⚠️ ما قدرت أحذف الرسالة." }, { quoted: msg });
+    }
+    return;
+  }
+
   // 🚪 .طرد @ / 🔇 .قفل / 🔊 .فتح: إدارة القروب نفسه (المالك، والادمنية لو الأمر بحزمتهم — محصورة بشاتهم). لازم البوت مشرف
   const groupOpMatch = text.match(/^\.(طرد|قفل قروب|فتح قروب)(?:\s+(.+))?$/);
   if (groupOpMatch && (groupOpMatch[1] === "طرد" || !groupOpMatch[2])) {
