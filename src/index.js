@@ -25,7 +25,7 @@ const adminPoints = require("./adminPoints");
 const { formatSeconds, randomHamzaPattern } = require("./utils");
 const { isCommandText } = require("./commandWords");
 const sessionHealer = createHealer({ purge: purgeUserKeys });
-const { startHealthServer, setQr, clearQr } = require("./healthServer");
+const { startHealthServer, setQr, clearQr, setPairingCode } = require("./healthServer");
 const dmPermissions = require("./dmPermissions");
 const topLock = require("./topLock");
 const loopGuard = require("./loopGuard");
@@ -877,7 +877,23 @@ async function connectSocketInner() {
   sock.ev.on("connection.update", async (update) => {
     const { connection, lastDisconnect, qr } = update;
 
-    if (qr) {
+    // 🔢 ربط بكود على الرقم بدل QR: ضع PAIRING_PHONE بالصيغة الدولية (مثال 967771234567)
+    const pairPhone = String(process.env.PAIRING_PHONE || "").replace(/\D/g, "");
+    if (qr && pairPhone && !state.creds.registered) {
+      if (!sock._pairingRequested) {
+        sock._pairingRequested = true;
+        try {
+          await new Promise((r) => setTimeout(r, 1500));
+          const code = await sock.requestPairingCode(pairPhone);
+          const pretty = String(code).replace(/^(.{4})(.{4})$/, "$1-$2");
+          console.log(`🔢 كود الربط لرقم ${pairPhone}: ${pretty}\n   (واتساب > الأجهزة المرتبطة > ربط جهاز > الربط برقم الهاتف) — يظهر كمان بصفحة /qr`);
+          setPairingCode(pretty);
+        } catch (e) {
+          sock._pairingRequested = false;
+          console.error("⚠️ فشل طلب كود الربط:", e && e.message);
+        }
+      }
+    } else if (qr) {
       console.log("امسح كود QR هذا من واتساب > الأجهزة المرتبطة:");
       qrcode.generate(qr, { small: true });
       setQr(qr); // نحدّث صفحة /qr كمان بآخر كود

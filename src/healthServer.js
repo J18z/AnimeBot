@@ -10,6 +10,12 @@ const http = require("http");
 const QRCode = require("qrcode");
 
 let latestQr = null;
+let latestPairing = null;
+
+// كود الربط بالرقم (بدل QR) — يظهر بصفحة /qr وباللوق
+function setPairingCode(code) {
+  latestPairing = code;
+}
 
 // يُستدعى من index.js كل ما يوصل كود QR جديد من واتساب
 function setQr(qr) {
@@ -19,6 +25,7 @@ function setQr(qr) {
 // يُستدعى لما ينجح الربط (عشان صفحة /qr تعرض "متصل" بدل كود قديم)
 function clearQr() {
   latestQr = null;
+  latestPairing = null;
 }
 
 function startHealthServer() {
@@ -32,6 +39,19 @@ function startHealthServer() {
         if (process.env.QR_TOKEN && new URLSearchParams(query).get("key") !== process.env.QR_TOKEN) {
           res.writeHead(403, { "Content-Type": "text/plain; charset=utf-8" });
           res.end("403");
+          return;
+        }
+        if (latestPairing) {
+          res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+          res.end(`
+            <html dir="rtl"><body style="text-align:center;font-family:sans-serif;padding:20px">
+              <h2>كود الربط بالرقم</h2>
+              <p>واتساب > الأجهزة المرتبطة > ربط جهاز > الربط برقم الهاتف بدلاً من ذلك</p>
+              <div style="font-size:48px;letter-spacing:6px;font-weight:bold;direction:ltr">${latestPairing}</div>
+              <p><small>الصفحة تحدّث تلقائياً كل 15 ثانية</small></p>
+              <script>setTimeout(() => location.reload(), 15000)</script>
+            </body></html>
+          `);
           return;
         }
         if (!latestQr) {
@@ -101,4 +121,4 @@ function startHealthServer() {
   }
 }
 
-module.exports = { startHealthServer, setQr, clearQr };
+module.exports = { startHealthServer, setQr, clearQr, setPairingCode };
