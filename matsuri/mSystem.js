@@ -690,15 +690,40 @@ function quotedContent(msg) {
   const qi = q.ephemeralMessage?.message || q;
   const text = qi.conversation || qi.extendedTextMessage?.text || qi.imageMessage?.caption || qi.videoMessage?.caption || "";
   const mentions = (qi.extendedTextMessage?.contextInfo?.mentionedJid || qi.imageMessage?.contextInfo?.mentionedJid || []).filter(Boolean);
-  return text ? { text, mentions } : null;
+  const image = qi.imageMessage || null;
+  return text || image ? { text, mentions, image } : null;
 }
-async function cmdAnnounce(sock, chatId, msg) {
+// يحط اللقب عند المقدم: "المقدم: *هوتارو⛰️*"
+const PRESENTER_RE = /(ال[ـ\u064B-\u0652]*م[ـ\u064B-\u0652]*ق[ـ\u064B-\u0652]*د[ـ\u064B-\u0652]*م[ـ\u064B-\u0652]*\s*:[ \t]*)[^\n]*/;
+async function cmdAnnounce(sock, chatId, msg, args) {
   const q = quotedContent(msg);
   if (!q) {
     await reply(sock, chatId, msg, "رد على الرسالة اللي تبي تعلنها بـ .اعلان");
     return;
   }
-  const targets = announceChatIds();
+  const presenter = String(args || "").replace(/@\S+/g, "").replace(/\*/g, "").trim();
+  if (presenter) {
+    if (!PRESENTER_RE.test(q.text)) {
+      await reply(sock, chatId, msg, "⚠️ ما لقيت خانة (المقدم:) بالاستمارة.");
+      return;
+    }
+    q.text = q.text.replace(PRESENTER_RE, (m, head) => `${head}*${presenter}*`);
+  }
+  const targets = [...new Set([...announceChatIds(), ...contestChatIds()])];
+  let payload = q.mentions.length ? { text: q.text, mentions: q.mentions } : { text: q.text };
+  if (q.image) {
+    try {
+      const stream = await require("../src/baileysLoader").baileys().downloadContentFromMessage(q.image, "image");
+      const chunks = [];
+      for await (const ch of stream) chunks.push(ch);
+      payload = { image: Buffer.concat(chunks), caption: q.text };
+      if (q.mentions.length) payload.mentions = q.mentions;
+    } catch (e) {
+      console.error("⚠️ ماتسوري/اعلان: تعذر تحميل الصورة:", e && e.message);
+      await reply(sock, chatId, msg, "⚠️ ما قدرت أحمّل الصورة، تأكد إنها ما انتهت صلاحيتها.");
+      return;
+    }
+  }
   if (!targets.length) {
     await reply(sock, chatId, msg, "⚠️ ما تم تحديد قروبات الإعلانات (متغير MATSURI_ANNOUNCE_CHAT_IDS).");
     return;
@@ -707,7 +732,7 @@ async function cmdAnnounce(sock, chatId, msg) {
   let fail = 0;
   for (const t of targets) {
     try {
-      await sock.sendMessage(t, q.mentions.length ? { text: q.text, mentions: q.mentions } : { text: q.text });
+      await sock.sendMessage(t, payload);
       ok++;
     } catch (e) {
       fail++;
@@ -964,8 +989,8 @@ async function handleInner(sock, msg, text, chatId, senderId) {
       await cmdEndContest(sock, chatId, msg);
       return true;
     case "اعلان":
-      if (!allowed(false, "اعلان") || args) return false;
-      await cmdAnnounce(sock, chatId, msg);
+      if (!allowed(false, "اعلان")) return false;
+      await cmdAnnounce(sock, chatId, msg, args);
       return true;
     case "06":
       await reply(sock, chatId, msg, HELP06);

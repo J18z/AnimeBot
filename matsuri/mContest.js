@@ -11,6 +11,7 @@
 const { Contest } = require("../src/game");
 const DATA = require("./matsuriData");
 const S = require("./mStore");
+const dataStore = require("../src/dataStore");
 
 // ⏱️ التوقيتات (بالملي ثانية)
 const SECTION_TO_QUESTION_MS = 2000; // بين اسم الفقرة والسؤال
@@ -395,7 +396,17 @@ function createScheduler(ctx) {
     S.setSchedule({ ...sch, lastAnnouncedStart: startAt });
     const entry = DATA.contests[String(sch.total)];
     const form = entry && entry.form ? entry.form : `📮 إعـلان مُـسـابـقـة 📮\nعدد الفقرات: ${sch.total}\nالمقدم: -- `;
-    await sock.sendMessage(sch.chatId, { text: S.applyLink(form) });
+    // الاستمارة بس: قروب المسابقات + قروبات الإعلانات (شات ماتسوري لا — النتائج بس توصله) (المنشن والتذكير بقروب المسابقات فقط)
+    const c = dataStore.getConfig();
+    const splitIds = (v) => String(v || "").split(/[,\s]+/).map((x) => x.trim()).filter(Boolean);
+    const targets = [...new Set([sch.chatId, ...splitIds(c.matsuriAnnounceChatIds)])];
+    for (const t of targets) {
+      try {
+        await sock.sendMessage(t, { text: S.applyLink(form) });
+      } catch (e) {
+        console.error("⚠️ ماتسوري/إعلان استمارة:", t, e && e.message);
+      }
+    }
     await sendMentionAll(sock, sch.chatId, "📢 *تذكير*\nالمسابقة بعد 5 دقائق");
   }
 
