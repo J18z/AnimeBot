@@ -21,6 +21,9 @@ const MAX_NICK_LEN = 24;
 
 const entries = new Map(); // userId -> { userId, nick, guild, contests, createdAt }
 const perms = new Set(); // أشخاص معطيهم .منح (الحزمة)
+// أوامر حزمة ماتسوري (اللي يستخدمها الممنوحون). تتعدل بـ.ضف امر / .الغ امر
+const DEFAULT_PKG = ["قفل قروب", "فتح قروب", "منشن", "رفع", "تنزيل", "حذف", "المسجلين"];
+const pkgCmds = new Set(DEFAULT_PKG);
 const pending = new Map(); // userId -> { ids: [digits...], until }
 let schedule = null; // { chatId, total, pools: [اسم الفقرة...], hour }
 
@@ -119,14 +122,41 @@ function fire(p) {
   if (p && p.catch) p.catch((e) => console.error("⚠️ ماتسوري/حفظ:", e && e.message));
 }
 
+// إعدادات عامة (رابط التسجيل، قوائم البكجات...) — وثيقة وحدة
+let settings = {};
+function getSetting(k) {
+  return settings[k];
+}
+function setSetting(k, v) {
+  settings[k] = v;
+  const c = col("matsuri_settings");
+  if (c) fire(c.updateOne({ _id: "main" }, { $set: { [k]: v } }, { upsert: true }));
+}
+// يدخل رابط ماتسوري بالسطر اللي بعد جملة "يرجى الدخول للرابط الادنى/الأدنى"
+function applyLink(text) {
+  const link = settings.link;
+  if (!link || typeof text !== "string") return text;
+  return text.replace(/^([^\n]*(?:يرجى\s+)?الدخول\s+(?:للرابط|(?:الى|إلى)\s+الرابط)\s+(?:الادنى|الأدنى)[^\n]*)(\n[ \t]*)?/gm, (m, line) => `${line}\n${link}\n`);
+}
+
 async function loadFromDb() {
   try {
     const reg = col("matsuri_registry");
     if (!reg) return;
+    const st = await col("matsuri_settings").findOne({ _id: "main" });
+    if (st) {
+      settings = { ...st };
+      delete settings._id;
+    }
     for (const d of await reg.find({}).toArray()) {
       entries.set(d._id, { userId: d._id, nick: d.nick, guild: d.guild, contests: d.contests || 0, createdAt: d.createdAt || 0 });
     }
     for (const d of await col("matsuri_perms").find({}).toArray()) perms.add(d._id);
+    const pk = await col("matsuri_cmdperms").findOne({ _id: "pkg" });
+    if (pk && Array.isArray(pk.cmds)) {
+      pkgCmds.clear();
+      pk.cmds.forEach((k) => pkgCmds.add(k));
+    }
     const sch = await col("matsuri_schedule").findOne({ _id: "main" });
     if (sch && sch.chatId) schedule = { chatId: sch.chatId, total: sch.total, pools: sch.pools, hour: sch.hour, minute: sch.minute || 0, lastAnnouncedStart: sch.lastAnnouncedStart || 0 };
     const now = Date.now();
@@ -277,6 +307,28 @@ function revoke(userId) {
   if (c) fire(c.deleteOne({ _id: userId }));
   return true;
 }
+// أوامر الحزمة
+function hasPkgCmd(key) {
+  return pkgCmds.has(key);
+}
+function listPkgCmds() {
+  return [...pkgCmds];
+}
+function savePkg() {
+  const c = col("matsuri_cmdperms");
+  if (c) fire(c.updateOne({ _id: "pkg" }, { $set: { cmds: [...pkgCmds], at: Date.now() } }, { upsert: true }));
+}
+function addPkgCmd(key) {
+  if (pkgCmds.has(key)) return false;
+  pkgCmds.add(key);
+  savePkg();
+  return true;
+}
+function removePkgCmd(key) {
+  if (!pkgCmds.delete(key)) return false;
+  savePkg();
+  return true;
+}
 function listGranted() {
   return [...perms];
 }
@@ -315,8 +367,16 @@ module.exports = {
   hasPackage,
   grant,
   revoke,
+  hasPkgCmd,
+  listPkgCmds,
+  addPkgCmd,
+  removePkgCmd,
+  DEFAULT_PKG,
   listGranted,
   getSchedule,
+  getSetting,
+  setSetting,
+  applyLink,
   setSchedule,
   _entries: entries,
 };

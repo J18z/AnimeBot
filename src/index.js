@@ -1036,6 +1036,35 @@ async function handleIncoming(sock, msg) {
   // 🚫 رسالة بحرف واحد (غير رقم): سبام/تشويش ما تحتاج أي معالجة — نتجاهلها
   // فوراً قبل أي فحص. الأرقام (٠-٩ و0-9) والرسائل بحرفين فأكثر تمر عادي
   if (text.length === 1 && !/[0-9٠-٩]/.test(text)) return;
+  // 📣 قروبات الإعلانات/الأركان (MATSURI_ANNOUNCE_CHAT_IDS): البوت مجرد معلن هناك —
+  // ما يرد على أحد، إلا أوامر المالك الإدارية (تبدأ بنقطة)
+  if (isGroupChat(chatId) && matsuriSystem.isAnnounceChat(chatId)) {
+    if (!(isOwner(senderId) && text.trim().startsWith("."))) return;
+  }
+  // 📋 .ايدي قروبات (للمالك): كل القروبات اللي فيها البوت، اسم + آيدي — من أي شات
+  if (isOwner(senderId) && /^\.ايدي[ _]+(?:ال)?قروبات$/.test(text.trim())) {
+    try {
+      const all = await sock.groupFetchAllParticipating();
+      const rows = Object.values(all || {}).map((g) => ({ id: g.id, name: g.subject || "(بدون اسم)" }));
+      if (!rows.length) {
+        await sock.sendMessage(chatId, { text: "ما لقيت قروبات." }, { quoted: msg });
+        return;
+      }
+      const lines = rows.map((r, i) => `${i + 1}. ${r.name}\n${r.id}`);
+      let chunk = "";
+      for (const l of lines) {
+        if (chunk && chunk.length + l.length > 3000) {
+          await sock.sendMessage(chatId, { text: chunk.trim() });
+          chunk = "";
+        }
+        chunk += l + "\n\n";
+      }
+      if (chunk.trim()) await sock.sendMessage(chatId, { text: chunk.trim() }, { quoted: msg });
+    } catch (e) {
+      await sock.sendMessage(chatId, { text: "⚠️ ما قدرت أجيب القروبات: " + (e && e.message) }, { quoted: msg });
+    }
+    return;
+  }
   if (isGroupChat(chatId)) {
     if (await handleHoraMessage(sock, msg, text, chatId, senderId)) return;
   }

@@ -25,9 +25,23 @@ let ctx = { getSock: () => null, getGroupMeta: async () => null, activeContests:
 let scheduler = null;
 const flows = new Map(); // `${chatId}|${senderId}` -> { type, step, at, ... }
 
-// الأوامر اللي تحتاج صلاحية: locked = للمالك والقائد فقط، وغيرها تنفع لحاملي الحزمة
-const PACKAGE_CMDS = [".قفل قروب", ".فتح قروب", ".منشن", ".رفع / .ترقية", ".تنزيل", ".حذف", ".المسجلين"];
-const LOCKED_CMDS = [".بدء مسابقة", ".انهاء المسابقة", ".ازالة لقب", ".عدل لقب", ".منح", ".الغ", ".منشن_المسجلين", ".اعلان"];
+// الأوامر القابلة للإضافة لحزمة ماتسوري (key → اسم العرض). الباقي (.منح .الغ .ضف امر .الغ امر .صلاحيات) للمالك والقائد دائماً
+const DELEGABLE = {
+  "قفل قروب": ".قفل قروب",
+  "فتح قروب": ".فتح قروب",
+  "منشن": ".منشن",
+  "رفع": ".رفع / .ترقية",
+  "تنزيل": ".تنزيل",
+  "حذف": ".حذف",
+  "المسجلين": ".المسجلين",
+  "بدء مسابقة": ".بدء مسابقة",
+  "انهاء المسابقة": ".انهاء المسابقة",
+  "ازالة لقب": ".ازالة لقب",
+  "عدل لقب": ".عدل لقب",
+  "منشن_المسجلين": ".منشن_المسجلين",
+  "اعلان": ".اعلان",
+};
+const OWNER_ONLY_CMDS = [".رابط_ماتسوري", ".منح", ".الغ", ".ضف امر", ".الغ امر", ".صلاحيات"];
 
 // ── إعدادات ───────────────────────────────────────────────────────
 function list(v) {
@@ -489,12 +503,42 @@ async function cmdRegistered(sock, chatId, msg, withMentions) {
 // ── الصلاحيات ─────────────────────────────────────────────────────
 async function cmdPermsList(sock, chatId, msg) {
   const granted = S.listGranted();
+  const inPkg = S.listPkgCmds();
   const li = (a) => (a.length ? a.map((x) => `- ${x}`).join("\n") : "- ما فيه");
+  const pkgNames = Object.keys(DELEGABLE).filter((k) => inPkg.includes(k)).map((k) => DELEGABLE[k]);
+  const lockedNames = [...Object.keys(DELEGABLE).filter((k) => !inPkg.includes(k)).map((k) => DELEGABLE[k]), ...OWNER_ONLY_CMDS];
   const text =
-    `> 📦 حـزمـة ماتـسـوري:\n${li(PACKAGE_CMDS)}\n\n` +
-    `> 🔒 لـلـمـالـك والـقـائـد فـقـط:\n${li(LOCKED_CMDS)}\n\n` +
+    `> 📦 حـزمـة ماتـسـوري:\n${li(pkgNames)}\n\n` +
+    `> 🔒 لـلـمـالـك والـقـائـد فـقـط:\n${li(lockedNames)}\n\n` +
     `> 🔖 الـمـمـنـوح لـهـم:\n${li(granted.map((id) => `${(S.lookup(id) && S.display(S.lookup(id))) || "بدون لقب"} ~ @${S.digits(id)}`))}`;
   await reply(sock, chatId, msg, text, granted);
+}
+
+// أسماء يكتبها المستخدم → مفتاح الأمر
+const CMD_ALIASES = { "ترقية": "رفع", "انهاء مسابقة": "انهاء المسابقة", "المسجلين_منشن": "منشن_المسجلين" };
+function resolveCmdKey(typed) {
+  const n = S.norm(typed).replace(/^\./, "").trim();
+  const al = Object.keys(CMD_ALIASES).find((k) => S.norm(k) === n);
+  if (al) return CMD_ALIASES[al];
+  return Object.keys(DELEGABLE).find((k) => S.norm(k) === n) || null;
+}
+
+// .ضف امر <الأمر> / .الغ امر <الأمر>: يعدّل حزمة ماتسوري (اللي يستخدمها الممنوحون بـ.منح)
+async function cmdPkgCmd(sock, chatId, msg, args, revoke) {
+  const typed = String(args || "").replace(/^\s*امر\s*/, "").trim();
+  const list = Object.keys(DELEGABLE).map((k) => DELEGABLE[k]).join("، ");
+  if (!typed) {
+    await reply(sock, chatId, msg, `${revoke ? ".الغ امر" : ".ضف امر"} <الأمر>\nالأوامر المتاحة: ${list}`);
+    return;
+  }
+  const key = resolveCmdKey(typed);
+  if (!key) {
+    await reply(sock, chatId, msg, `⚠️ ما عرفت الأمر "${typed}".\nالأوامر المتاحة: ${list}`);
+    return;
+  }
+  const ok = revoke ? S.removePkgCmd(key) : S.addPkgCmd(key);
+  const name = DELEGABLE[key];
+  await reply(sock, chatId, msg, revoke ? (ok ? `✅ تم إزالة ${name} من حزمة ماتسوري.` : `${name} مو بالحزمة أصلاً.`) : ok ? `✅ تم إضافة ${name} لحزمة ماتسوري.` : `${name} موجود بالحزمة أصلاً.`);
 }
 
 async function cmdGrant(sock, chatId, msg, w, revoke) {
@@ -629,6 +673,11 @@ async function cmdEndContest(sock, chatId, msg) {
 }
 
 // ── .اعلان (ريبلاي على رسالة النتائج) ─────────────────────────────
+// قروب إعلانات/أركان: البوت ما يرد فيه إلا على أوامر المالك الإدارية (القفل يطبقه index.js)
+function isAnnounceChat(chatId) {
+  if (!chatId || !announceChatIds().includes(chatId)) return false;
+  return !isMatsuriGroup(chatId);
+}
 function announceChatIds() {
   return [...new Set(list(cfg().matsuriAnnounceChatIds))];
 }
@@ -707,6 +756,8 @@ const HELP06 = `˼\u200F⬩بــوت ريــم • レム┊🤖˹
 > نفس قائمة المسجلين مع منشن.
 ⪦ .مـنـح @ / .الـغ @ / .صـلاحـيـات :
 > منح حزمة ماتسوري أو سحبها أو عرضها.
+⪦ .ضـف امـر <الأمر> / .الـغ امـر <الأمر> :
+> إضافة أمر لحزمة الممنوحين أو إزالته منها (مثل حذف أو بدء مسابقة).
 ⪦ .اعـلان :
 > بالرد على رسالة (مثل النتائج): ينشرها بقروبات الإعلانات.
  ـ»»——⍟——««ـ
@@ -731,6 +782,7 @@ function helpText() {
     "- .بدء مسابقة [العدد] / .انهاء المسابقة\n" +
     "- .ازالة لقب / .عدل لقب\n" +
     "- .منح / .الغ (منشن أو ريبلاي)\n" +
+    "- .ضف امر <الأمر> / .الغ امر <الأمر> (تعديل حزمة الممنوحين)\n" +
     "- .اعلان (ريبلاي على رسالة النتائج: ينشرها بقروبات الإعلانات)\n" +
     "- .منشن_المسجلين"
   );
@@ -800,51 +852,79 @@ async function handleInner(sock, msg, text, chatId, senderId) {
   }
 
   const w = await who(chatId, msg, senderId);
-  const allowed = (locked) => w.top || (!locked && w.pkg);
+  // locked = للمالك والقائد فقط. غير كذا: حامل الحزمة يستخدم الأمر لو هو داخل الحزمة الحالية (key)
+  const allowed = (locked, key) => w.top || (!locked && w.pkg && !!key && S.hasPkgCmd(key));
 
   switch (cmd) {
     case "لقب":
       await cmdNick(sock, chatId, msg, senderId, args, w);
       return true;
     case "ازالة لقب":
-      if (!allowed(true)) return false;
+      if (!allowed(false, "ازالة لقب")) return false;
       await cmdRemove(sock, chatId, msg, args, w);
       return true;
     case "عدل لقب":
-      if (!allowed(true)) return false;
+      if (!allowed(false, "عدل لقب")) return false;
       await cmdEdit(sock, chatId, msg, senderId, args, w);
       return true;
     case "المسجلين":
-      if (!allowed(false)) return false;
+      if (!allowed(false, "المسجلين")) return false;
       await cmdRegistered(sock, chatId, msg, false);
       return true;
     case "منشن_المسجلين":
-      if (!allowed(true)) return false;
+      if (!allowed(false, "منشن_المسجلين")) return false;
       await cmdRegistered(sock, chatId, msg, true);
       return true;
     case "منح":
       if (!allowed(true)) return false;
       await cmdGrant(sock, chatId, msg, w, false);
       return true;
+    case "ضف":
+      // .ضف امر <أمر> : يضيف الأمر لحزمة ماتسوري. أي .ضف ثاني (صور) يمر للبوت العام
+      if (!/^امر(\s|$)/.test(S.norm(args)) || !allowed(true)) return false;
+      await cmdPkgCmd(sock, chatId, msg, args, false);
+      return true;
     case "الغ":
-      // .الغ بدون هدف هو أمر الفنش العام: نمرره
+      // .الغ امر <أمر> : يشيل الأمر من الحزمة. .الغ بدون هدف هو أمر الفنش العام: نمرره
+      if (/^امر(\s|$)/.test(S.norm(args))) {
+        if (!allowed(true)) return false;
+        await cmdPkgCmd(sock, chatId, msg, args, true);
+        return true;
+      }
       if (!allowed(true) || !getTarget(msg)) return false;
       await cmdGrant(sock, chatId, msg, w, true);
       return true;
+    case "رابط_ماتسوري": {
+      if (!allowed(true)) return false;
+      const l = args.trim();
+      if (!l) {
+        const cur = S.getSetting("link");
+        await reply(sock, chatId, msg, cur ? `🔗 الرابط الحالي:\n${cur}\n\nللتغيير: .رابط_ماتسوري <الرابط> (أو .رابط_ماتسوري حذف)` : "اكتب: .رابط_ماتسوري <الرابط>");
+        return true;
+      }
+      if (/^(حذف|مسح|ازاله|ازالة)$/.test(S.norm(l))) {
+        S.setSetting("link", "");
+        await reply(sock, chatId, msg, "✅ تم حذف الرابط.");
+        return true;
+      }
+      S.setSetting("link", l);
+      await reply(sock, chatId, msg, "✅ تم حفظ رابط ماتسوري، يدخل تلقائياً بالاستمارات تحت (يرجى الدخول للرابط الادنى).");
+      return true;
+    }
     case "صلاحيات":
       if (!allowed(true)) return false;
       await cmdPermsList(sock, chatId, msg);
       return true;
     case "حذف":
-      if (!allowed(false) || args) return false;
+      if (!allowed(false, "حذف") || args) return false;
       return !!(await cmdDelete(sock, chatId, msg));
     case "منشن":
-      if (!allowed(false)) return false;
+      if (!allowed(false, "منشن")) return false;
       await cmdMentionAll(sock, chatId, msg, args, w.meta);
       return true;
     case "رفع":
     case "ترقية": {
-      if (!allowed(false)) return false;
+      if (!allowed(false, "رفع")) return false;
       if (/^(ادمن|اداري|شات)/.test(S.norm(args))) return false; // أمر ترقية الادمنية العام
       const tg = getTarget(msg);
       if (!tg) {
@@ -856,7 +936,7 @@ async function handleInner(sock, msg, text, chatId, senderId) {
       return true;
     }
     case "تنزيل": {
-      if (!allowed(false)) return false;
+      if (!allowed(false, "تنزيل")) return false;
       const tg = getTarget(msg);
       if (!tg) {
         await reply(sock, chatId, msg, "حدد الشخص بمنشن أو ريبلاي: .تنزيل @منشن");
@@ -867,24 +947,24 @@ async function handleInner(sock, msg, text, chatId, senderId) {
       return true;
     }
     case "قفل قروب":
-      if (!allowed(false)) return false;
+      if (!allowed(false, "قفل قروب")) return false;
       await adminAction(sock, chatId, msg, () => sock.groupSettingUpdate(chatId, "announcement"), "🔒 تم قفل القروب.");
       return true;
     case "فتح قروب":
-      if (!allowed(false)) return false;
+      if (!allowed(false, "فتح قروب")) return false;
       await adminAction(sock, chatId, msg, () => sock.groupSettingUpdate(chatId, "not_announcement"), "🔓 تم فتح القروب.");
       return true;
     case "بدء مسابقة":
-      if (!allowed(true)) return false;
+      if (!allowed(false, "بدء مسابقة")) return false;
       await cmdStartContest(sock, chatId, msg, senderId, args);
       return true;
     case "انهاء المسابقة":
     case "انهاء مسابقة":
-      if (!allowed(true)) return false;
+      if (!allowed(false, "انهاء المسابقة")) return false;
       await cmdEndContest(sock, chatId, msg);
       return true;
     case "اعلان":
-      if (!allowed(true) || args) return false;
+      if (!allowed(false, "اعلان") || args) return false;
       await cmdAnnounce(sock, chatId, msg);
       return true;
     case "06":
@@ -904,6 +984,7 @@ module.exports = {
   start,
   loadFromDb,
   isMatsuriGroup,
+  isAnnounceChat,
   isContestChat,
   getScheduler,
   _buildRegisteredMessages: buildRegisteredMessages,

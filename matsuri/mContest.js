@@ -395,7 +395,7 @@ function createScheduler(ctx) {
     S.setSchedule({ ...sch, lastAnnouncedStart: startAt });
     const entry = DATA.contests[String(sch.total)];
     const form = entry && entry.form ? entry.form : `📮 إعـلان مُـسـابـقـة 📮\nعدد الفقرات: ${sch.total}\nالمقدم: -- `;
-    await sock.sendMessage(sch.chatId, { text: form });
+    await sock.sendMessage(sch.chatId, { text: S.applyLink(form) });
     await sendMentionAll(sock, sch.chatId, "📢 *تذكير*\nالمسابقة بعد 5 دقائق");
   }
 

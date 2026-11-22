@@ -11,8 +11,10 @@
 
 const store = require("../src/dataStore");
 const DATA = require("./matsuriData");
+const S = require("./mStore");
 const { handleRouletteMessage } = require("./roulette");
 const { handleRasadMessage } = require("./rasad");
+const { handlePackages } = require("./packages");
 
 // يطبع الألف بكل أشكالها (أ إ آ) لألف عادية، وكذا التاء المربوطة/الألف
 // المقصورة — عشان لو المستخدم غلط بكتابة الهمزة يضبط معه الأمر برضو
@@ -33,6 +35,7 @@ const nameIndex = new Map(); // normalizedName -> cmd
 for (const [cmd, entry] of Object.entries(DATA.forms)) {
   if (entry.results || entry.singleResult) {
     nameIndex.set(normalize(entry.name), cmd);
+    for (const a of entry.aliases || []) nameIndex.set(normalize(a), cmd);
   }
 }
 
@@ -50,7 +53,7 @@ function isRouletteChat(chatId) {
 async function sendForm(sock, chatId, msg, entry) {
   if (entry && Array.isArray(entry.parts) && entry.parts.length) {
     for (const part of entry.parts) {
-      await sock.sendMessage(chatId, { text: part }, { quoted: msg });
+      await sock.sendMessage(chatId, { text: S.applyLink(part) }, { quoted: msg });
     }
     return;
   }
@@ -58,7 +61,7 @@ async function sendForm(sock, chatId, msg, entry) {
     await sock.sendMessage(chatId, { text: NOT_ADDED }, { quoted: msg });
     return;
   }
-  await sock.sendMessage(chatId, { text: entry.form }, { quoted: msg });
+  await sock.sendMessage(chatId, { text: S.applyLink(entry.form) }, { quoted: msg });
 }
 
 // معالجة أمر ".نتائج_<اسم> <رقم اختياري>"
@@ -127,6 +130,8 @@ async function handleMatsuriMessage(sock, msg, text, chatId, senderId) {
 
   // باقي أوامر ماتسوري (الاستمارات) محصورة بشات ماتسوري فقط
   if (!isMatsuriChat(chatId)) return false;
+
+  if (await handlePackages(sock, msg, t, chatId, senderId)) return true;
 
   if (t === ".ماتسوري") {
     await sock.sendMessage(chatId, { text: DATA.menus.main }, { quoted: msg });

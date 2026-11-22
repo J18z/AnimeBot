@@ -148,7 +148,16 @@ function numberedNormalList() {
   return RD.normalCommands.map((c, i) => `${i + 1}. ${c}`).join("\n");
 }
 
+// "زيادة 80 جويل" تنخصم من مصروفات الشخص مباشرة (بالألف) ولا تدخل المشتريات
+const JOYEL_RE = /^زياد[ةه]\s*(\d+)\s*جويل$/;
 function addItems(label, cmds) {
+  const rest = [];
+  for (const c of cmds) {
+    const m = String(c).trim().match(JOYEL_RE);
+    if (m) addPurchaseRecord(state, label, -parseInt(m[1], 10) * 1000, 0);
+    else rest.push(c);
+  }
+  cmds = rest;
   if (!cmds.length) return;
   let it = state.items.find((x) => x.label === label);
   if (!it) {
@@ -201,9 +210,9 @@ function renderExpensesList(state) {
     .map((p) => {
       const bits = [];
       const starsTxt = formatMoney(p.stars);
-      const moneyTxt = formatMoney(p.money);
+      const moneyTxt = formatMoney(Math.abs(p.money));
       if (starsTxt) bits.push(`⭐${starsTxt}-`);
-      if (moneyTxt) bits.push(`💰${moneyTxt}-`);
+      if (moneyTxt) bits.push(`💰${moneyTxt}${p.money > 0 ? "-" : ""}`);
       return `⪦ ${p.label} ${bits.join(" | ")}`;
     })
     .join("\n");
