@@ -132,6 +132,22 @@ function setSetting(k, v) {
   const c = col("matsuri_settings");
   if (c) fire(c.updateOne({ _id: "main" }, { $set: { [k]: v } }, { upsert: true }));
 }
+// آخر إعلانات انرسلت (للـ.تأجيل): [{ts, items:[{chat,id,text}], refs:[id]}]
+function recordAnnouncement(items, refs) {
+  const clean = (items || []).filter((x) => x && x.id).map((x) => ({ chat: x.chat, id: x.id, text: String(x.text || "").slice(0, 1500) }));
+  if (!clean.length) return;
+  const list = (settings.annBatches || []).concat([{ ts: Date.now(), items: clean, refs: (refs || []).filter(Boolean) }]).slice(-5);
+  setSetting("annBatches", list);
+}
+function getAnnouncements() {
+  return settings.annBatches || [];
+}
+function addAnnouncementRef(id) {
+  const list = [...getAnnouncements()];
+  if (!list.length || !id) return;
+  list[list.length - 1] = { ...list[list.length - 1], refs: [...(list[list.length - 1].refs || []), id] };
+  setSetting("annBatches", list);
+}
 // يدخل رابط ماتسوري بالسطر اللي بعد جملة "يرجى الدخول للرابط الادنى/الأدنى"
 function applyLink(text) {
   const link = settings.link;
@@ -377,6 +393,9 @@ module.exports = {
   getSetting,
   setSetting,
   applyLink,
+  recordAnnouncement,
+  getAnnouncements,
+  addAnnouncementRef,
   setSchedule,
   _entries: entries,
 };

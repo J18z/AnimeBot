@@ -108,6 +108,17 @@ async function fetchImage(publicId) {
   throw lastErr;
 }
 
+// الصورة الأصلية بدون أي تحويل (للنسخ الاحتياطي: ما تستهلك رصيد التحويلات ولا تنقص الجودة)
+async function fetchOriginal(publicId) {
+  if (!enabled()) throw new Error("Cloudinary غير مفعّل (متغيرات البيئة ناقصة)");
+  const c = cfg();
+  const res = await fetch(`https://res.cloudinary.com/${c.cloud}/image/upload/${publicId}`, { signal: AbortSignal.timeout(UPLOAD_TIMEOUT_MS) });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const buf = Buffer.from(await res.arrayBuffer());
+  if (!buf.length) throw new Error("صورة فاضية");
+  return buf;
+}
+
 // ───────── بنك الصور (الذاكرة + القاعدة) ─────────
 function toItem(d) {
   const it = {
@@ -175,6 +186,22 @@ function findLegacySpec(charKey) {
   if (it.required) spec.required = it.required;
   if (it.alt || it.alts) spec.alt = it.alt || it.alts;
   return spec;
+}
+
+function getDocs() {
+  return docs;
+}
+
+// استرجاع وثائق من نسخة احتياطية (يستبدل/يضيف حسب _id) ثم يعيد البناء
+async function upsertDocs(list) {
+  const db = getDb();
+  if (db) {
+    for (const d of list) await db.collection(COLLECTION).replaceOne({ _id: d._id }, d, { upsert: true });
+  }
+  const byId = new Map(docs.map((d) => [d._id, d]));
+  for (const d of list) byId.set(d._id, d);
+  docs = [...byId.values()].sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+  rebuild();
 }
 
 // نعيد قراءة الصور من القاعدة كل فترة: الصور اللي ينقلها سكربت النقل من برا تظهر بدون إعادة تشغيل
@@ -269,6 +296,9 @@ module.exports = {
   sign,
   urlFor,
   fetchImage,
+  fetchOriginal,
+  getDocs,
+  upsertDocs,
   uploadBuffer,
   destroy,
   loadFromDb,

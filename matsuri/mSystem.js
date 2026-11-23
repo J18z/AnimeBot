@@ -13,6 +13,7 @@
 const store = require("../src/dataStore");
 const S = require("./mStore");
 const C = require("./mContest");
+const groupBulk = require("../src/groupBulk");
 const DATA = require("./matsuriData");
 
 const FLOW_TTL_MS = 10 * 60 * 1000;
@@ -40,6 +41,8 @@ const DELEGABLE = {
   "عدل لقب": ".عدل لقب",
   "منشن_المسجلين": ".منشن_المسجلين",
   "اعلان": ".اعلان",
+  "تأجيل": ".تأجيل",
+  "الغ_منشن": ".الغ_منشن / .رجع_منشن",
 };
 const OWNER_ONLY_CMDS = [".رابط_ماتسوري", ".منح", ".الغ", ".ضف امر", ".الغ امر", ".صلاحيات"];
 
@@ -444,7 +447,7 @@ function buildRegisteredMessages(withMentions) {
     const mentions = [];
     const rows = lists[i].map((e, k) => {
       let line = `${k + 1}. ${S.display(e)}`;
-      if (withMentions) {
+      if (withMentions && !groupBulk.isOptedOut({ id: e.userId }, "matsuri")) {
         line += ` @${S.digits(e.userId)}`;
         mentions.push(e.userId);
       }
@@ -515,7 +518,7 @@ async function cmdPermsList(sock, chatId, msg) {
 }
 
 // أسماء يكتبها المستخدم → مفتاح الأمر
-const CMD_ALIASES = { "ترقية": "رفع", "انهاء مسابقة": "انهاء المسابقة", "المسجلين_منشن": "منشن_المسجلين" };
+const CMD_ALIASES = { "تاجيل": "تأجيل", "رجع_منشن": "الغ_منشن", "ترقية": "رفع", "انهاء مسابقة": "انهاء المسابقة", "المسجلين_منشن": "منشن_المسجلين" };
 function resolveCmdKey(typed) {
   const n = S.norm(typed).replace(/^\./, "").trim();
   const al = Object.keys(CMD_ALIASES).find((k) => S.norm(k) === n);
@@ -570,7 +573,7 @@ async function adminAction(sock, chatId, msg, fn, okText) {
 
 async function cmdMentionAll(sock, chatId, msg, args, meta) {
   const head = args || "📢";
-  const blocks = C.mentionAllBlocks(meta ? meta.participants : [], head);
+  const blocks = C.mentionAllBlocks(meta ? groupBulk.filterOptOut(meta.participants, "matsuri") : [], head);
   for (let i = 0; i < blocks.length; i++) {
     await sock.sendMessage(chatId, { text: blocks[i].text, mentions: blocks[i].mentions }, i === 0 ? { quoted: msg } : undefined);
   }
@@ -730,9 +733,11 @@ async function cmdAnnounce(sock, chatId, msg, args) {
   }
   let ok = 0;
   let fail = 0;
+  const sentItems = [];
   for (const t of targets) {
     try {
-      await sock.sendMessage(t, payload);
+      const sent = await sock.sendMessage(t, payload);
+      if (sent && sent.key) sentItems.push({ chat: t, id: sent.key.id, text: payload.caption || payload.text || "" });
       ok++;
     } catch (e) {
       fail++;
@@ -740,7 +745,66 @@ async function cmdAnnounce(sock, chatId, msg, args) {
     }
     await new Promise((r) => setTimeout(r, 800));
   }
-  await reply(sock, chatId, msg, `✅ تم الإعلان في ${ok} قروب${fail ? `\n⚠️ فشل في ${fail} (تأكد إن البوت داخلها)` : ""}`);
+  S.recordAnnouncement(sentItems);
+  const conf = await reply(sock, chatId, msg, `✅ تم الإعلان في ${ok} قروب${fail ? `\n⚠️ فشل في ${fail} (تأكد إن البوت داخلها)` : ""}`);
+  if (conf && conf.key) S.addAnnouncementRef(conf.key.id);
+}
+
+// ── .تأجيل [سبب]: يرد على رسالة الإعلان بكل قروب (ردّ على الإعلان أو على تأكيده، وإلا آخر إعلان) ──
+function quotedStanzaId(msg) {
+  const m = (msg && msg.message) || {};
+  const inner = m.ephemeralMessage?.message || m.viewOnceMessage?.message || m;
+  const c = inner.extendedTextMessage?.contextInfo;
+  return (c && c.stanzaId) || null;
+}
+async function cmdPostpone(sock, chatId, msg, args) {
+  const batches = S.getAnnouncements();
+  if (!batches.length) {
+    await reply(sock, chatId, msg, "⚠️ ما عندي إعلان محفوظ أرد عليه (يتسجل بعد .اعلان أو إعلان مسابقة مجدولة).");
+    return;
+  }
+  const qid = quotedStanzaId(msg);
+  const batch = (qid && batches.find((b) => b.items.some((i) => i.id === qid) || (b.refs || []).includes(qid))) || batches[batches.length - 1];
+  const reason = String(args || "").replace(/@\S+/g, "").trim();
+  const text = reason ? `تتأجل ${/^(الفعال|المسابق)/.test(reason) ? "" : "الفعالية "}${reason}` : "تتأجل الفعالية لوقت اخر";
+  let ok = 0;
+  let fail = 0;
+  for (const it of batch.items) {
+    try {
+      await sock.sendMessage(it.chat, { text }, { quoted: { key: { remoteJid: it.chat, fromMe: true, id: it.id }, message: { conversation: it.text || "📢" } } });
+      ok++;
+    } catch (e) {
+      fail++;
+      console.error("⚠️ ماتسوري/تأجيل:", it.chat, e && e.message);
+    }
+    await new Promise((r) => setTimeout(r, 800));
+  }
+  await reply(sock, chatId, msg, `✅ تم التأجيل في ${ok} قروب (${text})${fail ? `\n⚠️ فشل في ${fail}` : ""}`);
+}
+
+// ── .الغ_منشن / .رجع_منشن: لقب مسجل أو منشن أو رد أو رقم ──
+async function cmdOptOut(sock, chatId, msg, args, meta, undo) {
+  const ids = groupBulk.allTargets(msg).map((j) => canonTarget(meta, j));
+  if (!ids.length) {
+    const rest = String(args || "").trim();
+    for (const n of groupBulk.typedNumbers(rest)) ids.push(canonTarget(meta, n));
+    if (!ids.length && rest) {
+      const r = S.resolveQuery(rest);
+      if (r.entry) ids.push(r.entry.userId);
+      else if (r.error === "ambiguous") {
+        await reply(sock, chatId, msg, "⚠️ أكثر من لقب بنفس الاسم، اكتب اللقب مع إيموجي النقابة أو استخدم منشن.");
+        return;
+      }
+    }
+  }
+  if (!ids.length) {
+    await reply(sock, chatId, msg, `استخدم: .${undo ? "رجع_منشن" : "الغ_منشن"} <اللقب> (أو منشن، أو رد على رسالته، أو رقمه)`);
+    return;
+  }
+  const changed = [];
+  for (const id of [...new Set(ids)]) if (undo ? groupBulk.optIn(meta, id, "matsuri") : groupBulk.optOut(meta, id, "matsuri")) changed.push(id);
+  const tags = changed.map((i) => "@" + S.digits(i)).join(" ");
+  await reply(sock, chatId, msg, changed.length ? `${undo ? "🔔 رجعناه للمنشن الجماعي" : "🔕 ما راح ينمنشن بالمنشن الجماعي"}: ${tags}` : undo ? "ما كان ملغي منشنه أصلاً." : "منشنه ملغي أصلاً.", changed);
 }
 
 // ── قسم البوت والمساعدة (.06) ─────────────────────────────────────
@@ -763,10 +827,12 @@ const HELP06 = `˼\u200F⬩بــوت ريــم • レム┊🤖˹
 > قفل القروب على الأعضاء أو فتحه.
 ⪦ .مـنـشـن [نص] :
 > منشن لجميع أعضاء القروب.
-⪦ .رفـع / .تـرقـيـة @ :
-> ترقية عضو إلى مشرف بالقروب.
-⪦ .تـنـزيـل @ :
-> تنزيل مشرف إلى عضو عادي.
+⪦ .رفـع / .تـرقـيـة @ @ :
+> ترقية عضو أو أكثر إلى مشرف بالقروب (منشن عدة أشخاص بنفس الأمر).
+⪦ .تـنـزيـل @ @ :
+> تنزيل مشرف أو أكثر إلى عضو عادي.
+⪦ .الـغ_مـنـشـن [لقب / @] :
+> يلغي منشن الشخص من .منشن الجماعي (لقبه أو منشن أو رد أو رقم) — .رجع_منشن يرجّعه.
 ⪦ .حـذف :
 > بالرد على رسالة: يحذفها ويحذف أمر الحذف.
 
@@ -783,8 +849,10 @@ const HELP06 = `˼\u200F⬩بــوت ريــم • レム┊🤖˹
 > منح حزمة ماتسوري أو سحبها أو عرضها.
 ⪦ .ضـف امـر <الأمر> / .الـغ امـر <الأمر> :
 > إضافة أمر لحزمة الممنوحين أو إزالته منها (مثل حذف أو بدء مسابقة).
-⪦ .اعـلان :
-> بالرد على رسالة (مثل النتائج): ينشرها بقروبات الإعلانات.
+⪦ .اعـلان [لقب المقدم] :
+> بالرد على رسالة (استمارة أو نتائج): ينشرها بقروبات الإعلانات وقروب المسابقات.
+⪦ .تـأجـيـل [السبب] :
+> يرد على آخر إعلان بكل قروب بـ "تتأجل الفعالية ..." (بدون سبب: لوقت اخر).
  ـ»»——⍟——««ـ
 ✪ مـرحـبـاً، مـعـكـم بـوت ريـم للاسـتـمـارات الـخـاصـة بــ وزارة ماتسوري🧧
 ❆ـ⋅ ┈── ─━ •⊰✣⊱ • ━─ ──┈ ⋅ـ❆
@@ -801,7 +869,8 @@ function helpText() {
     "- .صلاحيات : الحزمة (للمالك والقائد)\n\n" +
     "> للصلاحيات:\n" +
     "- .قفل قروب / .فتح قروب / .منشن [نص]\n" +
-    "- .رفع / .ترقية / .تنزيل (منشن أو ريبلاي)\n" +
+    "- .رفع / .ترقية / .تنزيل (منشن أكثر من شخص أو ريبلاي)\n" +
+    "- .الغ_منشن / .رجع_منشن\n" +
     "- .حذف (ريبلاي على رسالة)\n\n" +
     "> للمالك والقائد:\n" +
     "- .بدء مسابقة [العدد] / .انهاء المسابقة\n" +
@@ -948,29 +1017,30 @@ async function handleInner(sock, msg, text, chatId, senderId) {
       await cmdMentionAll(sock, chatId, msg, args, w.meta);
       return true;
     case "رفع":
-    case "ترقية": {
-      if (!allowed(false, "رفع")) return false;
-      if (/^(ادمن|اداري|شات)/.test(S.norm(args))) return false; // أمر ترقية الادمنية العام
-      const tg = getTarget(msg);
-      if (!tg) {
-        await reply(sock, chatId, msg, `حدد الشخص بمنشن أو ريبلاي: .${cmd} @منشن`);
-        return true;
-      }
-      const id = canonTarget(w.meta, tg);
-      await adminAction(sock, chatId, msg, () => sock.groupParticipantsUpdate(chatId, [id], "promote"), `✅ تمت ترقية @${S.digits(id)} مشرف بالقروب.`).catch(() => {});
-      return true;
-    }
+    case "ترقية":
     case "تنزيل": {
-      if (!allowed(false, "تنزيل")) return false;
-      const tg = getTarget(msg);
-      if (!tg) {
-        await reply(sock, chatId, msg, "حدد الشخص بمنشن أو ريبلاي: .تنزيل @منشن");
+      const isDemote = cmd === "تنزيل";
+      if (!allowed(false, isDemote ? "تنزيل" : "رفع")) return false;
+      if (!isDemote && /^(ادمن|اداري|شات)/.test(S.norm(args))) return false; // أمر ترقية الادمنية العام
+      const ids = groupBulk.allTargets(msg);
+      if (!ids.length) {
+        await reply(sock, chatId, msg, `حدد الشخص أو الأشخاص بمنشن أو ريبلاي: .${cmd} @منشن @منشن`);
         return true;
       }
-      const id = canonTarget(w.meta, tg);
-      await adminAction(sock, chatId, msg, () => sock.groupParticipantsUpdate(chatId, [id], "demote"), `✅ تم تنزيل @${S.digits(id)} من الاشراف.`);
+      const r = await groupBulk.bulkAdmin(sock, chatId, w.meta || { participants: [] }, ids, isDemote ? "demote" : "promote");
+      await reply(sock, chatId, msg, r.text, r.mentions);
       return true;
     }
+    case "تأجيل":
+    case "تاجيل":
+      if (!allowed(false, "تأجيل")) return false;
+      await cmdPostpone(sock, chatId, msg, args);
+      return true;
+    case "الغ_منشن":
+    case "رجع_منشن":
+      if (!allowed(false, "الغ_منشن")) return false;
+      await cmdOptOut(sock, chatId, msg, args, w.meta, cmd === "رجع_منشن");
+      return true;
     case "قفل قروب":
       if (!allowed(false, "قفل قروب")) return false;
       await adminAction(sock, chatId, msg, () => sock.groupSettingUpdate(chatId, "announcement"), "🔒 تم قفل القروب.");

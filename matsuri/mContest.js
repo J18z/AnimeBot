@@ -400,13 +400,17 @@ function createScheduler(ctx) {
     const c = dataStore.getConfig();
     const splitIds = (v) => String(v || "").split(/[,\s]+/).map((x) => x.trim()).filter(Boolean);
     const targets = [...new Set([sch.chatId, ...splitIds(c.matsuriAnnounceChatIds)])];
+    const sentItems = [];
     for (const t of targets) {
       try {
-        await sock.sendMessage(t, { text: S.applyLink(form) });
+        const txt = S.applyLink(form);
+        const sent = await sock.sendMessage(t, { text: txt });
+        if (sent && sent.key) sentItems.push({ chat: t, id: sent.key.id, text: txt });
       } catch (e) {
         console.error("⚠️ ماتسوري/إعلان استمارة:", t, e && e.message);
       }
     }
+    S.recordAnnouncement(sentItems);
     await sendMentionAll(sock, sch.chatId, "📢 *تذكير*\nالمسابقة بعد 5 دقائق");
   }
 

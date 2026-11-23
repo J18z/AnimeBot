@@ -25,6 +25,7 @@ const adminPoints = require("./adminPoints");
 const { formatSeconds, randomHamzaPattern } = require("./utils");
 const { isCommandText } = require("./commandWords");
 const sessionHealer = createHealer({ purge: purgeUserKeys });
+const groupBulk = require("./groupBulk");
 const { startHealthServer, setQr, clearQr, setPairingCode } = require("./healthServer");
 const dmPermissions = require("./dmPermissions");
 const topLock = require("./topLock");
@@ -1081,6 +1082,56 @@ async function handleIncoming(sock, msg) {
     }
     return;
   }
+  // 💾 .نسخ_الصور (للمالك): يرسل صور Cloudinary كلها كملفات tar (أجزاء) — .استرجاع_الصور: بإرسال الملف بهذا التعليق أو بالرد عليه
+  const bkCmd = text.trim().match(/^\.(نسخ_الصور|استرجاع_الصور)$/);
+  if (bkCmd && isOwner(senderId)) {
+    const cloudImages = require("./cloudImages");
+    const imageBackup = require("./imageBackup");
+    const say = (t) => sock.sendMessage(chatId, { text: t }, { quoted: msg });
+    if (!cloudImages.enabled()) {
+      await say("⚠️ Cloudinary غير مفعّل (متغيرات CLOUDINARY_* ناقصة).");
+      return;
+    }
+    try {
+      if (bkCmd[1] === "نسخ_الصور") {
+        const n = cloudImages.getDocs().length;
+        if (!n) {
+          await say("ما فيه صور على Cloudinary أنسخها.");
+          return;
+        }
+        await say(`💾 أجهّز نسخة لـ ${n} صورة... بيوصلك الملف على أجزاء، لا تسوي شي لين أقول خلصت.`);
+        const r = await imageBackup.backupAll(
+          async (buf, fileName) => {
+            await sock.sendMessage(chatId, { document: buf, mimetype: "application/x-tar", fileName, caption: `${fileName} (${(buf.length / 1048576).toFixed(1)}MB)` });
+          },
+          (i, tot) => console.log(`💾 نسخ الصور ${i}/${tot}`)
+        );
+        await say(`✅ خلصت: ${r.ok}/${r.total} صورة بـ ${r.parts} ملف.${r.missing.length ? `\n⚠️ ما قدرت أجيب ${r.missing.length} صورة (ضايعة من Cloudinary؟): ${r.missing.slice(0, 10).join(", ")}${r.missing.length > 10 ? "..." : ""}` : ""}\n\nاحفظ الملفات عندك. للاسترجاع: غيّر متغيرات CLOUDINARY_* للحساب الجديد، وارسل كل ملف بتعليق .استرجاع_الصور`);
+      } else {
+        const m0 = msg.message || {};
+        const inner = m0.ephemeralMessage?.message || m0.viewOnceMessage?.message || m0;
+        const docMsg =
+          inner.documentMessage ||
+          inner.documentWithCaptionMessage?.message?.documentMessage ||
+          inner.extendedTextMessage?.contextInfo?.quotedMessage?.documentMessage ||
+          inner.extendedTextMessage?.contextInfo?.quotedMessage?.documentWithCaptionMessage?.message?.documentMessage;
+        if (!docMsg) {
+          await say("ارسل ملف النسخة (.tar) وحط تعليقه .استرجاع_الصور — أو رد على الملف بالأمر.");
+          return;
+        }
+        await say("⏳ أحمّل الملف وأرفع الصور للحساب الحالي...");
+        const stream = await downloadContentFromMessage(docMsg, "document");
+        const chunks = [];
+        for await (const c of stream) chunks.push(c);
+        const r = await imageBackup.restorePart(Buffer.concat(chunks), (i, tot) => console.log(`💾 استرجاع ${i}/${tot}`));
+        await say(`✅ انرفعت ${r.uploaded} صورة ورجعت بياناتها (${r.docs}).${r.failed.length ? `\n⚠️ فشل ${r.failed.length}: ${r.failed.slice(0, 10).join(", ")}` : ""}`);
+      }
+    } catch (e) {
+      console.error("⚠️ نسخ/استرجاع الصور:", e);
+      await say("⚠️ فشلت العملية: " + (e && e.message));
+    }
+    return;
+  }
   if (isGroupChat(chatId)) {
     if (await handleHoraMessage(sock, msg, text, chatId, senderId)) return;
   }
@@ -1749,6 +1800,54 @@ if (rejectChangeMatch) {
     return;
   }
 
+  // 🔕 .الغ_منشن @ / رد / اسم مسجل / رقم  → ما ينمنشن بـ.منشن الجماعي | .رجع_منشن يرجّعه
+  const optMatch = text.match(/^\.(الغ_منشن|رجع_منشن)(?:\s+(.+))?$/);
+  if (optMatch) {
+    if (!canRun(senderId, text, chatId)) return ownerOnlyDeny();
+    if (!isGroupChat(chatId)) {
+      await sock.sendMessage(chatId, { text: "هذا الأمر للقروبات بس." }, { quoted: msg });
+      return;
+    }
+    const undo = optMatch[1] === "رجع_منشن";
+    const targets = [];
+    const mentionedAll = groupBulk.allTargets(msg);
+    if (mentionedAll.length) targets.push(...mentionedAll);
+    else {
+      const rest = (optMatch[2] || "").trim();
+      const typed = groupBulk.typedNumbers(rest);
+      if (typed.length) targets.push(...typed);
+      else if (rest) {
+        const r = resolveTarget(msg, rest);
+        if (r.userId) targets.push(r.userId);
+        else if (r.error === "range") {
+          await sock.sendMessage(chatId, { text: r.message }, { quoted: msg });
+          return;
+        } else if (r.error === "ambiguous") {
+          await sock.sendMessage(chatId, { text: "⚠️ أكثر من شخص بنفس الاسم، استخدم منشن أو رقم جواله." }, { quoted: msg });
+          return;
+        }
+      }
+    }
+    if (!targets.length) {
+      await sock.sendMessage(chatId, { text: `استخدم: .${optMatch[1]} @منشن (أو رد على رسالته، أو اسمه المسجل، أو رقمه)` }, { quoted: msg });
+      return;
+    }
+    let meta = null;
+    try {
+      meta = await sock.groupMetadata(chatId);
+    } catch (e) {
+      /* نكمل بدون ميتا */
+    }
+    const changed = [];
+    for (const t of targets) if (undo ? groupBulk.optIn(meta, t, "general") : groupBulk.optOut(meta, t, "general")) changed.push(t);
+    await sock.sendMessage(
+      chatId,
+      { text: changed.length ? `${undo ? "🔔 رجعناه للمنشن الجماعي" : "🔕 ما راح ينمنشن بالمنشن الجماعي"}: ${changed.map((t) => "@" + t.split("@")[0]).join(" ")}` : undo ? "ما كان ملغي منشنه أصلاً." : "منشنه ملغي أصلاً.", mentions: changed },
+      { quoted: msg }
+    );
+    return;
+  }
+
   // 📢 .منشن [رسالة]: يمنشن كل أعضاء القروب (للمالك والادمنية لو الأمر بحزمتهم، وادمن الشات بقروبه)
   const mentionAllMatch = text.match(/^\.منشن(?:\s+(.+))?$/);
   if (mentionAllMatch) {
@@ -1765,21 +1864,43 @@ if (rejectChangeMatch) {
       return;
     }
     const botP = groupTools.botParticipant(meta, sock.user);
-    const blocks = groupTools.mentionBlocks(meta.participants, { exclude: botP ? [botP.id] : [], note: mentionAllMatch[1] || "" });
+    const blocks = groupTools.mentionBlocks(groupBulk.filterOptOut(meta.participants, "general"), { exclude: botP ? [botP.id] : [], note: mentionAllMatch[1] || "" });
     for (const b of blocks) await sock.sendMessage(chatId, { text: b.text, mentions: b.mentions });
     return;
   }
 
   // 👑 .ترقية @ / .خفض @ (بدون كلمة ثانية — للمالك، وللادمنية لو بحزمتهم وهم مشرفين بالقروب): يرقّي عضو لمشرف بالقروب أو يخفضه، لو البوت نفسه مشرف
   // (.ترقية ادمن / .ترقية اداريه وأشباههم عولجت قبل ما نوصل هنا)
-  const waAdminMatch = text.match(/^\.(ترقي[ةه]|خفض)(?:\s+(.+))?$/);
+  const waAdminMatch = text.match(/^\.(ترقي[ةه]|رفع|خفض|تنزيل)(?:\s+(.+))?$/);
   if (waAdminMatch) {
     if (!canRun(senderId, text, chatId)) return ownerOnlyDeny();
     if (!isGroupChat(chatId)) {
       await sock.sendMessage(chatId, { text: "هذا الأمر للقروبات بس." }, { quoted: msg });
       return;
     }
-    const action = waAdminMatch[1].startsWith("ترقي") ? "promote" : "demote";
+    const action = /^(ترقي|رفع)/.test(waAdminMatch[1]) ? "promote" : "demote";
+    // 👥 أكثر من منشن بنفس الأمر: ينفّذ على الكل دفعة وحدة
+    const many = groupBulk.allTargets(msg);
+    if (many.length > 1) {
+      let meta;
+      try {
+        meta = await sock.groupMetadata(chatId);
+      } catch (e) {
+        await sock.sendMessage(chatId, { text: "⚠️ ما قدرت أجيب بيانات القروب، حاول بعد شوي." }, { quoted: msg });
+        return;
+      }
+      if (!isOwner(senderId) && !groupTools.isAdminParticipant(groupTools.findParticipant(meta, senderId))) {
+        await sock.sendMessage(chatId, { text: "⚠️ لازم تكون مشرف بالقروب عشان تستخدم هذا الأمر." }, { quoted: msg });
+        return;
+      }
+      if (!groupTools.isAdminParticipant(groupTools.botParticipant(meta, sock.user))) {
+        await sock.sendMessage(chatId, { text: "⚠️ البوت مو مشرف بهذا القروب. اعطني إشراف أول." }, { quoted: msg });
+        return;
+      }
+      const r = await groupBulk.bulkAdmin(sock, chatId, meta, many, action, (id) => targetBlockReason(senderId, id));
+      await sock.sendMessage(chatId, { text: r.text, mentions: r.mentions }, { quoted: msg });
+      return;
+    }
     await resolveTargetOrAsk(sock, chatId, msg, senderId, waAdminMatch[2], `استخدم الأمر مع منشن: .${waAdminMatch[1]} @الشخص`, async (target) => {
       let meta;
       try {
